@@ -1,0 +1,4 @@
+capstone==5.0.7
+unicorn==2.1.4
+pycryptodome==3.23.0
+pefile==2024.8.26

@@ -1,0 +1,80 @@
+{
+  "pcrecomp": {
+    "url": "https://github.com/sp00nznet/pcrecomp.git",
+    "revision": "904ac3129d0c9d05efbeec19a1dce6abbe7f5d26",
+    "directory": "reference/pcrecomp",
+    "license": "MIT",
+    "note": "Vendored source snapshot; Android runtime and lifting adaptations are in android/runtime and tools."
+  },
+  "nfsu2_pcrecomp_x87_window": {
+    "url": "https://github.com/codepdbh/nfsu2-recompiled/blob/62a1d3a17fc7619b9d32df182b4b47d1a4f2e959/patches/pcrecomp/0014-recomp_types-RECOMP_X87_WINDOW-sliding-window-FPU-st.patch",
+    "revision": "62a1d3a17fc7619b9d32df182b4b47d1a4f2e959",
+    "patch_commit": "486a9a1898f4720b62436b6edc475be513f34419",
+    "author": "sistemas3cecasem <paukarvv@gmail.com>",
+    "sha256": "740560cd6d8eadd132ddc180c963388b92a4316040e2023b4c0ee4ee4c2db518",
+    "directory": "patches/pcrecomp",
+    "license": "MIT",
+    "note": "Adapted sliding x87 window in the private H5 runtime. Retains array sizeof, all eight logical values and exact shadows, zero-on-pop, existing fallback shift helpers, and per-thread/callback snapshots. The original patch is retained for attribution; it is not applied to the pinned vendor tree."
+  },
+  "mojoshader": {
+    "url": "https://github.com/icculus/mojoshader.git",
+    "revision": "cf2661bcb55d9a8732e86f79922592d7efdf5383",
+    "directory": "reference/mojoshader",
+    "license": "zlib",
+    "note": "Last revision with assembler/preprocessor (removed in 7c3fbde). Marked local extensions implement PS1.1/1.4 TEXCRD/TEXLD, PS1.4 implicit sampler metadata, scalar legacy VS fog, and explicit-DCL input semantics for SM1 BGRA swizzles. The vendored snapshot includes the marked local changes; upstream checkout alone is insufficient."
+  },
+  "dlmalloc": {
+    "url": "https://gee.cs.oswego.edu/pub/misc/malloc.c",
+    "version": "2.8.6",
+    "sha256": "be7be56b40b4b31417e74e77687f9b96127ea6cae534cf236aee40a4c739508d",
+    "directory": "reference/dlmalloc",
+    "license": "MIT-0"
+  },
+  "the_void_host": {
+    "directory": "android/host",
+    "source": "the_void Android host and runtime",
+    "git_head": "bf4d120fdd0eeba1af1db0ffbd855e3b7fe127a3",
+    "note": "Project-specific copy of the existing Win32 HLE host, adapted for Heroes V; no sibling checkout is required."
+  },
+  "llvm_windows_profile_runtime": {
+    "url": "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/LLVM-18.1.8-win32.exe",
+    "version": "18.1.8",
+    "archive_sha256": "4ce39685d593a33cdbcdd10bec2288b65e020b38995d684c19cb56cad0fa43ac",
+    "file": "build/pc-full/pgo/llvm18/lib/clang/18/lib/windows/clang_rt.profile-i386.lib",
+    "sha256": "7da3975786d61a37c6dc4715c783ec21b330866ea71a9d03f3f9928aec6ed31f",
+    "license": "Apache-2.0 WITH LLVM-exception",
+    "license_url": "https://github.com/llvm/llvm-project/blob/llvmorg-18.1.8/compiler-rt/LICENSE.TXT",
+    "note": "Extracted without installation. Used only by the optional Windows PGO training build; optimized profile-use builds contain no profiling runtime."
+  },
+  "upx": {
+    "url": "https://github.com/upx/upx/releases/download/v5.2.1/upx-5.2.1-win64.zip",
+    "sha256": "eabc6792a347d45e945be7748423e7868fd01b0d2bcaa2f4b1031fd71ff69bda"
+  },
+  "astcenc": {
+    "url": "https://github.com/ARM-software/astc-encoder",
+    "version": "5.7.0",
+    "directory": "reference/astcenc",
+    "license": "Apache-2.0",
+    "note": "Vendored library source subset; compiled for NEON on Android."
+  },
+  "etcpak": {
+    "url": "https://github.com/wolfpld/etcpak",
+    "revision": "3d716e1550023dc5ff8b602636af8b76584e0b66",
+    "directory": "reference/etcpak",
+    "license": "BSD-3-Clause",
+    "note": "Vendored ETC2 encoder subset; bundled bcdec.h is separately MIT OR Unlicense."
+  },
+  "bcdec": {
+    "url": "https://github.com/iOrange/bcdec",
+    "version": "0.96",
+    "file": "reference/etcpak/bcdec.h",
+    "license": "MIT OR Unlicense"
+  },
+  "zlib": {
+    "url": "https://github.com/madler/zlib",
+    "version": "1.3.1",
+    "directory": "reference/zlib",
+    "license": "Zlib",
+    "note": "Vendored inflate/CRC subset for desktop texture tests; Android links the NDK libz."
+  }
+}

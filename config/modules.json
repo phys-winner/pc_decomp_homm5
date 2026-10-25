@@ -1,0 +1,77 @@
+[
+  {
+    "name": "game",
+    "file": "H5_Game.exe",
+    "source": "bin/H5_Game.exe",
+    "base": "0x400000",
+    "exe": true,
+    "sha256": "6502a8c4cd0e03e9ce43b474bcb4a85acb8b8bf5050d56317e93c8f13fff50bd"
+  },
+  {
+    "name": "granny2",
+    "file": "granny2.dll",
+    "source": "bin/granny2.dll",
+    "base": "0x50000000",
+    "exe": false,
+    "sha256": "b40c1636c298ba0af1bfda8cc6db38c73924a2f85397976e40cf2fc2365aae00"
+  },
+  {
+    "name": "fmod",
+    "file": "fmod.dll",
+    "source": "bin/fmod.dll",
+    "base": "0x11000000",
+    "exe": false,
+    "sha256": "9e3e6dae77a548aa16e68c5713b914b8b4a831e2f51fae5fa70d748fb04bffab",
+    "unpack": true
+  },
+  {
+    "name": "um",
+    "file": "um.dll",
+    "source": "bin/um.dll",
+    "base": "0x12000000",
+    "exe": false,
+    "sha256": "1bc13f556fa461ce50ff50dcbb2f75a58ec24fde6ce05006fbcbb606f0df52da",
+    "jump_tables": "config/um.jump-tables.json"
+  },
+  {
+    "name": "msvcr71",
+    "file": "msvcr71.dll",
+    "source": "bin/msvcr71.dll",
+    "base": "0x13000000",
+    "exe": false,
+    "sha256": "926c7cc31a5ac46fd09c09f481d9c2657c442dc8f778c9048e34e0d47e5ab7d2",
+    "jump_tables": "config/msvcr71.jump-tables.json"
+  },
+  {
+    "name": "msvcp71",
+    "file": "msvcp71.dll",
+    "source": "bin/msvcp71.dll",
+    "base": "0x14000000",
+    "exe": false,
+    "sha256": "1930572185b08f55cf597a756f56b9b63287d37e35a5ffb2286fa03f7cae2e60"
+  },
+  {
+    "name": "zlib1",
+    "file": "zlib1.dll",
+    "source": "bin/zlib1.dll",
+    "base": "0x15000000",
+    "exe": false,
+    "sha256": "7304163d3d7ddd48de8a4d7672ed38cf77c027b5cc16ea02bde6af0ff88131d5"
+  },
+  {
+    "name": "libcurl",
+    "file": "libcurl.dll",
+    "source": "bin/libcurl.dll",
+    "base": "0x16000000",
+    "exe": false,
+    "sha256": "c1e037d3a0c112b1743d3da891e7f3edfb60cc4d878d0d364c68f474320ef744"
+  },
+  {
+    "name": "zlibwapi",
+    "file": "zlibwapi.dll",
+    "source": "bin/zlibwapi.dll",
+    "base": "0x17000000",
+    "exe": false,
+    "sha256": "83ba676fc2789dc752ca55cdc67e17d241a301d0548204b6b84dd246efd2a33b"
+  }
+]

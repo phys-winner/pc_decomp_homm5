@@ -1,0 +1,9 @@
+`manifest.json` records the SHA-256 values of the eight faction town Music resources. The builder reads these resources from the original installation's `data/data.pak`, using `game_directory` in the private `port.json`. Original XML files are not distributed in Git. `a1-Renegade.xdb` is an additional theme and is not changed.
+
+`python tools/town_music.py` builds `build/data-overrides/z_homm5_android_town_music.pak`. It replaces only `MinPausedTime=1000` and `MaxPausedTime=10000` with zero. File names, object record IDs, FadeIn/FadeOut (2000 ms), XML layout, and all original PC archives remain unchanged. No unsupported Music fields are added. This removes the native randomized 1–10 second scheduling pause; the original fades still apply.
+
+`python tools/deploy.py --data` builds the PAK before any device operation, copies it after the original game data, verifies its device SHA-256, and records it in `build/deploy-receipt.json`. The PAK lives only in the Android data copy. Rebuilding the APK is unnecessary.
+
+The original VFS compares archive mount priority and then the unsigned packed DOS timestamp of each ZIP member (`009DEF50`; timestamp read by `0047BC50`). The fixed ZIP date 2026-10-17 wins over the installed eight resources dated 2007-08-03, independent of archive enumeration order. A future mod with higher priority or a newer member timestamp may override these resources.
+
+After deployment, restart the game and enter a town so the resource is loaded afresh. Acceptance requires the actual loaded `NDb::SMusic` object to contain FadeIn/FadeOut at `+0x4C/+0x50` equal to 2000 and MinPausedTime/MaxPausedTime at `+0x54/+0x58` equal to zero. Archive presence and SHA verification alone do not establish runtime acceptance. The V2 audio watcher reports this under `loaded_music_db`.

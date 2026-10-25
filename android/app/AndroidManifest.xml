@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.homm5.port"
+    android:versionCode="2" android:versionName="0.1-dev">
+  <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="28" />
+  <uses-feature android:glEsVersion="0x00030002" android:required="true" />
+  <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+  <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <uses-permission android:name="android.permission.WAKE_LOCK" />
+  <!-- The LAN game: UDP sockets, broadcast discovery over Wi-Fi. -->
+  <uses-permission android:name="android.permission.INTERNET" />
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+  <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+  <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+  <application android:label="Heroes V" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher"
+      android:debuggable="true" android:allowBackup="false"
+      android:extractNativeLibs="true" android:requestLegacyExternalStorage="true" android:hasCode="true"
+      android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen">
+    <activity android:name=".Launcher" android:exported="true" android:process=":launcher"
+        android:theme="@android:style/Theme.Material.NoActionBar"
+        android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|keyboard|navigation|uiMode|density">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+      </intent-filter>
+    </activity>
+    <!-- Exported for the tools (am start -n org.homm5.port/.GameActivity). -->
+    <activity android:name=".GameActivity" android:exported="true" android:screenOrientation="sensorLandscape"
+        android:windowSoftInputMode="adjustNothing"
+        android:configChanges="orientation|screenSize|keyboardHidden|keyboard|navigation|screenLayout|uiMode"
+        android:launchMode="singleTask" />
+    <service android:name=".UnpackService" android:exported="false" android:process=":launcher" />
+    <service android:name=".TextureService" android:exported="false" android:process=":launcher" />
+  </application>
+</manifest>

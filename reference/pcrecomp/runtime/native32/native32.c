@@ -1,0 +1,749 @@
+/*
+ * native32: see native32.h for the model. Extracted from gunman's
+ * src/runtime/runtime.c, which is where each of the non-obvious details below
+ * was found the hard way; the comments say which.
+ */
+#define WIN32_LEAN_AND_MEAN
+#define _CRT_SECURE_NO_WARNINGS
+#include <windows.h>
+#include <stdio.h>
+#include <string.h>
+#include "native32.h"
+#include "image_loader.h"
+#include "recomp_trace.h"
+
+#if !defined(_MSC_VER) || !defined(_M_IX86)
+#error "native32 is MSVC x86 only: the bridge and the callback trampoline are inline asm"
+#endif
+
+/* ------------------------------------------------------------ register file */
+
+uint32_t  g_eax, g_ecx, g_edx, g_esp, g_ebx, g_esi, g_edi, g_ebp;
+double    g_st[8];
+int       g_fp_top;
+uint16_t  g_fpu_cw = 0x027F;
+uint16_t  g_seg_cs, g_seg_ds, g_seg_es, g_seg_fs, g_seg_gs, g_seg_ss;
+uint64_t  g_mm[8];
+xmm_t     g_xmm[8];
+uint32_t  g_mxcsr = 0x1F80;
+uint32_t  g_fs_base, g_gs_base;
+ptrdiff_t g_mem_base = 0;
+uint32_t  g_cur_func;
+uint32_t  g_icall_trace[ICALL_TRACE_SIZE], g_icall_from[ICALL_TRACE_SIZE];
+uint32_t  g_icall_trace_idx, g_icall_count;
+
+int native32_trace_native, native32_trace_callbacks;
+
+typedef struct {
+    uint32_t eax, ecx, edx, esp, ebx, esi, edi, ebp, fs, cur;
+    double   st[8];
+    int      fp_top;
+    uint16_t fpu_cw;
+    uint64_t mm[8];
+    xmm_t    xmm[8];
+    uint32_t mxcsr;
+} regs_t;
+
+static void regs_save(regs_t* r) {
+    r->eax = g_eax; r->ecx = g_ecx; r->edx = g_edx; r->esp = g_esp;
+    r->ebx = g_ebx; r->esi = g_esi; r->edi = g_edi; r->ebp = g_ebp;
+    r->fs = g_fs_base; r->cur = g_cur_func;
+    memcpy(r->st, g_st, sizeof g_st); r->fp_top = g_fp_top; r->fpu_cw = g_fpu_cw;
+    memcpy(r->mm, g_mm, sizeof g_mm);
+    memcpy(r->xmm, g_xmm, sizeof g_xmm); r->mxcsr = g_mxcsr;
+}
+
+static void regs_load(const regs_t* r) {
+    g_eax = r->eax; g_ecx = r->ecx; g_edx = r->edx; g_esp = r->esp;
+    g_ebx = r->ebx; g_esi = r->esi; g_edi = r->edi; g_ebp = r->ebp;
+    g_fs_base = r->fs; g_cur_func = r->cur;
+    memcpy(g_st, r->st, sizeof g_st); g_fp_top = r->fp_top; g_fpu_cw = r->fpu_cw;
+    memcpy(g_mm, r->mm, sizeof g_mm);
+    memcpy(g_xmm, r->xmm, sizeof g_xmm); g_mxcsr = r->mxcsr;
+}
+
+/* ------------------------------------------------------------- machine lock */
+
+static CRITICAL_SECTION g_mach;
+static DWORD g_mach_tls = TLS_OUT_OF_INDEXES;
+
+/* Argument slots copied per call. Reading past a callee's real arguments is
+ * harmless while those words are mapped (mach_enter leaves room); CreateFontA
+ * (14) is the widest common Win32 call. */
+#define BRIDGE_SLOTS 24
+
+#define GUEST_STACK (4u << 20)
+
+/* A guest thread's TIB. Lifted code reads fs:[n] as MEM32(g_fs_base + n); the
+ * real TEB stays the host's, so a guest SEH frame never lands on a chain
+ * Windows walks. The PEB is the real one: code that reads fs:[30h] wants it. */
+static uint32_t make_tib(uint32_t lo, uint32_t hi) {
+    uint32_t* t = (uint32_t*)VirtualAlloc(NULL, 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    t[0] = 0xFFFFFFFFu;                          /* ExceptionList: end of chain */
+    t[1] = hi;                                   /* StackBase                   */
+    t[2] = lo;                                   /* StackLimit                  */
+    t[0x18 / 4] = (uint32_t)(uintptr_t)t;        /* Self                        */
+    t[0x24 / 4] = GetCurrentThreadId();
+    t[0x30 / 4] = __readfsdword(0x30);
+    return (uint32_t)(uintptr_t)t;
+}
+
+typedef struct { regs_t r; int depth; } mstate;
+
+/* Nests: a callback that arrives while this thread is inside a native call
+ * claims again, and only the outermost claim loads the saved state. */
+void mach_enter(void) {
+    EnterCriticalSection(&g_mach);
+    mstate* m = (mstate*)TlsGetValue(g_mach_tls);
+    if (!m) {
+        /* Stack left for a fault handler after an overflow: without it the
+         * report itself overflows and the process just vanishes. */
+        ULONG guarantee = 64 * 1024;
+        SetThreadStackGuarantee(&guarantee);
+        m = (mstate*)calloc(1, sizeof *m);
+        uint32_t lo = (uint32_t)(uintptr_t)VirtualAlloc(NULL, GUEST_STACK,
+                          MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        /* The bridge copies BRIDGE_SLOTS words up from esp whatever the
+         * callee takes, so the first call made from an empty stack must not
+         * read off the end of it. With 64 bytes of headroom it did, and faulted
+         * whenever ASLR left the next page unmapped: the selftest crashed on
+         * about two runs in three. */
+        m->r.esp = lo + GUEST_STACK - BRIDGE_SLOTS * 4 - 64;
+        m->r.fs = make_tib(lo, lo + GUEST_STACK);
+        m->r.fpu_cw = 0x027F;
+        m->r.mxcsr = 0x1F80;              /* exceptions masked, round to nearest */
+        TlsSetValue(g_mach_tls, m);
+    }
+    if (m->depth++ == 0) regs_load(&m->r);
+}
+
+void mach_leave(void) {
+    mstate* m = (mstate*)TlsGetValue(g_mach_tls);
+    if (--m->depth == 0) regs_save(&m->r);
+    LeaveCriticalSection(&g_mach);
+}
+
+/* RECOMP_BACKEDGE's hand-over: let another guest thread take the machine.
+ * Only the outermost claim can give it up; inside a callback the lock is
+ * still held further out, and the loop simply runs on. */
+static void native32_yield(void) {
+    mstate* m = (mstate*)TlsGetValue(g_mach_tls);
+    if (!m || m->depth != 1) return;
+    mach_leave();
+    SwitchToThread();
+    mach_enter();
+}
+
+/* ---------------------------------------------------------------- modules */
+
+#define MAX_MODULES 32
+static struct { uint32_t base, span; int native; char name[MAX_PATH]; } g_mods[MAX_MODULES];
+static int g_mod_n;
+
+static recomp_func_t dispatch_find(uint32_t va);
+
+/* Functions inside a native module that still run lifted
+ * (native32_lift_in_native), sorted for bsearch. */
+static uint32_t* g_lin;
+static int g_lin_n;
+
+static int lifted_in_native(uint32_t va) {
+    int lo = 0, hi = g_lin_n;
+    while (lo < hi) {
+        int mid = (lo + hi) / 2;
+        if (g_lin[mid] == va) return 1;
+        if (g_lin[mid] < va) lo = mid + 1; else hi = mid;
+    }
+    return 0;
+}
+
+/* A module running its original machine code (native32_set_native). */
+static int native_module_at(uint32_t va) {
+    for (int i = 0; i < g_mod_n; i++)
+        if (g_mods[i].native && va >= g_mods[i].base && va < g_mods[i].base + g_mods[i].span)
+            return !lifted_in_native(va);
+    return 0;
+}
+
+/* A call into a guest module outside its code sections: code kept in a data
+ * section, where old hand-written asm patches its own constants. UT's Fire.dll
+ * runs its procedural-texture loops from .data. No static lift can hold code
+ * that rewrites itself, and it was written for this CPU, so it runs natively:
+ * the section is made executable the first time it is called into. Its calls
+ * back into lifted code fault on non-executable pages and take the callback
+ * trampoline. */
+static int data_section_code(uint32_t va) {
+    for (int i = 0; i < g_mod_n; i++) {
+        uint32_t base = g_mods[i].base;
+        if (va < base || va >= base + g_mods[i].span) continue;
+        IMAGE_NT_HEADERS32* nt = (IMAGE_NT_HEADERS32*)(uintptr_t)(base + ((IMAGE_DOS_HEADER*)(uintptr_t)base)->e_lfanew);
+        IMAGE_SECTION_HEADER* s = IMAGE_FIRST_SECTION(nt);
+        for (int k = 0; k < nt->FileHeader.NumberOfSections; k++, s++) {
+            uint32_t lo = base + s->VirtualAddress, hi = lo + s->Misc.VirtualSize;
+            if (va < lo || va >= hi) continue;
+            if (s->Characteristics & IMAGE_SCN_MEM_EXECUTE) return 0;   /* lifted code */
+            MEMORY_BASIC_INFORMATION mbi;
+            DWORD old;
+            VirtualQuery((void*)(uintptr_t)va, &mbi, sizeof mbi);
+            if (mbi.Protect != PAGE_EXECUTE_READWRITE) {
+                VirtualProtect((void*)(uintptr_t)lo, hi - lo, PAGE_EXECUTE_READWRITE, &old);
+                fprintf(stderr, "[native32] %s: code in data section %.8s (0x%08X) runs natively\n",
+                        g_mods[i].name, (const char*)s->Name, va);
+            }
+            return 1;
+        }
+        return 0;
+    }
+    return 0;
+}
+
+static int cmp_u32(const void* a, const void* b) {
+    uint32_t x = *(const uint32_t*)a, y = *(const uint32_t*)b;
+    return x < y ? -1 : x > y;
+}
+
+int native32_lift_in_native(const uint32_t* vas, int n) {
+    int done = 0;
+    g_lin = (uint32_t*)realloc(g_lin, (g_lin_n + n) * sizeof *g_lin);
+    for (int i = 0; i < n; i++) {
+        if (!dispatch_find(vas[i])) continue;           /* not a lifted entry */
+        uint8_t* p = (uint8_t*)(uintptr_t)vas[i];
+        p[0] = 0x0F, p[1] = 0x0B;                      /* ud2: the trap is the trampoline */
+        g_lin[g_lin_n++] = vas[i];
+        done++;
+    }
+    qsort(g_lin, g_lin_n, sizeof *g_lin, cmp_u32);
+    FlushInstructionCache(GetCurrentProcess(), NULL, 0);
+    return done;
+}
+
+int native32_set_native(uint32_t base) {
+    for (int i = 0; i < g_mod_n; i++) {
+        if (g_mods[i].base != base) continue;
+        IMAGE_NT_HEADERS32* nt = (IMAGE_NT_HEADERS32*)(uintptr_t)(base + ((IMAGE_DOS_HEADER*)(uintptr_t)base)->e_lfanew);
+        IMAGE_SECTION_HEADER* s = IMAGE_FIRST_SECTION(nt);
+        for (int k = 0; k < nt->FileHeader.NumberOfSections; k++, s++) {
+            DWORD old;
+            /* writable too: old code patches itself (software rasterisers) */
+            if (s->Characteristics & IMAGE_SCN_MEM_EXECUTE)
+                VirtualProtect((void*)(uintptr_t)(base + s->VirtualAddress), s->Misc.VirtualSize,
+                               PAGE_EXECUTE_READWRITE, &old);
+        }
+        g_mods[i].native = 1;
+        return 1;
+    }
+    return 0;
+}
+
+int native32_in_guest(uint32_t va) {
+    for (int i = 0; i < g_mod_n; i++)
+        if (va >= g_mods[i].base && va < g_mods[i].base + g_mods[i].span) return 1;
+    return 0;
+}
+
+/* native32_hold_image: see the header. The child is marked by an environment
+ * variable, so it never launches again; the standard handles are passed on
+ * explicitly, so a harness reading a pipe sees the child's output. */
+#define NATIVE32_HELD_ENV "NATIVE32_HELD"
+
+int native32_hold_image(const char* path, uint32_t base) {
+    char flag[16], me[MAX_PATH];
+    if (GetEnvironmentVariableA(NATIVE32_HELD_ENV, flag, sizeof flag)) {
+        SetEnvironmentVariableA(NATIVE32_HELD_ENV, NULL);  /* not passed on to what the guest starts */
+        return 1;
+    }
+    IMAGE_DOS_HEADER dos;
+    IMAGE_NT_HEADERS32 nt;
+    FILE* f = fopen(path, "rb");
+    int ok = f && fread(&dos, sizeof dos, 1, f) == 1 && fseek(f, dos.e_lfanew, SEEK_SET) == 0 &&
+             fread(&nt, sizeof nt, 1, f) == 1 && nt.Signature == IMAGE_NT_SIGNATURE;
+    if (f) fclose(f);
+    if (!ok) return 0;
+    uint32_t span = nt.OptionalHeader.SizeOfImage;
+
+    STARTUPINFOA si = { sizeof si };
+    PROCESS_INFORMATION pi;
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+    si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+    HANDLE std[3] = { si.hStdInput, si.hStdOutput, si.hStdError };
+    for (int i = 0; i < 3; i++)
+        if (std[i] && std[i] != INVALID_HANDLE_VALUE) SetHandleInformation(std[i], HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+    GetModuleFileNameA(NULL, me, MAX_PATH);
+    SetEnvironmentVariableA(NATIVE32_HELD_ENV, "1");
+    BOOL made = CreateProcessA(me, GetCommandLineA(), NULL, NULL, TRUE, CREATE_SUSPENDED, NULL, NULL, &si, &pi);
+    SetEnvironmentVariableA(NATIVE32_HELD_ENV, NULL);
+    if (!made) {
+        fprintf(stderr, "[native32] cannot start the host again (error %lu)\n", GetLastError());
+        return 0;
+    }
+    if (!VirtualAllocEx(pi.hProcess, (void*)(uintptr_t)base, span, MEM_RESERVE, PAGE_NOACCESS)) {
+        fprintf(stderr, "[native32] 0x%08X+0x%X is taken at process start (error %lu): link the host "
+                "with a small /STACK and run the lifted code on a thread with a large one\n",
+                base, span, GetLastError());
+        TerminateProcess(pi.hProcess, 1);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        return 0;
+    }
+    HANDLE job = CreateJobObjectA(NULL, NULL);
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION lim = { 0 };
+    lim.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (job) {
+        SetInformationJobObject(job, JobObjectExtendedLimitInformation, &lim, sizeof lim);
+        AssignProcessToJobObject(job, pi.hProcess);
+    }
+    ResumeThread(pi.hThread);
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 1;
+    GetExitCodeProcess(pi.hProcess, &code);
+    ExitProcess(code);
+}
+
+uint32_t native32_map(const char* path, uint32_t base) {
+    uint32_t span = recomp_load_image(path, base);
+    if (!span || g_mod_n == MAX_MODULES) return 0;
+    const char* file = strrchr(path, '\\');
+    g_mods[g_mod_n].base = base;
+    g_mods[g_mod_n].span = span;
+    strncpy(g_mods[g_mod_n++].name, file ? file + 1 : path, MAX_PATH - 1);
+    IMAGE_NT_HEADERS32* nt = (IMAGE_NT_HEADERS32*)(uintptr_t)(base + ((IMAGE_DOS_HEADER*)(uintptr_t)base)->e_lfanew);
+    IMAGE_SECTION_HEADER* s = IMAGE_FIRST_SECTION(nt);
+    for (int i = 0; i < nt->FileHeader.NumberOfSections; i++, s++) {
+        DWORD old;
+        if (s->Characteristics & IMAGE_SCN_MEM_EXECUTE)
+            VirtualProtect((void*)(uintptr_t)(base + s->VirtualAddress), s->Misc.VirtualSize,
+                           PAGE_READWRITE, &old);
+    }
+    return span;
+}
+
+uint32_t native32_module(const char* name) {
+    const char* file = strrchr(name, '\\');
+    file = file ? file + 1 : name;
+    for (int i = 0; i < g_mod_n; i++)
+        if (!_stricmp(g_mods[i].name, file)) return g_mods[i].base;
+    return 0;
+}
+
+/* GetProcAddress over a mapped guest image: a name, or an ordinal below
+ * 0x10000. Forwarders are not followed; no guest module has needed one. */
+uint32_t native32_export(uint32_t base, const char* name) {
+    uint8_t* b = (uint8_t*)(uintptr_t)base;
+    IMAGE_NT_HEADERS32* nt = (IMAGE_NT_HEADERS32*)(b + ((IMAGE_DOS_HEADER*)b)->e_lfanew);
+    IMAGE_DATA_DIRECTORY dd = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (!dd.VirtualAddress) return 0;
+    IMAGE_EXPORT_DIRECTORY* e = (IMAGE_EXPORT_DIRECTORY*)(b + dd.VirtualAddress);
+    uint32_t* funcs = (uint32_t*)(b + e->AddressOfFunctions);
+    uint32_t* names = (uint32_t*)(b + e->AddressOfNames);
+    uint16_t* ords = (uint16_t*)(b + e->AddressOfNameOrdinals);
+    uint32_t idx = 0xFFFFFFFFu;
+    if ((uintptr_t)name < 0x10000) idx = (uint32_t)(uintptr_t)name - e->Base;
+    else
+        for (uint32_t i = 0; i < e->NumberOfNames; i++)
+            if (!strcmp((const char*)(b + names[i]), name)) { idx = ords[i]; break; }
+    return idx < e->NumberOfFunctions && funcs[idx] ? base + funcs[idx] : 0;
+}
+
+/* ---------------------------------------------------------------- names */
+
+#define MAX_NAMES 4096
+static struct { uint32_t va; char name[60]; } g_names[MAX_NAMES];
+static int g_name_n;
+
+const char* native32_name(uint32_t va) {
+    for (int i = 0; i < g_name_n; i++)
+        if (g_names[i].va == va) return g_names[i].name;
+    return NULL;
+}
+
+static void add_name(uint32_t va, const char* dll, const char* fn) {
+    if (g_name_n < MAX_NAMES && !native32_name(va)) {
+        _snprintf(g_names[g_name_n].name, sizeof g_names[0].name - 1, "%s!%s", dll, fn);
+        g_names[g_name_n++].va = va;
+    }
+}
+
+/* ------------------------------------------------------- guest -> Windows */
+
+static uint32_t g_native_target;
+
+/* Synthetic VAs for hand shims: a reserved, never-committed range, so no real
+ * code or data can share an address with one. */
+static uint32_t g_shim_page;
+static native32_shim_t* g_shims;
+static int g_nshims;
+#define IS_SHIM_VA(va) (g_shim_page && (va) >= g_shim_page && (va) < g_shim_page + 0x10000u)
+
+static void native_bridge(void) {
+    /* The guest's last error, as the previous native call left it: the trace
+     * below and mach_leave's TlsGetValue would reset it before this call. */
+    DWORD guest_error = GetLastError();
+    uint32_t fn = g_native_target;
+    uint32_t* src = (uint32_t*)(uintptr_t)(g_esp + 4);   /* past the dummy ret */
+    uint32_t this_ecx = g_ecx, r_eax, r_edx, purge;
+    uint16_t sw0, sw1;
+    double r_st = 0;
+    const char* saved_import = g_cur_import;
+    if (native32_trace_native) {
+        const char* n = native32_name(fn);
+        fprintf(stderr, "[native] %-32s (%08X %08X %08X %08X) from sub_%08X",
+                n ? n : "?", src[0], src[1], src[2], src[3], g_cur_func);
+        if (!n) fprintf(stderr, " @%08X", fn);
+        for (int k = 0; k < 4; k++) {       /* arguments that are strings (gunman) */
+            MEMORY_BASIC_INFORMATION mbi;
+            const char* p = (const char*)(uintptr_t)src[k];
+            if (src[k] < 0x10000 || !VirtualQuery(p, &mbi, sizeof mbi) ||
+                mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+                continue;
+            size_t room = (size_t)((const char*)mbi.BaseAddress + mbi.RegionSize - p), len = 0;
+            while (len < room && len < 96 && p[len] >= 0x20 && p[len] < 0x7F) len++;
+            if (len >= 3 && (len == room || len == 96 || !p[len]))
+                fprintf(stderr, " a%d=\"%.*s\"", k, (int)len, p);
+        }
+    }
+    g_cur_import = native32_name(fn);
+    if (!g_cur_import) g_cur_import = "(native)";
+    mach_leave();
+    SetLastError(guest_error);
+    /* The locals are reached through whatever base register the compiler
+     * chose, and the asm must leave it alone. MSVC uses ebp; clang-cl uses
+     * esi (its x86 base pointer, for a frame it realigns), so the old
+     * `mov esi, src` for rep movsd cut the frame off and the next local read
+     * was garbage: the first native call jumped to 0 (KotOR, clang-cl). So:
+     * no esi or ebp, every input in a register before esp moves, and the
+     * arguments copied by pushes, highest slot first.
+     *
+     * Nor does the callee have to keep the C ABI. It is usually Windows, but
+     * it can be the guest's own hand-written asm, run natively because no lift
+     * can hold it (code in a data section, a native module), and that was
+     * only ever called from inline asm that saved everything: UT's Fire.dll
+     * returns with ebx and ebp changed. So ebp, esi and ebx are saved on the
+     * stack, and the esp anchor is kept in this thread's TEB
+     * (ArbitraryUserPointer, fs:[0x14], its old value saved and put back, so a
+     * nested bridge through a callback unwinds in order). */
+    __asm {
+        fnstsw ax
+        mov  sw0, ax             ; x87 TOP before
+        mov  edx, src
+        mov  eax, fn
+        mov  edi, this_ecx
+        push ebp
+        push esi
+        push ebx
+        push dword ptr fs:[0x14]
+        mov  ecx, BRIDGE_SLOTS
+    copy_args:
+        push dword ptr [edx + ecx * 4 - 4]
+        dec  ecx
+        jnz  copy_args
+        mov  fs:[0x14], esp      ; the anchor: survives any callee
+        mov  ecx, edi            ; thiscall / COM 'this'
+        call eax
+        mov  ecx, esp
+        mov  esp, fs:[0x14]
+        sub  ecx, esp            ; bytes the callee popped
+        add  esp, BRIDGE_SLOTS * 4
+        pop  dword ptr fs:[0x14]
+        pop  ebx
+        pop  esi
+        pop  ebp                 ; the frame is reachable again
+        mov  r_eax, eax
+        mov  r_edx, edx
+        mov  purge, ecx
+        fxam                     ; C3..C0 classify st(0)
+        fnstsw ax
+        mov  sw1, ax             ; x87 TOP after
+    }
+    /* A float result comes back in st(0): TOP moved down by exactly one and
+     * st(0) is not empty. A native fninit/_fpreset also moves TOP; without the
+     * fxam check that read as a returned float and pushed junk onto the lifted
+     * stack (gunman: every later frame rendered NaNs). */
+    int st_ret = (((sw0 >> 11) - (sw1 >> 11)) & 7) == 1 && (sw1 & 0x4100) != 0x4100;
+    if (st_ret) __asm fstp r_st
+    /* The callee's last error belongs to the guest, but mach_enter's
+     * TlsGetValue resets it to 0 (TlsGetValue always does), and so does
+     * stdio. A guest that loops on FindNextFileA until GetLastError() says
+     * ERROR_NO_MORE_FILES then never stopped (KotOR's resource scan): the
+     * value has to survive both ways across the bridge, into GetLastError
+     * itself and back out of FindNextFileA. */
+    DWORD last_error = GetLastError();
+    mach_enter();
+    if (st_ret) fp_push_impl(g_st, &g_fp_top, r_st);
+    g_cur_import = saved_import;
+    g_eax = r_eax;
+    g_edx = r_edx;
+    g_esp += 4 + purge;
+    if (native32_trace_native) fprintf(stderr, " -> %08X\n", r_eax);
+    SetLastError(last_error);
+}
+
+static recomp_func_t dispatch_find(uint32_t va) {
+    uint32_t lo = 0, hi = recomp_dispatch_count;
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2, m = recomp_dispatch_table[mid].address;
+        if (m == va) return recomp_dispatch_table[mid].func;
+        if (m < va) lo = mid + 1; else hi = mid;
+    }
+    return NULL;
+}
+
+recomp_func_t recomp_lookup(uint32_t va) {
+    if (native_module_at(va)) return NULL;    /* its original code runs: recomp_lookup_import */
+    return dispatch_find(va);
+}
+
+/* Anything that is neither a shim nor inside a guest module is native: an
+ * import, a GetProcAddress result, a COM method. */
+recomp_func_t recomp_lookup_import(uint32_t va) {
+    if (IS_SHIM_VA(va)) {
+        for (int i = 0; i < g_nshims; i++)
+            if (g_shims[i].va == va) return g_shims[i].fn;
+        return NULL;
+    }
+    if (va < 0x10000u) return NULL;
+    if (native32_in_guest(va) && !native_module_at(va) && !data_section_code(va)) return NULL;
+    g_native_target = va;
+    return native_bridge;
+}
+
+/* Built-in shims every host gets, ahead of its own.
+ *
+ * CreateThread: the thread runs LIFTED code on its native stack, and a lifted
+ * function's frame is several times the original's (register locals, flag
+ * state, the C compiler's own spills), so the size the original asked for is
+ * far too small. The Movies' worker threads overflowed theirs, and with no
+ * stack left even the fault report died. Reserve 16 MB (committed on demand). */
+#define GUEST_THREAD_STACK (16u << 20)
+static void shim_CreateThread(void) {
+    uint32_t* a = (uint32_t*)(uintptr_t)(g_esp + 4);
+    SIZE_T size = a[1] > GUEST_THREAD_STACK ? a[1] : GUEST_THREAD_STACK;
+    HANDLE h = CreateThread((LPSECURITY_ATTRIBUTES)(uintptr_t)a[0], size,
+                            (LPTHREAD_START_ROUTINE)(uintptr_t)a[2], (LPVOID)(uintptr_t)a[3],
+                            a[4] | STACK_SIZE_PARAM_IS_A_RESERVATION, (LPDWORD)(uintptr_t)a[5]);
+    g_eax = (uint32_t)(uintptr_t)h;
+    g_esp += 4 + 6 * 4;
+}
+
+/* RaiseException(0x406D1388): MSVC's SetThreadName, which only an attached
+ * debugger is meant to see. The guest wraps it in
+ *     __try { RaiseException(0x406D1388, ...); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+ * but its __try frame is on the guest's SEH chain, which Windows never walks
+ * (eh32.c handles C++ frames only), so the exception went unhandled and ended
+ * the process with that code: Tiberium Wars, naming its first worker thread.
+ * Returning is what the empty __except does. Any other code is raised for real. */
+static void shim_RaiseException(void) {
+    uint32_t* a = (uint32_t*)(uintptr_t)(g_esp + 4);
+    if (a[0] != 0x406D1388u)
+        RaiseException(a[0], a[1], a[2], (const ULONG_PTR*)(uintptr_t)a[3]);
+    g_esp += 4 + 4 * 4;
+}
+
+/* _CxxThrowException: a guest throw is dispatched over the guest's own
+ * frames (eh32.c), so the guest's catch blocks run. */
+void native32_shim_CxxThrowException(void);
+
+/* msvcrt helpers that take their arguments on the x87 stack (x87crt.c): the
+ * bridge passes stack arguments only, and the lifted FPU stack is g_st. */
+#define X87CRT(n) void native32_shim_##n(void);
+X87CRT(ftol) X87CRT(CIsqrt) X87CRT(CIsin) X87CRT(CIcos) X87CRT(CItan) X87CRT(CIasin)
+X87CRT(CIacos) X87CRT(CIatan) X87CRT(CIexp) X87CRT(CIlog) X87CRT(CIlog10) X87CRT(CIsinh)
+X87CRT(CIcosh) X87CRT(CItanh) X87CRT(CIpow) X87CRT(CIfmod) X87CRT(CIatan2)
+X87CRT(controlfp) X87CRT(control87)
+
+static native32_shim_t g_builtin[] = {
+    { "CreateThread", shim_CreateThread },
+    { "RaiseException", shim_RaiseException },
+    { "_CxxThrowException", native32_shim_CxxThrowException },
+    { "_ftol", native32_shim_ftol },
+    { "_CIsqrt", native32_shim_CIsqrt }, { "_CIsin", native32_shim_CIsin },
+    { "_CIcos", native32_shim_CIcos }, { "_CItan", native32_shim_CItan },
+    { "_CIasin", native32_shim_CIasin }, { "_CIacos", native32_shim_CIacos },
+    { "_CIatan", native32_shim_CIatan }, { "_CIexp", native32_shim_CIexp },
+    { "_CIlog", native32_shim_CIlog }, { "_CIlog10", native32_shim_CIlog10 },
+    { "_CIsinh", native32_shim_CIsinh }, { "_CIcosh", native32_shim_CIcosh },
+    { "_CItanh", native32_shim_CItanh }, { "_CIpow", native32_shim_CIpow },
+    { "_CIfmod", native32_shim_CIfmod }, { "_CIatan2", native32_shim_CIatan2 },
+    { "_controlfp", native32_shim_controlfp }, { "_control87", native32_shim_control87 },
+};
+
+int native32_bind(uint32_t base, native32_shim_t* shims, int nshims) {
+    uint8_t* b = (uint8_t*)(uintptr_t)base;
+    IMAGE_NT_HEADERS32* nt = (IMAGE_NT_HEADERS32*)(b + ((IMAGE_DOS_HEADER*)b)->e_lfanew);
+    IMAGE_DATA_DIRECTORY dd = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    IMAGE_IMPORT_DESCRIPTOR* d = (IMAGE_IMPORT_DESCRIPTOR*)(b + dd.VirtualAddress);
+    int native = 0, shimmed = 0, guested = 0, missing = 0;
+    /* The host's shims, then every built-in the host did not replace. */
+    int nb = (int)(sizeof g_builtin / sizeof g_builtin[0]);
+    native32_shim_t* all = (native32_shim_t*)calloc(nshims + nb, sizeof *all);
+    int n = 0;
+    for (int i = 0; i < nshims; i++) all[n++] = shims[i];
+    for (int i = 0; i < nb; i++) {
+        int dup = 0;
+        for (int k = 0; k < nshims; k++) dup |= !strcmp(shims[k].name, g_builtin[i].name);
+        if (!dup) all[n++] = g_builtin[i];
+    }
+    /* Every entry gets its VA now, not only the ones this module imports: a
+     * host binding several guest modules calls this once per module, each
+     * call builds a new array and it replaces g_shims, so a VA set only on
+     * the first module's copy was lost to the second, and the first module's
+     * shimmed imports stopped resolving. Same array in, same VAs out. */
+    for (int i = 0; i < n; i++) all[i].va = g_shim_page + 16 * i;
+    shims = all;
+    nshims = n;
+    g_shims = shims;
+    g_nshims = nshims;
+    for (; dd.VirtualAddress && d->Name; d++) {
+        const char* dll = (const char*)(b + d->Name);
+        /* A guest module importing from another one (a game DLL calling back
+         * into its engine EXE) binds to the guest's own exports: those VAs are
+         * in the dispatch table. LoadLibrary would load the original binary as
+         * native code, or fail. */
+        uint32_t guest = native32_module(dll);
+        /* Loaded at its first import the host did not shim: a DLL every one
+         * of whose imports is shimmed (a host that stubs a whole library out)
+         * is never loaded, so its DllMain never runs. */
+        HMODULE h = NULL;
+        uint32_t* ilt = (uint32_t*)(b + (d->OriginalFirstThunk ? d->OriginalFirstThunk : d->FirstThunk));
+        uint32_t* iat = (uint32_t*)(b + d->FirstThunk);
+        for (; *ilt; ilt++, iat++) {
+            int by_ord = (*ilt & 0x80000000u) != 0;
+            const char* nm = by_ord ? (const char*)(uintptr_t)(*ilt & 0xFFFF) : (const char*)(b + *ilt + 2);
+            uint32_t va = 0;
+            for (int i = 0; !guest && !by_ord && i < nshims; i++)
+                if (!strcmp(shims[i].name, nm)) {
+                    va = shims[i].va;
+                    shimmed++;
+                }
+            if (!va) {
+                if (!guest && !h) h = LoadLibraryA(dll);
+                va = guest ? native32_export(guest, nm)
+                   : h ? (uint32_t)(uintptr_t)GetProcAddress(h, nm) : 0;
+                if (va && guest) guested++;
+                else if (va) native++;
+                else {
+                    fprintf(stderr, "[bind] %s!%s%s unresolved\n", dll, by_ord ? "#" : "",
+                            by_ord ? "" : nm);
+                    missing++;
+                }
+            }
+            if (va && !by_ord) add_name(va, dll, nm);
+            *iat = va;
+        }
+    }
+    fprintf(stderr, "[bind] 0x%08X: %d native, %d guest, %d shimmed, %d unresolved\n",
+            base, native, guested, shimmed, missing);
+    return missing;
+}
+
+/* ------------------------------------------------------- Windows -> guest */
+
+/* Runs a lifted function for a native caller. `sp` points at the native
+ * caller's [ret][args...]. Returns eax in the low half and the bytes the
+ * callee popped in the high half, for cb_tramp's variable `ret n`. */
+static uint64_t __cdecl cb_run(uint32_t va, uint32_t* sp, uint32_t ecx) {
+    recomp_func_t f = IS_SHIM_VA(va) ? recomp_lookup_import(va) : recomp_lookup(va);
+    if (native32_trace_callbacks)
+        fprintf(stderr, "[callback] sub_%08X (%08X %08X %08X %08X)\n", va, sp[1], sp[2], sp[3], sp[4]);
+    mach_enter();
+    regs_t saved;
+    regs_save(&saved);
+    g_esp -= BRIDGE_SLOTS * 4;
+    memcpy((void*)(uintptr_t)g_esp, sp + 1, BRIDGE_SLOTS * 4);
+    PUSH32(g_esp, RECOMP_RETADDR);
+    uint32_t before = g_esp;
+    g_ecx = ecx;
+    f();
+    uint32_t eax = g_eax, purge = g_esp - before - 4;
+    /* The other half of the st(0) transfer: a lifted function returning a
+     * float leaves it on the LIFTED x87 stack, and the native caller is about
+     * to fstp its own. */
+    int st_ret = g_fp_top == saved.fp_top + 1;
+    double cb_st = g_st[0];
+    regs_load(&saved);
+    mach_leave();
+    if (st_ret) __asm fld cb_st
+    return ((uint64_t)purge << 32) | eax;
+}
+
+static __declspec(naked) void cb_tramp(void) {
+    __asm {
+        mov  edx, esp            ; [ret][args]
+        push ecx
+        push edx
+        push eax                 ; the guest VA, planted by the VEH
+        call cb_run
+        add  esp, 12
+        pop  ecx                 ; native return address
+        add  esp, edx            ; pop what the guest callee popped
+        jmp  ecx
+    }
+}
+
+static LONG CALLBACK native32_veh(EXCEPTION_POINTERS* ep) {
+    EXCEPTION_RECORD* er = ep->ExceptionRecord;
+    uint32_t pc = (uint32_t)(uintptr_t)er->ExceptionAddress;
+    if (er->ExceptionCode == EXCEPTION_ILLEGAL_INSTRUCTION && lifted_in_native(pc)) {
+        ep->ContextRecord->Eax = pc;            /* native code reached a lifted one */
+        ep->ContextRecord->Eip = (DWORD)(uintptr_t)cb_tramp;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    /* An instruction fetch: Windows says so (8, execute). Wine on Apple
+     * Silicon (CrossOver, 32-bit code under Rosetta) reports it as a read,
+     * but a read of the faulting instruction's own address is a fetch too:
+     * Wine calling a window procedure in the shim page came through as
+     * "read of 0x032D0170" at 0x032D0170, and the game died creating its
+     * window. */
+    int fetch = er->NumberParameters >= 2 &&
+                (er->ExceptionInformation[0] == 8 || (uint32_t)er->ExceptionInformation[1] == pc);
+    if (er->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && fetch &&
+        (native32_in_guest(pc) || IS_SHIM_VA(pc))) {
+        if (recomp_lookup(pc) || IS_SHIM_VA(pc)) {
+            ep->ContextRecord->Eax = pc;
+            ep->ContextRecord->Eip = (DWORD)(uintptr_t)cb_tramp;
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+        fprintf(stderr, "[callback] Windows called guest 0x%08X, which is not lifted\n", pc);
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+/* ---------------------------------------------------------------- setup */
+
+void native32_init(void) {
+    /* Every Windows -> guest call relies on the guest's code faulting when it
+     * is fetched. Windows enforces that for a /NXCOMPAT exe; Wine does not
+     * unless DEP is asked for, and otherwise answers the first fetch by making
+     * the page executable and running the shipping machine code. */
+    SetProcessDEPPolicy(PROCESS_DEP_ENABLE);
+    InitializeCriticalSection(&g_mach);
+    recomp_yield_hook = native32_yield;
+    g_mach_tls = TlsAlloc();
+    g_shim_page = (uint32_t)(uintptr_t)VirtualAlloc(NULL, 0x10000, MEM_RESERVE, PAGE_NOACCESS);
+    AddVectoredExceptionHandler(1, native32_veh);
+}
+
+void native32_call_guest(uint32_t va, int nargs, const uint32_t* args) {
+    recomp_func_t f = recomp_lookup(va);
+    if (!f) { fprintf(stderr, "[native32] no lifted function at 0x%08X\n", va); exit(3); }
+    mach_enter();
+    for (int i = nargs - 1; i >= 0; i--) PUSH32(g_esp, args[i]);
+    PUSH32(g_esp, RECOMP_RETADDR);
+    f();
+    mach_leave();
+}
+
+void native32_dump_icalls(int n) {
+    fprintf(stderr, "last indirect calls (newest first):\n");
+    for (int i = 1; i <= n && i <= (int)g_icall_trace_idx; i++) {
+        uint32_t k = (g_icall_trace_idx - i) & (ICALL_TRACE_SIZE - 1);
+        const char* nm = native32_name(g_icall_trace[k]);
+        fprintf(stderr, "  0x%08X  from 0x%08X  %s\n", g_icall_trace[k], g_icall_from[k], nm ? nm : "");
+    }
+}
+
+/* Built-in bodies kept in their own files, compiled as part of this one so a
+ * host's build needs no change when one is added. */
+#include "eh32.c"
+#include "x87crt.c"

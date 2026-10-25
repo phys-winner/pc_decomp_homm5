@@ -1,0 +1,1 @@
+astcenc 5.7.0 library sources (Apache-2.0), from the M&B Warband port's vendored subset

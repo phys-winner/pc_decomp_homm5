@@ -1,0 +1,1126 @@
+"""
+difftest.py -- does the lifted C do what the CPU does?
+
+Every semantics bug this lifter has shipped was found the same way: play the
+game, watch something be subtly wrong, bisect backwards to an instruction. A
+flag derived at the wrong width or a carry read from the wrong place does not
+crash -- it returns a plausible number, and the cost is a debugging session.
+
+So: run the same bytes twice. Once through Unicorn, which is the reference for
+what an x86 does. Once through this repo's lifter, compiled and executed as C.
+Then compare every architectural field both machines are supposed to agree on
+and name each one that differs -- the eight GPRs, the six arithmetic flags
+(each by name, not as a word, so a report says ZF rather than "flags"), DF,
+and every byte of guest memory either machine wrote.
+
+The flags are the interesting half. The lifter's model is lazy: an instruction
+records its operands and kind, and each flag is derived when something asks.
+recomp_eflags() is that derivation done all at once, so comparing it against
+hardware EFLAGS tests the whole model, not one condition at a time.
+
+    python tools/lift/difftest.py            # run every case
+    python tools/lift/difftest.py -k shift   # only cases matching a substring
+    python tools/lift/difftest.py --keep     # leave the generated C behind
+
+Needs: unicorn, capstone (pip), and a C compiler (gcc/clang/cc, or $RECOMP_CC).
+"""
+
+import argparse
+import os
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass, field
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+
+from capstone import Cs, CS_ARCH_X86, CS_MODE_32
+from unicorn import Uc, UC_ARCH_X86, UC_MODE_32
+from unicorn import x86_const as X
+
+from tools.lift.lift32 import Lifter
+
+# One guest window, shared by both machines: code at the bottom, a scratch page
+# for memory operands, a stack in the middle. Small enough that comparing every
+# byte of it after each case is free.
+BASE    = 0x00400000
+SIZE    = 0x00040000
+SCRATCH = BASE + 0x10000
+STACK   = BASE + 0x20000
+
+# EFLAGS bit 1 reads as 1 on every x86 and IF is set in any user-mode process;
+# both machines start there so a comparison is not measuring the start state.
+EFLAGS_START = 0x202
+# See the note on g_fpu_cw in PRELUDE: precision control = double, so the model
+# and the hardware round identically instead of disagreeing in the last place.
+FPU_CONTROL_WORD = 0x027F
+
+# The flags both models claim to represent, by name and bit.
+FLAGS = (('CF', 0), ('PF', 2), ('AF', 4), ('ZF', 6), ('SF', 7), ('DF', 10), ('OF', 11))
+
+REGS = ('eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi')
+UC_REGS = {
+    'eax': X.UC_X86_REG_EAX, 'ecx': X.UC_X86_REG_ECX, 'edx': X.UC_X86_REG_EDX,
+    'ebx': X.UC_X86_REG_EBX, 'esp': X.UC_X86_REG_ESP, 'ebp': X.UC_X86_REG_EBP,
+    'esi': X.UC_X86_REG_ESI, 'edi': X.UC_X86_REG_EDI,
+}
+
+DEFAULT_REGS = {
+    'eax': 0x00000010, 'ecx': 0x00000003, 'edx': 0x00000000, 'ebx': 0x00000080,
+    'esp': STACK,      'ebp': 0x00000000, 'esi': SCRATCH,    'edi': SCRATCH + 0x100,
+}
+
+
+@dataclass
+class Case:
+    """Bytes to run, the state to run them from, and what not to compare.
+
+    `undef` names flags the architecture leaves undefined for this instruction
+    (a shift's OF for counts other than 1, the AF of a logic op). Hardware
+    still puts something there; comparing it would be measuring one CPU's
+    choice rather than a specification.
+
+    `known` is different: the two machines really do disagree and we have
+    decided to live with it. It names why, so the divergence reads as a
+    documented ceiling instead of a failure everyone learns to scroll past --
+    and if the case ever starts matching, the run says so and the note can go.
+    """
+    name: str
+    code: bytes
+    regs: dict = field(default_factory=dict)
+    mem: dict = field(default_factory=dict)   # guest VA -> bytes
+    undef: tuple = ()
+    known: str = ''      # a divergence we know about and have chosen to keep
+    precise_carry: bool = False   # lift with Lifter(precise_carry=True)
+    joins: tuple = ()    # code offsets that are join points: static flag state is dropped there
+
+    def start_regs(self):
+        r = dict(DEFAULT_REGS)
+        r.update(self.regs)
+        return r
+
+
+DIV_UNDEF = ('CF', 'OF', 'SF', 'ZF', 'AF', 'PF')
+MUL_UNDEF = ('SF', 'ZF', 'AF', 'PF')
+
+CASES = [
+    # --- x87: the stack, which nothing here used to look at ------------------
+    #
+    # Depth is the thing worth comparing. A handler that pushes or pops the
+    # wrong number of times leaves every later st(i) reading its neighbour, and
+    # the values stay plausible for a long time afterwards -- so a comparison
+    # of values alone can pass while the model is already one slot out. These
+    # cases check the balance first and the arithmetic second.
+    # fld dword [esi]; fcomp dword [esi+4]; fnstsw ax -- an unordered compare
+    # sets C3|C2|C0 (ah = 0x45). It used to read as "equal" (0x40).
+    Case('fpu.fcom-nan', bytes.fromhex('d906d85e04dfe0'),
+         mem={SCRATCH: struct.pack('<ff', float('nan'), 1.0)}),
+    Case('fpu.fcom-less', bytes.fromhex('d906d85e04dfe0'),
+         mem={SCRATCH: struct.pack('<ff', 0.5, 1.0)}),
+    # fld [esi]; fld [esi+4]; fucompp; fnstsw ax; test ah, 0x44; setp cl --
+    # MSVC's `a != b`. fucompp was unimplemented: no compare, and no pops.
+    Case('fpu.fucompp-equal', bytes.fromhex('d906d94604dae9dfe0f6c4440f9ac1'),
+         mem={SCRATCH: struct.pack('<ff', 1.0, 1.0)}, undef=('AF',)),
+    Case('fpu.fucompp-less', bytes.fromhex('d906d94604dae9dfe0f6c4440f9ac1'),
+         mem={SCRATCH: struct.pack('<ff', 0.5, 1.0)}, undef=('AF',)),
+    Case('fpu.fucompp-nan', bytes.fromhex('d906d94604dae9dfe0f6c4440f9ac1'),
+         mem={SCRATCH: struct.pack('<ff', float('nan'), 1.0)}, undef=('AF',)),
+    # MSVC's `x < 0.0`: fld; fcomp; fnstsw ax; test ah, 5; setp cl. PF must be
+    # the parity of (ah & 5) -- it was a constant, so the branch never varied.
+    Case('fpu.lt-zero-parity-neg', bytes.fromhex('d906d85e04dfe0f6c4050f9ac1'),
+         mem={SCRATCH: struct.pack('<ff', -0.5, 0.0)}, undef=('AF',)),
+    Case('fpu.lt-zero-parity-pos', bytes.fromhex('d906d85e04dfe0f6c4050f9ac1'),
+         mem={SCRATCH: struct.pack('<ff', 0.5, 0.0)}, undef=('AF',)),
+    # The x87 compares write C0 C2 C3, never EFLAGS, so a jcc after one still
+    # reads the integer instruction before it. MSVC schedules them that way:
+    # fld [esi]; fld [esi+4]; test ecx, ecx; fucom st(1); (fnstsw ax;)
+    # fstp st(1); sete dl; fstp st(0) (Bully's camera, 0x00509E84; the fnstsw
+    # is left out because this model has no TOP field to report). The sete
+    # read the floats instead, and Bully passed a null pointer on.
+    Case('fpu.fucom-keeps-eflags-zero', bytes.fromhex('d906d9460485c9dde1ddd90f94c2ddd8'),
+         regs={'ecx': 0}, mem={SCRATCH: struct.pack('<ff', 0.5, 1.0)}, undef=('AF',)),
+    Case('fpu.fucom-keeps-eflags-nonzero', bytes.fromhex('d906d9460485c9dde1ddd90f94c2ddd8'),
+         regs={'ecx': 3}, mem={SCRATCH: struct.pack('<ff', 1.0, 1.0)}, undef=('AF',)),
+    # ...and where the sete is a join point, so the lifter reads the flag kind
+    # at run time: the compare must not have changed that either.
+    Case('fpu.fucom-keeps-eflags-join', bytes.fromhex('d906d9460485c9dde1ddd90f94c2ddd8'),
+         regs={'ecx': 0}, mem={SCRATCH: struct.pack('<ff', 0.5, 1.0)}, undef=('AF',), joins=(11,)),
+    # fld; fld; test ecx, ecx; fcompp; sete dl
+    Case('fpu.fcompp-keeps-eflags', bytes.fromhex('d906d9460485c9ded90f94c2'),
+         regs={'ecx': 0}, mem={SCRATCH: struct.pack('<ff', 0.5, 1.0)}, undef=('AF',)),
+    # test ecx, ecx; fld [esi]; ftst; fstp st(0); sete dl
+    Case('fpu.ftst-keeps-eflags', bytes.fromhex('85c9d906d9e4ddd80f94c2'),
+         regs={'ecx': 0}, mem={SCRATCH: struct.pack('<f', 0.5)}, undef=('AF',)),
+    # The same with the setp at a join point (a branch target, or any
+    # instruction of a function that labels them all): the lifter forgets its
+    # static flag state there and the setp reads the kind at runtime
+    # (recomp_cond). That path had no parity -- jp fell back to _cf -- and The
+    # Movies' cursor clamp took `x < 0.0` as true for every x.
+    Case('fpu.lt-zero-parity-join-neg', bytes.fromhex('d906d85e04dfe0f6c4050f9ac1'),
+         mem={SCRATCH: struct.pack('<ff', -0.5, 0.0)}, undef=('AF',), joins=(10,)),
+    Case('fpu.lt-zero-parity-join-pos', bytes.fromhex('d906d85e04dfe0f6c4050f9ac1'),
+         mem={SCRATCH: struct.pack('<ff', 0.5, 0.0)}, undef=('AF',), joins=(10,)),
+    Case('fpu.push', bytes.fromhex('d9e8')),                       # fld1
+    Case('fpu.push-twice', bytes.fromhex('d9e8d9e8')),             # fld1; fld1
+    Case('fpu.push-pop', bytes.fromhex('d9e8ddd8')),               # fld1; fstp st(0)
+    Case('fpu.addp-pops-one', bytes.fromhex('d9e8d9e8dec1')),      # fld1; fld1; faddp
+    Case('fpu.store-pops', bytes.fromhex('d9e8dd1f')),             # fld1; fstp qword [edi]
+    Case('fpu.zero', bytes.fromhex('d9ee')),                       # fldz
+
+    # fxch has to actually exchange. Capstone reports `fxch st(1)` with BOTH
+    # registers - st(0) first - so reading its first operand gives st(0) and
+    # the swap becomes st(0) with st(0), which is nothing at all. Nothing
+    # crashes: the wrong one of two live values gets stored and the arithmetic
+    # after it stays plausible. So store the one that should have moved.
+    #
+    # fld 1.0; fld 3.0; fxch st(1); fstp qword [edi]  ->  3.0, not 1.0
+    Case('fpu.xch-1', bytes.fromhex('dd06dd4608d9c9dd1f'),
+         mem={SCRATCH: struct.pack('<dd', 1.0, 3.0)}),
+    # And at a depth greater than one, because an emitter that hardcodes st(1)
+    # passes the case above.
+    # fld 1; fld 2; fld 3; fxch st(2); fstp qword [edi]  ->  1.0
+    Case('fpu.xch-2', bytes.fromhex('dd06dd4608dd4610d9cadd1f'),
+         mem={SCRATCH: struct.pack('<ddd', 1.0, 2.0, 3.0)}),
+
+    # The popping arithmetic names its DESTINATION, unlike the non-popping
+    # form: `faddp st(1)` is st(1) = st(1) + st(0), and the result survives the
+    # pop because it was written one slot down. Written to st(0) instead it is
+    # thrown away by the very next pop, and the instruction returns the operand
+    # it was supposed to have added to.
+    #
+    # fld 1.0; fld 3.0; faddp st(1); fstp qword [edi]  ->  4.0, not 1.0
+    Case('fpu.addp-dest', bytes.fromhex('dd06dd4608dec1dd1f'),
+         mem={SCRATCH: struct.pack('<dd', 1.0, 3.0)}),
+    # fld 1; fld 2; fld 3; fmulp st(2); fstp st(0); fstp qword [edi]  ->  3.0
+    Case('fpu.mulp-dest-2', bytes.fromhex('dd06dd4608dd4610deca ddd8 dd1f'.replace(' ', '')),
+         mem={SCRATCH: struct.pack('<ddd', 1.0, 2.0, 3.0)}),
+    # fsubrp reverses the operands as well as naming the destination:
+    # fld 1.0; fld 3.0; fsubrp st(1); fstp qword [edi]  ->  3.0 - 1.0 = 2.0
+    Case('fpu.subrp-dest', bytes.fromhex('dd06dd4608dee1dd1f'),
+         mem={SCRATCH: struct.pack('<dd', 1.0, 3.0)}),
+
+    # Load and store a value back unchanged: any mangling shows in memory, and
+    # the stack must end where it started.
+    Case('fpu.load-store', bytes.fromhex('dd06dd1f'),              # fld [esi]; fstp [edi]
+         mem={SCRATCH: b'\x00\x00\x00\x00\x00\x00\xf0?'}),
+
+    # Arithmetic that is not exact in binary. At the x87 default of extended
+    # precision the hardware keeps eleven bits the model cannot, and the stored
+    # doubles differ in the last place; at PC=53 they must agree exactly.
+    Case('fpu.divide', bytes.fromhex('dd06dd4608def9dd1f'),
+         mem={SCRATCH: b'\x00\x00\x00\x00\x00\x00\xf0?' + b'\x00\x00\x00\x00\x00\x00\x08@'}),                            # 1.0 / 3.0
+    Case('fpu.multiply', bytes.fromhex('dd06dd4608dec9dd1f'),
+         mem={SCRATCH: b'\x00\x00\x00\x00\x00\x00\x08@' + b'\x00\x00\x00\x00\x00\x00\x08@'}),
+    Case('fpu.subtract', bytes.fromhex('dd06dd4608dee9dd1f'),
+         mem={SCRATCH: b'\x00\x00\x00\x00\x00\x00\xf0?' + b'\x00\x00\x00\x00\x00\x00\x08@'}),
+    Case('fpu.sqrt', bytes.fromhex('dd06d9fadd1f'),                # fld [esi]; fsqrt; fstp
+         mem={SCRATCH: b'\x00\x00\x00\x00\x00\x00\x00@'}),
+    Case('fpu.chs', bytes.fromhex('dd06d9e0dd1f'),                 # fld; fchs; fstp
+         mem={SCRATCH: b'\x00\x00\x00\x00\x00\x00\x08@'}),
+    Case('fpu.abs', bytes.fromhex('dd06d9e1dd1f'),                 # fld; fabs; fstp
+         mem={SCRATCH: struct.pack('<d', -7.5)}),
+
+    # Integer conversion, which is where a rounding mode disagreement shows up
+    # as a whole number rather than a last-place one.
+    Case('fpu.int-roundtrip', bytes.fromhex('db06db1f'),           # fild [esi]; fistp [edi]
+         mem={SCRATCH: struct.pack('<i', -12345)}),
+
+    # Single precision in, double out: the model holds everything as a double,
+    # so a float load that does not narrow first will disagree here.
+    # The one case that makes the control word above load-bearing rather than
+    # decorative. Every other division here rounds to the same double whether
+    # the hardware computed it at 53 or 64 bits, because a single operation
+    # followed by a store to double usually survives the double rounding.
+    #
+    # This one does not: at extended precision the quotient keeps eleven extra
+    # bits, and rounding *that* to a double lands one ulp away from rounding
+    # the exact quotient directly. Searching random divisions, about 1 in 4,000
+    # behaves this way -- rare enough to look like a flake, common enough that
+    # a suite of FPU cases would carry a couple of permanent unexplained
+    # divergences without the pin.
+    #
+    #   PC=53  ->  1.3295924020625665
+    #   PC=64  ->  1.3295924020625667
+    Case('fpu.double-rounding', bytes.fromhex('dd06dd4608def9dd1f'),
+         mem={SCRATCH: b'\xda\x02\xe7\x83\xb0e+C' + b'\xecs\x01@\x11\x9b$C'}),
+    Case('fpu.float-load', bytes.fromhex('d906dd1f'),              # fld dword; fstp qword
+         mem={SCRATCH: struct.pack('<f', 0.1)}),
+    # --- the plain arithmetic the lazy tuple is built for ---
+    # --- one-operand mul/div at 8 and 16 bits: AX and DX:AX, never EDX:EAX ---
+    #
+    # `div cl` divides AX by CL into AL/AH and leaves EDX alone. It was lifted
+    # as the 32-bit form, dividing EDX:EAX and overwriting EDX -- which in
+    # SimCity 2000's simulation (sub_0046A840) held a map-row pointer, and the
+    # next load through it faulted. div/idiv leave every flag undefined.
+    Case('div.r8', bytes.fromhex('f6f1'),                     # div cl
+         {'eax': 0xAAAA0107, 'ecx': 5, 'edx': 0x55667788}, undef=DIV_UNDEF),
+    Case('idiv.r8', bytes.fromhex('f6f9'),                    # idiv cl: -263 / 5
+         {'eax': 0xAAAAFEF9, 'ecx': 5, 'edx': 0x55667788}, undef=DIV_UNDEF),
+    Case('div.r16', bytes.fromhex('66f7f1'),                  # div cx: 65536 / 7
+         {'eax': 0xAAAA0000, 'ecx': 7, 'edx': 0xBBBB0001}, undef=DIV_UNDEF),
+    Case('idiv.r16', bytes.fromhex('66f7f9'),                 # idiv cx: -65536 / -7
+         {'eax': 0xAAAA0000, 'ecx': 0xFFF9, 'edx': 0xBBBBFFFF}, undef=DIV_UNDEF),
+    Case('mul.r8', bytes.fromhex('f6e1'),                     # mul cl: AX = AL * CL
+         {'eax': 0x123456F0, 'ecx': 3, 'edx': 0x55667788}, undef=MUL_UNDEF),
+    Case('imul.r8', bytes.fromhex('f6e9'),                    # imul cl: -16 * 3
+         {'eax': 0x123456F0, 'ecx': 3, 'edx': 0x55667788}, undef=MUL_UNDEF),
+    Case('mul.r16', bytes.fromhex('66f7e1'),                  # mul cx: DX:AX = AX * CX
+         {'eax': 0x1234F000, 'ecx': 0x0100, 'edx': 0x55667788}, undef=MUL_UNDEF),
+    Case('imul.r16', bytes.fromhex('66f7e9'),                 # imul cx: -4096 * 256
+         {'eax': 0x1234F000, 'ecx': 0x0100, 'edx': 0x55667788}, undef=MUL_UNDEF),
+    # --- a rep compare/scan with ECX = 0 runs no iterations and writes no
+    # flags: the jcc after it reads whatever came before. The CRT's strstr
+    # relies on it -- when the haystack runs out, `repne scasb` falls through
+    # with the NE left by the previous `repe cmpsb`. Lifted as "equal", the
+    # loop never ended (SimCity 2000 hung in its simulation).
+    Case('repne-scasb.ecx0-keeps-flags', bytes.fromhex('39c8f2ae'),   # cmp eax, ecx; repne scasb
+         {'eax': 5, 'ecx': 0}),
+    Case('repe-cmpsb.ecx0-keeps-flags', bytes.fromhex('39c8f3a6'),    # cmp eax, ecx; repe cmpsb
+         {'eax': 5, 'ecx': 0}),
+
+    Case('add', bytes.fromhex('01c8')),                       # add eax, ecx
+    Case('add.carry-out', bytes.fromhex('01c8'), {'eax': 0xFFFFFFFF, 'ecx': 2}),
+    Case('add.overflow', bytes.fromhex('01c8'), {'eax': 0x7FFFFFFF, 'ecx': 1}),
+    Case('sub', bytes.fromhex('29c8')),                       # sub eax, ecx
+    Case('sub.borrow', bytes.fromhex('29c8'), {'eax': 1, 'ecx': 2}),
+    Case('cmp.equal', bytes.fromhex('39c8'), {'eax': 7, 'ecx': 7}),
+
+    # --- AF: derived from the tuple, and previously not represented at all ---
+    Case('add.aux-carry', bytes.fromhex('01c8'), {'eax': 0x0F, 'ecx': 0x01}),
+    Case('sub.aux-borrow', bytes.fromhex('29c8'), {'eax': 0x10, 'ecx': 0x01}),
+
+    # --- INC/DEC preserve CF; the tuple's kind has to say so ---
+    Case('inc.preserves-cf', bytes.fromhex('f940')),          # stc; inc eax
+    Case('dec.preserves-cf', bytes.fromhex('f948')),          # stc; dec eax
+
+    # --- logic clears CF ---
+    Case('and.clears-cf', bytes.fromhex('f921c8')),           # stc; and eax, ecx
+    Case('xor.self', bytes.fromhex('f931c0')),                # stc; xor eax, eax
+    Case('or', bytes.fromhex('09c8')),                        # or eax, ecx
+    Case('test', bytes.fromhex('85c8')),                      # test eax, ecx
+
+    # --- shifts: CF is the running _cf, not the tuple ---
+    Case('shl', bytes.fromhex('c1e003'), undef=('OF', 'AF')),        # shl eax, 3
+    Case('shl.carry-out', bytes.fromhex('c1e004'), {'eax': 0x10000000}, undef=('OF', 'AF')),
+    Case('shr.1', bytes.fromhex('d1e8'), {'eax': 0x11}, undef=('AF',)),
+    Case('sar', bytes.fromhex('c1f805'), {'eax': 0x80000000}, undef=('OF', 'AF')),
+    # A shift of zero writes no flags at all, and the guard on the shift's flag
+    # publication now says exactly that.
+    Case('shift.by-zero', bytes.fromhex('f9c1e000'), {'eax': 0}, undef=('OF', 'AF')),
+    # --- rep movs/stos honour the direction flag ---
+    #
+    # The rep forms used to ignore DF entirely: always a forward memcpy, always
+    # incrementing. With `std` set a real CPU walks DOWN from esi/edi, so the
+    # lifted copy read and wrote from the wrong end and ran off past its
+    # buffer. MechCommander Gold's VFX_pane_copy takes that path for an
+    # overlapping blit, and it was overwriting the object after its
+    # destination -- a live C++ object, vtable and all.
+    Case('movsb.rep-backward', bytes.fromhex('fdf3a4'),      # std; rep movsb
+         {'ecx': 4, 'esi': SCRATCH + 3, 'edi': SCRATCH + 0x103},
+         mem={SCRATCH: b'ABCD'}),
+    Case('movsd.rep-backward', bytes.fromhex('fdf3a5'),      # std; rep movsd
+         {'ecx': 2, 'esi': SCRATCH + 4, 'edi': SCRATCH + 0x104},
+         mem={SCRATCH: b'ABCDEFGH'}),
+    Case('movsb.rep-forward', bytes.fromhex('fcf3a4'),       # cld; rep movsb
+         {'ecx': 4, 'esi': SCRATCH, 'edi': SCRATCH + 0x100},
+         mem={SCRATCH: b'ABCD'}),
+    Case('stosb.rep-backward', bytes.fromhex('fdf3aa'),      # std; rep stosb
+         {'eax': 0x5A, 'ecx': 4, 'edi': SCRATCH + 0x103}),
+    Case('stosd.rep-backward', bytes.fromhex('fdf3ab'),      # std; rep stosd
+         {'eax': 0x11223344, 'ecx': 2, 'edi': SCRATCH + 0x104}),
+
+    # --- string compare / scan, every width ---
+    #
+    # Only the byte forms were implemented, so `repe cmpsd` lifted to an empty
+    # statement -- and that is the aligned fast path in the MSVC 6 memcmp, which
+    # then returned whatever was in eax. Two identical buffers compared as
+    # different, and MechCommander Gold's config parser found none of its keys
+    # in a file it had read perfectly.
+    Case('cmpsd.repe-equal', bytes.fromhex('f3a7'),          # repe cmpsd
+         {'ecx': 2},
+         mem={SCRATCH: b'ABCDEFGH', SCRATCH + 0x100: b'ABCDEFGH'}),
+    Case('cmpsd.repe-differs', bytes.fromhex('f3a7'),
+         {'ecx': 2},
+         mem={SCRATCH: b'ABCDEFGH', SCRATCH + 0x100: b'ABCDwxyz'}),
+    Case('cmpsw.repe-differs', bytes.fromhex('f366a7'),      # repe cmpsw
+         {'ecx': 3},
+         mem={SCRATCH: b'ABCDEF', SCRATCH + 0x100: b'ABxxEF'}),
+    Case('cmpsb.repe-equal', bytes.fromhex('f3a6'),          # repe cmpsb
+         {'ecx': 4},
+         mem={SCRATCH: b'ABCD', SCRATCH + 0x100: b'ABCD'}, undef=('AF',)),
+    # The inlined memcmp sign idiom: the sbb reads CF straight after the loop.
+    Case('cmpsb.repe-less-sbb', bytes.fromhex('f3a61bdb'),   # repe cmpsb; sbb ebx,ebx
+         {'ecx': 4, 'ebx': 0x12345678},
+         mem={SCRATCH: b'ABCA', SCRATCH + 0x100: b'ABCD'}, undef=('AF',)),
+    Case('cmpsb.repe-greater-sbb', bytes.fromhex('f3a61bdb'),
+         {'ecx': 4, 'ebx': 0x12345678},
+         mem={SCRATCH: b'ABCZ', SCRATCH + 0x100: b'ABCD'}, undef=('AF',)),
+    Case('cmpsd.single', bytes.fromhex('a7'),                # cmpsd, no prefix
+         mem={SCRATCH: b'ABCD', SCRATCH + 0x100: b'ABCE'}),
+    # The count and the pointers advance for the element that ENDS the loop too,
+    # which is what `repne scasb; not ecx; dec ecx` depends on for strlen.
+    Case('scasb.repne-found', bytes.fromhex('f2ae'),         # repne scasb
+         {'eax': 0x41, 'ecx': 4},
+         mem={SCRATCH + 0x100: b'xyAB'}, undef=('AF',)),
+    Case('scasd.repne-found', bytes.fromhex('f2af'),         # repne scasd
+         {'eax': 0x44434241, 'ecx': 3},
+         mem={SCRATCH + 0x100: b'zzzzABCDwwww'}),
+
+    # x86 masks a shift count to 5 bits before doing anything, so `shl eax,0x6e`
+    # shifts by 14. Emitting the raw immediate shifted a uint32_t by more than
+    # its width, which is undefined in C -- the compiler may hold the operand,
+    # zero it, or use the low bits, and those disagree. MechCommander Gold has
+    # 172 of these.
+    Case('shl.count-masked', bytes.fromhex('c1e06e'),            # shl eax, 0x6e -> 14
+         {'eax': 0x0000FFFF}, undef=('OF', 'AF')),
+    Case('shr.count-masked', bytes.fromhex('c1e825'),            # shr eax, 0x25 -> 5
+         {'eax': 0xDEADBEEF}, undef=('OF', 'AF')),
+    Case('sar.count-masked', bytes.fromhex('c1f8ff'),            # sar eax, 0xff -> 31
+         {'eax': 0x80000000}, undef=('OF', 'AF')),
+    # ...and a count that masks to zero is a true no-op: CF has to survive it,
+    # which is also the case that made the carry read one bit past the operand.
+    Case('shl.count-masks-to-zero', bytes.fromhex('f9c1e0a0'),   # stc; shl eax, 0xa0 -> 0
+         {'eax': 0x12345678}, undef=('OF', 'AF')),
+
+    # The carry a shift writes has to reach its consumer. `shr ecx,1` leaves the
+    # odd bit in CF and the next branch decides whether a trailing byte gets
+    # copied -- which is the background blitter's entire inner loop.
+    Case('shr.publishes-cf', bytes.fromhex('d1e919c0'),          # shr ecx,1; sbb eax,eax
+         {'ecx': 0x00000007, 'eax': 0}, undef=('OF', 'AF')),
+    Case('shl.publishes-cf', bytes.fromhex('d1e019c9'),          # shl eax,1; sbb ecx,ecx
+         {'eax': 0x80000000, 'ecx': 0}, undef=('OF', 'AF')),
+
+    # --- the jcc/setcc PAIRING, which comparing flags never tested ---
+    #
+    # Everything above compares recomp_eflags() against hardware EFLAGS, and
+    # that derivation was right all along. What it could not see is the OTHER
+    # path: when the lifter knows the flag-setter statically it emits a CMP_*
+    # macro instead, and those macros SUBTRACT. Paired with an add or an inc,
+    # which added, the condition asked a different question entirely.
+    #
+    # `inc eax; jne` is how you ask "was that -1?". Against a subtracting macro
+    # it asked "was that 1?", and Treasure Cove (1996) put up "Could not find
+    # Resource File!" over a resource DLL it had just opened successfully.
+    #
+    # setcc goes through the same pairing and lands in a register, so a wrong
+    # answer shows up as a wrong value rather than only as a flag.
+    Case('inc.paired.sete-true', bytes.fromhex('400f94c3'),      # inc eax; sete bl
+         {'eax': 0xFFFFFFFF, 'ebx': 0}),
+    Case('inc.paired.sete-false', bytes.fromhex('400f94c3'),     # inc eax; sete bl
+         {'eax': 1, 'ebx': 0}),
+    Case('add.paired.sete', bytes.fromhex('01c80f94c3'),         # add eax,ecx; sete bl
+         {'eax': 1, 'ecx': 0xFFFFFFFF, 'ebx': 0}),
+    Case('add.paired.setb', bytes.fromhex('01c80f92c3'),         # add eax,ecx; setb bl
+         {'eax': 0xFFFFFFFF, 'ecx': 2, 'ebx': 0}),
+    Case('add.paired.setl', bytes.fromhex('01c80f9cc3'),         # add eax,ecx; setl bl
+         {'eax': 0x7FFFFFFF, 'ecx': 1, 'ebx': 0}),
+    # dec and sub pair with a subtracting macro correctly; guard that.
+    Case('dec.paired.sete', bytes.fromhex('480f94c3'),           # dec eax; sete bl
+         {'eax': 1, 'ebx': 0}),
+    Case('sub.paired.setl', bytes.fromhex('29c80f9cc3'),         # sub eax,ecx; setl bl
+         {'eax': 1, 'ecx': 2, 'ebx': 0}),
+
+    # --- and so must the instructions whose whole job IS the carry ---
+    #
+    # Borland's strcpy and strcat are one routine entered at two addresses, clc
+    # at one and stc at the other, with a single `jb` deciding whether to scan
+    # for the end of the destination first. With the carry unpublished, strcpy
+    # ran as strcat. The cmp ahead of each of these sets the carry the other
+    # way, so a stale read shows up in the result.
+    Case('clc.publishes-cf', bytes.fromhex('39c8f819c0'),        # cmp eax,ecx; clc; sbb eax,eax
+         {'eax': 1, 'ecx': 2}, undef=('OF', 'AF')),
+    Case('stc.publishes-cf', bytes.fromhex('39c8f919c0'),        # cmp eax,ecx; stc; sbb eax,eax
+         {'eax': 2, 'ecx': 1}, undef=('OF', 'AF')),
+    Case('cmc.publishes-cf', bytes.fromhex('39c8f519c0'),        # cmp eax,ecx; cmc; sbb eax,eax
+         {'eax': 1, 'ecx': 2}, undef=('OF', 'AF')),
+    # They leave ZF alone, so a je after one still reads the compare.
+    Case('stc.keeps-zf', bytes.fromhex('39c8f9'),                # cmp eax,ecx; stc
+         {'eax': 7, 'ecx': 7}, undef=('OF', 'AF')),
+
+    # --- carry consumers ---
+    Case('neg', bytes.fromhex('f7d8'), {'eax': 5}),
+    Case('neg.zero', bytes.fromhex('f7d8'), {'eax': 0}),
+    Case('adc', bytes.fromhex('f911c8')),                     # stc; adc eax, ecx
+    # cmp eax, ecx; sbb eax, eax
+    Case('sbb.idiom', bytes.fromhex('39c819c0'), {'eax': 1, 'ecx': 2},
+         known='cmp does not publish CF, so sbb reads the running _cf. Making it '
+               'precise deterministically broke Fury3; see the note on sbb in '
+               'lift32.py.'),
+
+    # --- PUSHFD/POPFD: the reason recomp_eflags exists ---
+    Case('pushfd.after-cmp', bytes.fromhex('39c89c58'), {'eax': 1, 'ecx': 2}),
+    Case('pushfd.after-add', bytes.fromhex('01c89c58'), {'eax': 0x0F, 'ecx': 1}),
+    Case('popfd.restores-cf',
+         # stc; pushfd; clc; popfd; adc ebx, 0 -- the carry has to survive the
+         # round trip or the adc adds the wrong number.
+         bytes.fromhex('f99cf89d83d300'), {'ebx': 0}),
+    Case('popfd.restores-df',
+         # std; pushfd; cld; popfd; lodsb -- DF decides which way esi moves.
+         bytes.fromhex('fd9cfc9dac'), undef=('CF', 'PF', 'AF', 'ZF', 'SF', 'OF')),
+
+    # --- memory operands, so the comparison covers stores too ---
+    Case('store', bytes.fromhex('8906'), {'eax': 0xAABBCCDD}),          # mov [esi], eax
+    Case('add.mem', bytes.fromhex('0106'), mem={SCRATCH: (0x11).to_bytes(4, 'little')}),
+    Case('push.pop', bytes.fromhex('50595b')),                          # push eax; pop ecx; pop ebx
+
+    # --- sub-register widths: the flag tuple stores what the operand read ---
+    Case('add.8bit-sign', bytes.fromhex('00d8'),                  # add al, bl
+         {'eax': 0x00, 'ebx': 0x80}),
+    Case('cmp.8bit-signed', bytes.fromhex('38d8'),                # cmp al, bl
+         {'eax': 0x80, 'ebx': 0x01}),
+    Case('add.16bit-carry', bytes.fromhex('6601c8'),              # add ax, cx
+         {'eax': 0xFFFF, 'ecx': 2}),
+
+    # --- rotates: the right width, and the carry they actually write ---
+    #
+    # All four were lifted as 32-bit whatever the operand width, so `rcr cl,1`
+    # fed the carry in at bit 31 where the write back to CL then dropped it.
+    # And they published no flags at all, so a following carry-conditional read
+    # the PREVIOUS instruction's carry. Gizmos & Gadgets' RLE sprite decoder is
+    # `sub bx,cx; rcr cl,1; rep movsw; jae` -- the jae asking "was the count
+    # odd?" -- and answering it with the subtract's borrow ran the decoder off
+    # the end of both the sprite and the framebuffer.
+    Case('rcr.8bit.carry-in', bytes.fromhex('f9d0d9'),            # stc; rcr cl, 1
+         {'ecx': 0xAAAAAA0A}, undef=('OF',)),
+    Case('rcr.8bit.carry-out', bytes.fromhex('f8d0d9'),           # clc; rcr cl, 1
+         {'ecx': 0xAAAAAA0B}, undef=('OF',)),
+    Case('rcl.8bit', bytes.fromhex('f9d0d1'),                     # stc; rcl cl, 1
+         {'ecx': 0xAAAAAA81}, undef=('OF',)),
+    Case('rcr.16bit', bytes.fromhex('f966d1d9'),                  # stc; rcr cx, 1
+         {'ecx': 0xAAAA0003}, undef=('OF',)),
+    Case('rcr.32bit', bytes.fromhex('f9d1d9'),                    # stc; rcr ecx, 1
+         {'ecx': 0x00000003}, undef=('OF',)),
+    Case('rol.8bit', bytes.fromhex('d0c1'), {'ecx': 0xAAAAAA81}, undef=('OF',)),
+    Case('ror.8bit', bytes.fromhex('d0c9'), {'ecx': 0xAAAAAA81}, undef=('OF',)),
+    Case('rol.16bit', bytes.fromhex('66d1c1'), {'ecx': 0xAAAA8001}, undef=('OF',)),
+    # The whole point: the rotate's carry has to reach the consumer, not the
+    # subtract's. sub cx,dx leaves CF=0; rcr cl,1 sets CF from the old bit 0,
+    # which is 1; sbb eax,eax is then -1 only if that carry got through.
+    Case('rcr.publishes-cf', bytes.fromhex('6629d1d0d919c0'),
+         {'ecx': 0x00000005, 'edx': 1, 'eax': 0}, undef=('OF', 'AF')),
+
+    # --- 16-bit push/pop move esp by two and keep the register's top half ---
+    #
+    # Lifted as their 32-bit cousins the stack still balanced, so it looked
+    # fine, and then `pop bp` replaced the whole of ebp with a zero-extended
+    # word. The `leave` after it handed that to esp, and the next stack access
+    # was down at 64 KB.
+    Case('push16.then.pop32', bytes.fromhex('6655665d'),          # push bp; pop bp
+         {'ebp': 0x0022FD48}),
+    Case('push16.esp-by-two', bytes.fromhex('6655'),              # push bp
+         {'ebp': 0x12345678}),
+    Case('pop16.keeps-high-half', bytes.fromhex('6650665b'),      # push ax; pop bx
+         {'eax': 0x0000BEEF, 'ebx': 0xDEAD0000}),
+
+    # --- setcc / cmovcc after test, which used to read the wrong macro -------
+    #
+    # `test a, b` leaves CF=0 and OF=0 and sets ZF/SF from `a & b`, so an
+    # ordering condition after it is a comparison of that result against ZERO.
+    # The jcc forms were mapped to the TEST_* macros; the setcc and cmovcc forms
+    # were looked up under their own spelling, missed, and fell back to
+    # CMP_LE(a, b) -- a comparison of the two operands. For the `test r, r`
+    # idiom that reads `r <= r`, true for every value in the register, so
+    # `setle al` returned 1 no matter what. MechCommander's
+    # PacketFile::seekPacket builds its return code out of exactly that and so
+    # failed on every call, which is what kept the campaign from loading.
+    #
+    # The sign of the register is the whole point, so each is run three ways.
+    # `xor a, b; jge` asks "same sign?". It mapped to CMP_GE(r, r) -- always
+    # true -- so Unreal's clipper never saw an edge cross a plane.
+    Case('setge.after-xor.signs-differ', bytes.fromhex('31c80f9dc3'),   # xor eax,ecx; setge bl
+         regs={'eax': 0xBF800000, 'ecx': 0x3F800000}),
+    Case('setge.after-xor.signs-same', bytes.fromhex('31c80f9dc3'),
+         regs={'eax': 0xBF800000, 'ecx': 0xC0000000}),
+    Case('setl.after-or.negative', bytes.fromhex('09c80f9cc3'),         # or eax,ecx; setl bl
+         regs={'eax': 0x80000000, 'ecx': 1}),
+    Case('setg.after-or.zero', bytes.fromhex('09c80f9fc3'),             # or eax,ecx; setg bl
+         regs={'eax': 0, 'ecx': 0}),
+    Case('setle.after-test.positive', bytes.fromhex('85db0f9ec0'),  # test ebx,ebx; setle al
+         {'ebx': 0x0000002C, 'eax': 0}),
+    Case('setle.after-test.zero', bytes.fromhex('85db0f9ec0'),
+         {'ebx': 0, 'eax': 0}),
+    Case('setle.after-test.negative', bytes.fromhex('85db0f9ec0'),
+         {'ebx': 0xFFFFFFF0, 'eax': 0}),
+    Case('setg.after-test.positive', bytes.fromhex('85db0f9fc0'),   # setg al
+         {'ebx': 0x0000002C, 'eax': 0}),
+    Case('setl.after-test.negative', bytes.fromhex('85db0f9cc0'),   # setl al
+         {'ebx': 0xFFFFFFF0, 'eax': 0}),
+    Case('setge.after-test.zero', bytes.fromhex('85db0f9dc0'),      # setge al
+         {'ebx': 0, 'eax': 0}),
+    # The whole tail of seekPacket: setle, dec, and, add -- the return code is
+    # 0 only when the AND result is above zero, and 0xBADF0004 otherwise.
+    Case('seekpacket.tail.ok', bytes.fromhex('31c085db0f9ec04825fcff2045050400dfba'),
+         {'ebx': 0x0000002C}),
+    Case('seekpacket.tail.fail', bytes.fromhex('31c085db0f9ec04825fcff2045050400dfba'),
+         {'ebx': 0}),
+    # `and` sets the same flags from the same value, so it takes the same path.
+    Case('setle.after-and.positive', bytes.fromhex('21c80f9ec2'),   # and eax,ecx; setle dl
+         {'eax': 0xFF, 'ecx': 0x2C, 'edx': 0}),
+    Case('cmovle.after-test.positive', bytes.fromhex('85db0f4ec1'), # test ebx,ebx; cmovle eax,ecx
+         {'ebx': 0x0000002C, 'eax': 0x11111111, 'ecx': 0x22222222}),
+
+    # --- bit strings: bt/bts with a register offset address past the dword ---
+    # The CRT's strcspn runs `bt [esp], eax` over a 256-bit map; bit 69 lives
+    # in the dword at +8. Reading [ea] for every bit was the bug. ZF is
+    # "unaffected" and OF/SF/AF/PF undefined for the bt family.
+    Case('bt.mem-bitstring.set', bytes.fromhex('0fa3060f92c1'),     # bt [esi],eax; setc cl
+         regs={'eax': 69}, mem={SCRATCH: bytes(8) + b' ' + bytes(23)},
+         undef=('OF', 'SF', 'AF', 'PF', 'ZF')),
+    Case('bt.mem-bitstring.clear', bytes.fromhex('0fa3060f92c1'),
+         regs={'eax': 69}, mem={SCRATCH: b' ' + bytes(31)},
+         undef=('OF', 'SF', 'AF', 'PF', 'ZF')),
+    Case('bts.mem-bitstring', bytes.fromhex('0fab060f92c1'),        # bts [esi],eax; setc cl
+         regs={'eax': 69}, mem={SCRATCH: bytes(32)},
+         undef=('OF', 'SF', 'AF', 'PF', 'ZF')),
+    Case('bts.reg', bytes.fromhex('0fabc30f92c1'),                  # bts ebx,eax; setc cl
+         regs={'eax': 0x45}, undef=('OF', 'SF', 'AF', 'PF', 'ZF')),
+    Case('btr.imm', bytes.fromhex('0fbaf3070f92c1'),                # btr ebx,7; setc cl
+         undef=('OF', 'SF', 'AF', 'PF', 'ZF')),
+    # `bt; jae` takes the branch on CF=0; setae is the same condition code.
+    Case('bt.setae.bit-clear', bytes.fromhex('0fa3060f93c1'),        # bt [esi],eax; setae cl
+         regs={'eax': 69}, mem={SCRATCH: bytes(32)},
+         undef=('OF', 'SF', 'AF', 'PF', 'ZF')),
+    Case('bt.setae.bit-set', bytes.fromhex('0fa3060f93c1'),
+         regs={'eax': 69}, mem={SCRATCH: bytes(8) + b' ' + bytes(23)},
+         undef=('OF', 'SF', 'AF', 'PF', 'ZF')),
+    # --- byte-sized read-modify-write and the flag it leaves ------------------
+    # The MSVC 6 small-block heap counts free entries per group in a byte:
+    # `dec byte ptr [ecx]; jne` (0x100A3D0B in Gunman's sw.dll).
+    Case('dec.mem8.to-zero', bytes.fromhex('fe0e0f95c1'),           # dec byte [esi]; setne cl
+         mem={SCRATCH: b'\x01' + bytes(31)}),
+    Case('dec.mem8.wraps', bytes.fromhex('fe0e0f95c1'),
+         mem={SCRATCH: bytes(32)}),
+    Case('dec.mem8.nonzero', bytes.fromhex('fe0e0f95c1'),
+         mem={SCRATCH: b'\x05' + bytes(31)}),
+    Case('inc.mem8.to-zero', bytes.fromhex('fe060f94c1'),           # inc byte [esi]; sete cl
+         mem={SCRATCH: b'\xff' + bytes(31)}),
+    Case('inc.cl.wraps', bytes.fromhex('fec10f94c2'),               # inc cl; sete dl
+         regs={'ecx': 0x123456FF}),
+    Case('dec.edx.to-zero', bytes.fromhex('4a0f95c1'),              # dec edx; setne cl
+         regs={'edx': 1}, undef=('AF',)),
+    Case('cmp.mem8.zero', bytes.fromhex('803e000f95c1'),            # cmp byte [esi],0; setne cl
+         mem={SCRATCH: b'\x80' + bytes(31)}),
+    Case('add.mem8.carry', bytes.fromhex('80060f0f92c1'),           # add byte [esi],0xf; setc cl
+         mem={SCRATCH: b'\xf8' + bytes(31)}),
+    # cmp sets CF, inc/dec must PRESERVE it, and setae/setb read the cmp's.
+    Case('cf.survives-inc', bytes.fromhex('83ff20fec10f93c2'),      # cmp edi,0x20; inc cl; setae dl
+         regs={'edi': 0x10, 'ecx': 0xFF}),
+    Case('cf.survives-dec', bytes.fromhex('83ff204a0f92c1'),        # cmp edi,0x20; dec edx; setb cl
+         regs={'edi': 0x10, 'edx': 1}, undef=('AF',)),
+    # sahf loads SF ZF AF PF CF from ah: the fmod loop's `sahf; jp` reads C2.
+    Case('sahf.pf', bytes.fromhex('b404' '9e' '0f9ac1'),             # mov ah,4; sahf; setp cl
+         regs={'eax': 0}, undef=('OF',)),
+    Case('sahf.cf-zf', bytes.fromhex('b441' '9e' '0f92c1' '0f94c2'), # mov ah,0x41; sahf; setb cl; sete dl
+         regs={'eax': 0}, undef=('OF',)),
+    Case('sahf.clear', bytes.fromhex('b400' '9e' '0f9ac1' '0f92c2'), # mov ah,0; sahf; setp cl; setb dl
+         regs={'eax': 0}, undef=('OF',)),
+    # xlatb: al = [ebx + al]
+    Case('xlatb', bytes.fromhex('d7'), regs={'ebx': SCRATCH, 'eax': 0x1234_5603},
+         mem={SCRATCH: bytes([0x10, 0x20, 0x30, 0x77]) + bytes(28)}),
+    # frndint rounds by the control word (floor/ceil in the CRT depend on it)
+    Case('frndint.nearest', bytes.fromhex('d96e08' 'd906' 'd9fc' 'db1f'),
+         mem={SCRATCH: b'\x00\x00 @\x00\x00\x00\x00\x7f\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'}),
+    Case('frndint.down', bytes.fromhex('d96e08' 'd906' 'd9fc' 'db1f'),
+         mem={SCRATCH: b'\x9a\x99\x99\xbe\x00\x00\x00\x00\x7f\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'}),
+    Case('frndint.up', bytes.fromhex('d96e08' 'd906' 'd9fc' 'db1f'),
+         mem={SCRATCH: b'\x9a\x99\x99>\x00\x00\x00\x00\x7f\n\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'}),
+    Case('frndint.chop', bytes.fromhex('d96e08' 'd906' 'd9fc' 'db1f'),
+         mem={SCRATCH: b'\x9a\x99\xd9\xbf\x00\x00\x00\x00\x7f\x0e\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'}),
+    # 80-bit loads/stores: the CRT's xword 2*pi (0x4001 C90FDAA22168C235)
+    # fld xword [esi]; fstp qword [edi]
+    Case('fld.m80', bytes.fromhex('db2e' 'dd1f'),
+         mem={SCRATCH: bytes.fromhex('35c26821a2da0fc90140') + bytes(22)}),
+    # fld qword [esi]; fstp xword [edi]; fld xword [edi]; fstp qword [edi+16]
+    Case('fstp.m80', bytes.fromhex('dd06' 'db3f' 'db2f' 'dd5f10'),
+         mem={SCRATCH: struct.pack('<d', -1234.5678) + bytes(24)}),
+    # the CRT's sin: fld; fxam (a normal: C2 set); fsin; fstp; fnstsw ax;
+    # sahf; setp cl -- stored first so TOP (which fnstsw does not model) is 0
+    Case('fsin.c2', bytes.fromhex('dd06' 'd9e5' 'd9fe' 'dd1f' 'dfe0' '9e' '0f9ac1'),
+         mem={SCRATCH: struct.pack('<d', 0.5) + bytes(24)}, undef=('OF',)),
+    # Quake's span stepper: the fraction adds carry into the texel address.
+    # add edx,eax; sbb ecx,ecx; add ebx,ebp; adc esi,[edi+ecx*4+4]
+    Case('span.carry', bytes.fromhex('01c2' '19c9' '01eb' '13748f04'),
+         regs={'eax': 0x8000_0000, 'edx': 0x9000_0000, 'ebx': 0xF000_0000,
+               'ebp': 0x2000_0000, 'esi': 0x100},
+         mem={SCRATCH + 0x100: struct.pack('<II', 7, 1000)}, undef=('AF',), precise_carry=True),
+    Case('span.nocarry', bytes.fromhex('01c2' '19c9' '01eb' '13748f04'),
+         regs={'eax': 0x1000_0000, 'edx': 0x2000_0000, 'ebx': 0x1000_0000,
+               'ebp': 0x2000_0000, 'esi': 0x100},
+         mem={SCRATCH + 0x100: struct.pack('<II', 7, 1000)}, undef=('AF',), precise_carry=True),
+    # the same without the option: the documented stale-carry ceiling
+    Case('span.carry.default', bytes.fromhex('01c2' '19c9' '01eb' '13748f04'),
+         regs={'eax': 0x8000_0000, 'edx': 0x9000_0000, 'ebx': 0xF000_0000,
+               'ebp': 0x2000_0000, 'esi': 0x100},
+         mem={SCRATCH + 0x100: struct.pack('<II', 7, 1000)}, undef=('AF',),
+         known='adc/sbb read the _cf variable, which add/sub/cmp do not write; '
+               'Lifter(precise_carry=True) derives it (off by default: Fury3)'),
+    Case('lock.inc', bytes.fromhex('f0ff06'),                       # lock inc dword [esi]
+         mem={SCRATCH: (41).to_bytes(4, 'little')}),
+    # lock xadd [esi], ecx: the old value comes back in ecx, flags as add
+    Case('lock.xadd', bytes.fromhex('f00fc10e'), regs={'ecx': 0xFFFFFFFF},
+         mem={SCRATCH: (1).to_bytes(4, 'little')}),
+    Case('xadd.byte', bytes.fromhex('0fc0c8'), regs={'eax': 0x7F, 'ecx': 0x01}),   # xadd al, cl
+    # lock cmpxchg [esi], ecx: equal -> [esi] = ecx; not equal -> eax = [esi]
+    Case('lock.cmpxchg.equal', bytes.fromhex('f00fb10e'), regs={'eax': 5, 'ecx': 9},
+         mem={SCRATCH: (5).to_bytes(4, 'little')}),
+    Case('lock.cmpxchg.differ', bytes.fromhex('f00fb10e'), regs={'eax': 4, 'ecx': 9},
+         mem={SCRATCH: (5).to_bytes(4, 'little')}),
+]
+
+# Every x87 register form, i = 1 and 2, from a stack of three distinct values
+# (st0 = 5, st1 = 3, st2 = 2), storing all three back. The DC/DE sub/div forms
+# are the classic trap: AT&T names them swapped, and disassemblers have too.
+def _x87_forms():
+    load = bytes.fromhex('dd06' 'dd4608' 'dd4610')           # fld [esi], [esi+8], [esi+16]
+    store = bytes.fromhex('dd1f' 'dd5f08' 'dd5f10')          # fstp [edi], [edi+8], [edi+16]
+    forms = {'d8c0': 'fadd', 'd8c8': 'fmul', 'd8d0': 'fcom', 'd8e0': 'fsub', 'd8e8': 'fsubr',
+             'd8f0': 'fdiv', 'd8f8': 'fdivr', 'dcc0': 'fadd.to', 'dcc8': 'fmul.to',
+             'dce0': 'dc.e0', 'dce8': 'dc.e8', 'dcf0': 'dc.f0', 'dcf8': 'dc.f8',
+             'dec0': 'faddp', 'dec8': 'fmulp', 'dee0': 'de.e0', 'dee8': 'de.e8',
+             'def0': 'de.f0', 'def8': 'de.f8', 'd9c0': 'fld.st', 'd9c8': 'fxch',
+             'ddd8': 'fstp.st'}
+    out = []
+    for op, name in forms.items():
+        for i in (1, 2):
+            b = bytes.fromhex(op[:2]) + bytes([int(op[2:], 16) + i])
+            pops = name in ('faddp', 'fmulp', 'fstp.st') or name.startswith('de.')
+            pushes = name == 'fld.st'
+            # store what is left: 3 values, minus a pop, plus a push
+            n = 3 - pops + pushes
+            out.append(Case('x87.%s.st%d' % (name, i), load + b + store[:2 + 3 * (n > 1) + 3 * (n > 2)]
+                            + (bytes.fromhex('dd5f18') if n > 3 else b''),
+                            mem={SCRATCH: struct.pack('<ddd', 2.0, 3.0, 5.0)}, undef=('OF',)))
+    return out
+
+
+CASES += _x87_forms()
+
+
+# SSE/SSE2 (lift32_sse.py). xmm0 and xmm1 are loaded from the scratch page,
+# the instruction runs, and both are stored back at edi (plus mm0 at edi+48
+# for the MMX conversions), so the memory comparison sees every lane. The
+# data has a NaN, a negative, an equal pair and -0.0 in it, which is where
+# min/max, the compares and the conversions differ from the obvious C.
+def _sse_forms():
+    load = bytes.fromhex('0f1006' '0f104e10')                  # movups xmm0, [esi]; xmm1, [esi+16]
+    store = bytes.fromhex('0f1107' '0f114f10' '0f7f4730')       # movups [edi], xmm0/xmm1; movq [edi+48], mm0
+    ps = struct.pack('<8f', 1.5, -2.25, 3.0e10, float('nan'), 0.5, -2.25, -0.0, 7.75)
+    pd = struct.pack('<4d', 1.5, float('nan'), 0.25, -3.0)
+    ints = struct.pack('<8i', 7, -9, 2**31 - 1, -2**31, 100, -1, 0, 65536)
+    extra = struct.pack('<ffII', 2.5, -1.75, 0x3F80, 0)     # [esi+32]: a float pair, an MXCSR (round down)
+    forms = {
+        # scalar single, register and memory sources
+        'addss': 'f30f58c1', 'subss': 'f30f5cc1', 'mulss': 'f30f59c1', 'divss': 'f30f5ec1',
+        'minss': 'f30f5dc1', 'maxss': 'f30f5fc1', 'sqrtss': 'f30f51c1',
+        'mulss.mem': 'f30f594610', 'addss.mem': 'f30f584620',
+        'movss.reg': 'f30f10c1', 'movss.load': 'f30f104620', 'movss.store': 'f30f114f20',
+        # packed single
+        'addps': '0f58c1', 'subps': '0f5cc1', 'mulps': '0f59c1', 'divps': '0f5ec1',
+        'minps': '0f5dc1', 'maxps': '0f5fc1', 'sqrtps': '0f51c1',
+        'andps': '0f54c1', 'andnps': '0f55c1', 'orps': '0f56c1', 'xorps': '0f57c1',
+        'movaps': '0f28c1', 'movhlps': '0f12c1', 'movlhps': '0f16c1',
+        'movlps.load': '0f124620', 'movhps.load': '0f164620',
+        'movlps.store': '0f134f20', 'movhps.store': '0f174f20',
+        'shufps.1b': '0fc6c11b', 'shufps.4e': '0fc6c14e', 'unpcklps': '0f14c1', 'unpckhps': '0f15c1',
+        'cmpeqss': 'f30fc2c100', 'cmpltps': '0fc2c101', 'cmpleps': '0fc2c102',
+        'cmpunordps': '0fc2c103', 'cmpnltps': '0fc2c105',
+        'movmskps': '0f50c0',
+        # compares into EFLAGS, and the lahf idiom after one
+        'comiss': '0f2fc1', 'ucomiss': '0f2ec1', 'ucomiss.lahf': '0f2ec19f', 'comiss.mem': '0f2f4610',
+        # conversions
+        'cvtsi2ss': 'f30f2ac0', 'cvttss2si': 'f30f2cc1', 'cvtss2si': 'f30f2dc1',
+        'cvtss2si.down': '0fae5628' 'f30f2dc8',              # ldmxcsr [esi+40]; cvtss2si ecx, xmm0
+        'stmxcsr': '0fae5f28',
+        'cvtps2pi': '0f2dc1', 'cvttps2pi': '0f2cc1', 'cvtpi2ps': '0f6f4620' '0f2ac0',
+        'cvtss2sd': 'f30f5ac1', 'cvtdq2ps': '0f5bc1', 'cvttps2dq': 'f30f5bc1', 'cvtps2dq': '660f5bc1',
+        # SSE2 integer on xmm
+        'pxor': '660fefc1', 'psrldq': '660f73d805', 'pslldq': '660f73f803',
+        'punpcklqdq': '660f6cc1', 'punpckhqdq': '660f6dc1', 'pshufd': '660f70c11b', 'paddd': '660ffec1',
+        'movd.in': '660f6ec0', 'movd.out': '660f7ec8', 'movq.reg': 'f30f7ec1', 'movq.store': '660fd64f20',
+    }
+    out = []
+    for name, op in forms.items():
+        for tag, data in (('', ps), ('.int', ints)) if name in ('cvtdq2ps', 'paddd', 'pshufd', 'psrldq',
+                                                                  'pslldq', 'movd.in', 'cvtsi2ss') else (('', ps),):
+            out.append(Case('sse.%s%s' % (name, tag), load + bytes.fromhex(op) + store,
+                            regs={'eax': 0xFFFFFF85}, mem={SCRATCH: data + extra},
+                            undef=('AF',) if 'lahf' in name else ()))
+    # packed integer SSE2 on xmm: the lane shifts (saturating counts included),
+    # compares, word extract/insert, byte mask, and the conversion to double.
+    # Each also has an MMX form, which these must never be lifted as.
+    for name, op in {'psrlq.imm': '660f73d00c', 'psllq.imm': '660f73f034', 'psrlq.xmm': '660fd3c1',
+                     'psrlq.mem': '660fd34620', 'psrld.imm': '660f72d005', 'pslld.imm': '660f72f01f',
+                     'psrad.imm': '660f72e004', 'psrad.sat': '660f72e021', 'psraw.imm': '660f71e003',
+                     'psrlw.sat': '660f71d011', 'psllw.imm': '660f71f004',
+                     'pcmpeqb': '660f74c1', 'pcmpeqw': '660f75c1', 'pcmpeqd': '660f76c1',
+                     'pcmpgtb': '660f64c1', 'pcmpgtw': '660f65c1', 'pcmpgtd': '660f66c1',
+                     'pmaxsw': '660feec1', 'pminsw': '660feac1',
+                     'pextrw': '660fc5c003', 'pextrw.6': '660fc5c906', 'pinsrw': '660fc4c005',
+                     'pinsrw.mem': '660fc44e0802', 'pmovmskb': '660fd7c0', 'cvtdq2pd': 'f30fe6c1'}.items():
+        for tag, data in (('', ps), ('.int', ints)):
+            out.append(Case('sse.%s%s' % (name, tag), load + bytes.fromhex(op) + store,
+                            regs={'eax': 0xFFFFFF85, 'ecx': 0x12345678}, mem={SCRATCH: data + extra}))
+    # double precision on its own data
+    for name, op in {'addsd': 'f20f58c1', 'subsd': 'f20f5cc1', 'mulsd': 'f20f59c1', 'divsd': 'f20f5ec1',
+                     'minsd': 'f20f5dc1', 'maxsd': 'f20f5fc1', 'comisd': '660f2fc1', 'ucomisd': '660f2ec1',
+                     'cvtsd2ss': 'f20f5ac1', 'cvttsd2si': 'f20f2cc1', 'xorpd': '660f57c1',
+                     'movsd.reg': 'f20f10c1', 'movsd.load': 'f20f104618', 'unpcklpd': '660f14c1'}.items():
+        out.append(Case('sse.%s' % name, load + bytes.fromhex(op) + store, mem={SCRATCH: pd + extra}))
+    # fcomi: fld [esi]; fld [esi+4]; fcomi st(1) / fcomip st(1) / fucomip; fstp what is left
+    for name, op, pops in (('fcomi', 'dbf1', 0), ('fcomip', 'dff1', 1), ('fucomip', 'dfe9', 1)):
+        for tag, data in (('less', (1.0, 0.5)), ('equal', (2.0, 2.0)), ('nan', (1.0, float('nan')))):
+            out.append(Case('x87.%s.%s' % (name, tag),
+                            bytes.fromhex('d906' 'd94604' + op + 'dd1f' + ('' if pops else 'dd5f08')),
+                            mem={SCRATCH: struct.pack('<ff', *data) + bytes(24)}))
+    # bsf/bsr: the index, and ZF with the destination left alone for 0
+    for name, op in (('bsf', '0fbcc1'), ('bsr', '0fbdc1')):
+        for v in (0x00F0, 0x80000001, 0):
+            out.append(Case('%s.%x' % (name, v), bytes.fromhex(op), regs={'ecx': v, 'eax': 0x1234},
+                            undef=('CF', 'OF', 'SF', 'AF', 'PF')))
+    return out
+
+
+CASES += _sse_forms()
+
+
+# ---------------------------------------------------------------- reference
+
+def run_unicorn(case):
+    """What the CPU does. The reference, not a second opinion."""
+    mu = Uc(UC_ARCH_X86, UC_MODE_32)
+    mu.mem_map(BASE, SIZE)
+    mu.mem_write(BASE, case.code)
+    for va, data in case.mem.items():
+        mu.mem_write(va, data)
+    for name, val in case.start_regs().items():
+        mu.reg_write(UC_REGS[name], val)
+    mu.reg_write(X.UC_X86_REG_EFLAGS, EFLAGS_START)
+    mu.reg_write(X.UC_X86_REG_FPCW, FPU_CONTROL_WORD)
+    mu.reg_write(X.UC_X86_REG_MXCSR, 0x1F80)   # what every Windows thread starts with
+
+    before = bytearray(mu.mem_read(BASE, SIZE))
+    mu.emu_start(BASE, BASE + len(case.code))
+    after = bytearray(mu.mem_read(BASE, SIZE))
+
+    return {
+        'regs': {n: mu.reg_read(UC_REGS[n]) for n in REGS},
+        'eflags': mu.reg_read(X.UC_X86_REG_EFLAGS),
+        'mem': mem_diff(before, after),
+        'fp_depth': fpu_depth(mu),
+        'st': fpu_stack(mu),
+    }
+
+
+def fpu_depth(mu):
+    """How many values are on the x87 stack.
+
+    x87 has no depth register. TOP in the status word is a rotating index that
+    starts at 0 on an empty stack and counts *down* as values are pushed, so
+    after n pushes it reads (0 - n) & 7. The model counts up from zero instead,
+    which is the same number stated the easy way; this converts.
+
+    Depth is the point of the whole exercise. A handler that pops the wrong
+    number of times leaves the stack shifted, every later st(i) reads its
+    neighbour, and the values can still look plausible for a long time. The
+    value comparison alone never shows it.
+    """
+    return (8 - ((mu.reg_read(X.UC_X86_REG_FPSW) >> 11) & 7)) & 7
+
+
+def fpu_stack(mu):
+    """[st(0), st(1), ...] as doubles, for the live entries only.
+
+    Unicorn's ST0..ST7 accessor returns the 64-bit mantissa with the exponent
+    and sign dropped, and its FP0..FP7 accessor returns (0, 0) on this build --
+    neither can be turned back into a number. So the values are not read out of
+    registers at all: the case is expected to store whatever it wants compared
+    into guest memory, which both machines already compare byte for byte.
+
+    This returns the depth-derived view only, so a case that stores nothing is
+    still checked for stack balance.
+    """
+    return []
+
+
+def mem_diff(before, after):
+    """Guest addresses either machine wrote, and what it left there."""
+    return {BASE + i: after[i] for i in range(len(after)) if after[i] != before[i]}
+
+
+# ---------------------------------------------------------------- lifted
+
+def lift_case(case):
+    """Lift one case's bytes to the body of a C function."""
+    md = Cs(CS_ARCH_X86, CS_MODE_32)
+    md.detail = True
+    lifter = Lifter(precise_carry=case.precise_carry)
+    lifter._labels = set()
+    lifter._jump_targets = set()
+    lifter._flag_state = None
+
+    body, seen = [], 0
+    for insn in md.disasm(bytes(case.code), BASE):
+        seen += insn.size
+        if insn.address - BASE in case.joins:
+            lifter._flag_state = None          # what generate.py does at a label
+        for line in lifter.lift_instruction(insn):
+            body.append('    ' + line)
+    if seen != len(case.code):
+        raise SystemExit(f'{case.name}: capstone decoded {seen} of {len(case.code)} bytes')
+    return body
+
+
+PRELUDE = r'''/* generated by tools/lift/difftest.py -- do not edit */
+#define RECOMP_GENERATED_CODE
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "recomp_types.h"
+
+uint32_t g_eax, g_ecx, g_edx, g_esp, g_ebx, g_esi, g_edi, g_ebp;
+double   g_st[8];
+int      g_fp_top;
+/* Round to nearest, all exceptions masked, and precision control = double
+   (53-bit) rather than the x87 default of extended (64-bit).
+
+   The model holds the x87 stack as C doubles. At the hardware's default
+   extended precision it carries eleven more bits of mantissa than the model
+   can, so add/sub/mul/div/sqrt disagree in the last place for reasons that
+   have nothing to do with lifting, and every real bug is buried in that noise.
+   At PC=53 both sides are correctly rounded to double and those five must
+   agree exactly. Only the transcendentals -- hardware polynomial against libm
+   -- still diverge, and those are marked `known` on the case. */
+uint16_t g_fpu_cw = 0x027F;
+uint16_t g_seg_cs, g_seg_ds, g_seg_es, g_seg_fs, g_seg_gs, g_seg_ss;
+uint32_t g_fs_base, g_gs_base, g_cur_func;
+uint64_t g_mm[8];
+xmm_t    g_xmm[8];
+uint32_t g_mxcsr = 0x1F80;
+ptrdiff_t g_mem_base;
+void recomp_dump_trace(const char *why) { (void)why; }
+
+#define WIN_BASE 0x%08Xu
+#define WIN_SIZE 0x%08Xu
+
+static unsigned char *win, *ref;
+static uint32_t out_eflags;
+'''
+
+CASE_FN = r'''
+static void case_%d(void) {   /* %s */
+    int _fpu_cmp = 0;
+    uint32_t _cf = 0;
+    int _df = 1;
+    uint32_t _flag_a = 0, _flag_b = 0;
+    uint32_t _flag_k = FK_NONE;
+%s
+    /* The whole lazy model, collapsed into the word hardware would have. */
+    out_eflags = recomp_eflags(_flag_k, _flag_a, _flag_b, _cf, _df);
+}
+'''
+
+
+def c_bytes(data):
+    return ', '.join(f'0x{b:02X}' for b in data)
+
+
+def build_c(cases):
+    out = [PRELUDE % (BASE, SIZE)]
+    for i, case in enumerate(cases):
+        out.append(CASE_FN % (i, case.name, '\n'.join(lift_case(case))))
+
+    out.append('int main(void) {\n'
+               '    uint32_t i;\n'
+               '    win = (unsigned char *)malloc(WIN_SIZE);\n'
+               '    ref = (unsigned char *)malloc(WIN_SIZE);\n'
+               '    g_mem_base = (ptrdiff_t)win - (ptrdiff_t)WIN_BASE;\n')
+    for i, case in enumerate(cases):
+        regs = case.start_regs()
+        seeds = []
+        for va, data in case.mem.items():
+            seeds.append(f'    {{ static const unsigned char s[] = {{{c_bytes(data)}}};\n'
+                         f'      memcpy(win + (0x{va:08X}u - WIN_BASE), s, sizeof s); }}')
+        seed_text = '\n'.join(seeds)
+        out.append(f'''
+    /* ---- case {i}: {case.name} ---- */
+    memset(win, 0, WIN_SIZE);
+{seed_text}
+    memcpy(ref, win, WIN_SIZE);
+    g_eax = 0x{regs['eax']:08X}u; g_ecx = 0x{regs['ecx']:08X}u;
+    g_edx = 0x{regs['edx']:08X}u; g_ebx = 0x{regs['ebx']:08X}u;
+    g_esp = 0x{regs['esp']:08X}u; g_ebp = 0x{regs['ebp']:08X}u;
+    g_esi = 0x{regs['esi']:08X}u; g_edi = 0x{regs['edi']:08X}u;
+    memset(g_st, 0, sizeof g_st); g_fp_top = 0;
+    memset(g_mm, 0, sizeof g_mm); memset(g_xmm, 0, sizeof g_xmm); g_mxcsr = 0x1F80;
+    out_eflags = 0;
+    case_{i}();
+    printf("CASE {i}\\n");
+    printf("R %08X %08X %08X %08X %08X %08X %08X %08X\\n",
+           g_eax, g_ecx, g_edx, g_ebx, g_esp, g_ebp, g_esi, g_edi);
+    printf("F %08X\\n", out_eflags);
+    printf("T %d\\n", g_fp_top);
+    {{ int _k; for (_k = 0; _k < g_fp_top && _k < 8; _k++)
+        printf("S %d %.17g\\n", _k, g_st[_k]); }}
+    for (i = 0; i < WIN_SIZE; i++)
+        if (win[i] != ref[i]) printf("M %08X %02X\\n", (unsigned)(WIN_BASE + i), win[i]);
+    printf("ENDCASE\\n");
+''')
+    out.append('    return 0;\n}\n')
+    return ''.join(out)
+
+
+def compilers():
+    """Every C compiler worth trying, best first."""
+    if os.environ.get('RECOMP_CC'):
+        return [os.environ['RECOMP_CC']]
+    found = [shutil.which(n) for n in ('gcc', 'clang', 'cc')]
+    # Not being on PATH is normal on Windows, where the compiler lives in an
+    # environment you have to enter first.
+    found += [g for g in (r'C:\msys64\mingw64\bin\clang.exe',
+                          r'C:\msys64\mingw64\bin\gcc.exe',
+                          r'C:\msys64\ucrt64\bin\gcc.exe',
+                          r'C:\mingw64\bin\gcc.exe') if os.path.exists(g)]
+    found = [c for c in found if c]
+    if not found:
+        raise SystemExit('no C compiler found: put gcc/clang on PATH or set RECOMP_CC')
+    return found
+
+
+def run_lifted(cases, workdir, keep):
+    src = os.path.join(workdir, 'difftest.c')
+    exe = os.path.join(workdir, 'difftest.exe')
+    with open(src, 'w') as f:
+        f.write(build_c(cases))
+
+    include = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..',
+                                           'runtime', 'recomp32'))
+    # An installed compiler is not a working one -- a broken MSYS2 gcc exits 1
+    # with no diagnostic at all -- so take the first that produces a binary
+    # rather than the first that exists.
+    err = ''
+    for cc in compilers():
+        r = subprocess.run([cc, '-O0', '-g', '-w', '-I', include, src, '-o', exe],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            break
+        err += f'--- {cc} exited {r.returncode}\n{r.stdout}{r.stderr}'
+    else:
+        raise SystemExit(f'no compiler could build the test:\n{err}')
+
+    out = subprocess.run([exe], capture_output=True, text=True)
+    if out.returncode != 0:
+        raise SystemExit(f'lifted program exited {out.returncode}:\n{out.stderr}')
+    return parse_output(out.stdout)
+
+
+def parse_output(text):
+    results, cur = [], None
+    for line in text.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        if parts[0] == 'CASE':
+            cur = {'regs': {}, 'eflags': 0, 'mem': {}, 'fp_depth': 0, 'st': []}
+        elif parts[0] == 'R':
+            cur['regs'] = {n: int(v, 16) for n, v in zip(REGS, parts[1:])}
+        elif parts[0] == 'F':
+            cur['eflags'] = int(parts[1], 16)
+        elif parts[0] == 'T':
+            cur['fp_depth'] = int(parts[1])
+        elif parts[0] == 'S':
+            cur['st'].append(float(parts[2]))
+        elif parts[0] == 'M':
+            cur['mem'][int(parts[1], 16)] = int(parts[2], 16)
+        elif parts[0] == 'ENDCASE':
+            results.append(cur)
+    return results
+
+
+# ---------------------------------------------------------------- compare
+
+def diff(case, lifted, real):
+    """Every architectural field the two machines disagree on, by name."""
+    out = []
+    for name in REGS:
+        if lifted['regs'][name] != real['regs'][name]:
+            out.append((name, f"{lifted['regs'][name]:08X}", f"{real['regs'][name]:08X}"))
+
+    for name, bit in FLAGS:
+        if name in case.undef:
+            continue
+        a = (lifted['eflags'] >> bit) & 1
+        b = (real['eflags'] >> bit) & 1
+        if a != b:
+            out.append((name, str(a), str(b)))
+
+    if lifted.get('fp_depth', 0) != real.get('fp_depth', 0):
+        out.append(('x87 depth', str(lifted.get('fp_depth', 0)),
+                    str(real.get('fp_depth', 0))))
+
+    for addr in sorted(set(lifted['mem']) | set(real['mem'])):
+        a, b = lifted['mem'].get(addr), real['mem'].get(addr)
+        if a != b:
+            out.append((f'[{addr:08X}]',
+                        '--' if a is None else f'{a:02X}',
+                        '--' if b is None else f'{b:02X}'))
+    return out
+
+
+def main():
+    ap = argparse.ArgumentParser(description='differential test: lifted C vs Unicorn')
+    ap.add_argument('-k', '--filter', help='only cases whose name contains this')
+    ap.add_argument('--keep', action='store_true', help='keep the generated C')
+    ap.add_argument('-v', '--verbose', action='store_true', help='show passing cases')
+    args = ap.parse_args()
+
+    cases = [c for c in CASES if not args.filter or args.filter in c.name]
+    if not cases:
+        raise SystemExit('no cases match')
+
+    workdir = tempfile.mkdtemp(prefix='difftest-')
+    try:
+        lifted = run_lifted(cases, workdir, args.keep)
+    finally:
+        if args.keep:
+            print(f'generated source in {workdir}')
+        else:
+            shutil.rmtree(workdir, ignore_errors=True)
+
+    if len(lifted) != len(cases):
+        raise SystemExit(f'lifted program reported {len(lifted)} of {len(cases)} cases')
+
+    failed = ceilings = 0
+    md = Cs(CS_ARCH_X86, CS_MODE_32)
+    for case, got in zip(cases, lifted):
+        want = run_unicorn(case)
+        fields = diff(case, got, want)
+        asm = '; '.join(f'{i.mnemonic} {i.op_str}'.strip()
+                        for i in md.disasm(bytes(case.code), BASE))
+        if fields and case.known:
+            ceilings += 1
+            print(f'KNOWN {case.name}   [{asm}]')
+            for name, a, b in fields:
+                print(f'       {name:>10}  lifted {a:>8}   cpu {b:>8}')
+            print(f'       -- {case.known}')
+        elif fields:
+            failed += 1
+            print(f'FAIL {case.name}   [{asm}]')
+            for name, a, b in fields:
+                print(f'       {name:>10}  lifted {a:>8}   cpu {b:>8}')
+        elif case.known:
+            print(f'FIXED {case.name}   [{asm}] -- matches now; drop the known= note')
+        elif args.verbose:
+            print(f'ok   {case.name}   [{asm}]')
+
+    matched = len(cases) - failed - ceilings
+    print(f'\n{matched}/{len(cases)} match hardware, '
+          f'{ceilings} known divergences, {failed} failures')
+    return 1 if failed else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
