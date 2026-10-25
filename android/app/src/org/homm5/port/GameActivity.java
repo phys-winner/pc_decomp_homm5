@@ -985,7 +985,7 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
         }
 
         private void moveSingle(float x, float y) {
-            if (!panning && Math.hypot(x - downX, y - downY) > dp(8)) {
+            if (!panning && Math.hypot(x - downX, y - downY) > dp(16)) {
                 cancelHold();
                 panning = true;
                 lastTapTime = -1;

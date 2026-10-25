@@ -166,6 +166,19 @@ public class TouchControlsCheck {
         near(events.get(2).dx,.1f); near(events.get(2).dy,.1f);
         t.onTouchEvent(one(1,10,448,280)); kinds(0,5,6,7); clear();
 
+        // A real contact can drift 13 dp inside a troop cell before the hold fires.
+        t.onTouchEvent(one(0,10,320,200)); advance(200);
+        t.onTouchEvent(one(2,10,333,200)); kinds(0);
+        advance(300); kinds(0,5);
+        t.onTouchEvent(one(2,10,240,200)); kinds(0,5,6);
+        t.onTouchEvent(one(1,10,240,200)); kinds(0,5,6,7); clear();
+
+        // Leaving that tolerance still commits to a fast drag, even after a pause.
+        t.onTouchEvent(one(0,10,320,200)); advance(200);
+        t.onTouchEvent(one(2,10,337,200)); kinds(0,3);
+        advance(500); kinds(0,3);
+        t.onTouchEvent(one(1,10,240,200)); kinds(0,3,3,7); clear();
+
         // Pointer IDs and indices may reorder; transform contains centroid pan and zoom.
         t.onTouchEvent(one(0,71,100,100));
         t.onTouchEvent(two(5,0,93,300,100,71,100,100)); kinds(0,8);
