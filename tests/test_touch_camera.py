@@ -322,8 +322,21 @@ int main(void) {
     limits_va=0x43000;limits_present=0;int calls=limit_calls;
     assert(void_touch_camera_tilt(0x10000,0,-10000)&&installed[1]==-0.05f&&limit_calls==calls);
     memcpy(GPTR(0x43000),limits,24);limits_present=1;
-    MEM32(0x10000)=0xE1DA84;sets=set_calls;
-    assert(!void_touch_camera_tilt(0x10000,1,100));   /* the battle keeps its pitch */
+    MEM32(0x10000)=0xE1DA84;memcpy(GPTR(0x40000),adventure,40);sets=set_calls;
+    assert(void_touch_camera_tilt(0x10000,1,100));
+    assert(fabsf(installed[1]-(-1.2f-.15f))<.00001f&&set_calls==sets+1&&limit_calls==calls);
+    for(int i=0;i<10;++i) if(i!=1) assert(installed[i]==adventure[i]);
+    assert(void_touch_camera_tilt(0x10000,1,10000)&&installed[1]==-1.5f);
+    assert(void_touch_camera_tilt(0x10000,1,-10000)&&installed[1]==-.05f);
+    /* Real battle operator bounds are -60..-35 degrees; honor them across subsequent native updates. */
+    put_float(0x2114C,-1.04719758f);put_float(0x21150,-.61086524f);
+    adventure[1]=-.8f;memcpy(GPTR(0x40000),adventure,40);
+    assert(void_touch_camera_tilt(0x10000,1,100)&&fabsf(installed[1]-(-.8f-.15f))<.00001f);
+    assert(void_touch_camera_tilt(0x10000,1,10000)&&installed[1]==get_float(0x2114C));
+    assert(void_touch_camera_tilt(0x10000,1,-10000)&&installed[1]==get_float(0x21150));
+    put_float(0x2114C,NAN);assert(void_touch_camera_tilt(0x10000,1,10000)&&installed[1]==-1.5f);
+    put_float(0x2114C,0);put_float(0x21150,0);
+    sets=set_calls;
     MEM32(0x10000)=0xE230E4;
     assert(!void_touch_camera_tilt(0x10000,0,0)&&!void_touch_camera_tilt(0x10000,0,NAN)&&!void_touch_camera_tilt(0x10000,0,INFINITY));
     assert(set_calls==sets&&limit_calls==calls);
@@ -373,6 +386,26 @@ int main(void) {
     assert(set_calls==sets); /* Moving a creature does not move the camera again. */
     MEM32(0x102E0)=0;
     void_touch_combat_frame(0x10000,985,439,262,100,150);assert(MEMF(0x20060)==0);
+    /* Zoom/next-unit motion before the old 24-frame calibration cannot shift the battle view. */
+    MEM32(0x102E0)=0x80;MEMF(0xF74BE4)=439;MEMF(0x20070)=21;
+    framing.camera=0;
+    float combat_centre=(262.0f+40)/439-1;
+    void_touch_combat_frame(0x10000,985,439,262,340,390);
+    assert(framing.phase==0&&framing.stage==2&&fabsf(framing.centre-combat_centre)<.0001f);
+    camera_projection();assert(projected_rod>26&&projected_rod<28&&fabsf(projected_centre-combat_centre)<.0001f);
+    float combat_ratio=framing.ratio;
+    for(int i=0;i<48;++i){
+        put_float(0x40000,i<12?42.0f-(float)i:21.0f);put_float(0x40008,i<12?-.1f*i:-1.1f);
+        void_touch_combat_frame(0x10000,985,439,262,i<12?340.0f:-500.0f,i<12?390.0f:1100.0f);
+        camera_projection();
+        assert(fabsf(framing.centre-combat_centre)<.0001f&&framing.ratio==combat_ratio);
+        assert(fabsf(projected_centre-combat_centre)<.0001f&&MEMF(0x20070)==21&&MEMF(0x20060)==0);
+    }
+    /* At UI200 the arena anchor stays at the centre of the visible 40..hud_top gap. */
+    MEMF(0xF74BE4)=384;
+    void_touch_combat_frame(0x10000,832,384,213,10,380);camera_projection();
+    assert(fabsf(projected_centre-((213.0f+40)/384-1))<.0001f&&framing.ratio>1.4f&&framing.ratio<1.42f);
+    MEMF(0x20070)=42;
     MEM32(0x10000)=0xE230E4;MEMF(0xF74BE4)=439;
     void_touch_adventure_frame(0x10000,439,45,220);
     camera_projection();
@@ -399,11 +432,10 @@ int main(void) {
     registered();assert(g_eax==0x60000&&g_esp==0x7000C&&!MEM32(0x60000)&&!MEM32(0x60004));
     assert(MEM32(0x60008)==0xABCDEF&&!edge_calls);
     touch_mode=0;registered();assert(edge_calls==1&&g_eax==0x12345678&&g_esp==0x70018);
-    puts("PASS native camera: original projection ABI/pan/pinch, radians yaw/wrap, native town operator/rod limits, stale city camera rejection, unchanged native pose and touch-only edge suppression; sensitivity scales turn/zoom/tilt but not pan, tilt within the mode's pitch limits (defaults otherwise, none in battle), pose read/glide");
+    puts("PASS native camera: original projection ABI/pan/pinch, radians yaw/wrap, native town operator/rod limits, stale city camera rejection, unchanged native pose and touch-only edge suppression; sensitivity scales turn/zoom/tilt but not pan, adventure mode pitch limits and bounded combat/town tilt, pose read/glide");
     return 0;
 }
 '''
-
 
 class TouchCameraTest(unittest.TestCase):
     def camera_source(self):
@@ -415,6 +447,14 @@ class TouchCameraTest(unittest.TestCase):
     def test_camera_engine_contract(self):
         source = self.camera_source()
         compile_probe("touch_camera", HARNESS, {"touch_camera_impl.h": source})
+
+    def test_battle_framing_regression_rejects_delayed_label_calibration(self):
+        source = self.camera_source()
+        old = "if (MEM32(screen + 0x2E0) != 0x1000) {"
+        self.assertIn(old, source)
+        with self.assertRaisesRegex(AssertionError, "combat_centre"):
+            compile_probe("touch_camera_framing_negative", HARNESS, {
+                "touch_camera_impl.h": source.replace(old, old.replace(") {", " && framing.phase == 999) {"), 1)})
 
     def test_pivot_regression_rejects_old_pan_only_compensation(self):
         source = self.camera_source()

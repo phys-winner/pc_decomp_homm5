@@ -74,10 +74,15 @@ static uint32_t render_reset(uint32_t device, uint32_t hwnd)
 static void render_resize_ui(uint32_t width, uint32_t height)
 {
     if (MEMF(0x00F74BF0u) == (float)width && MEMF(0x00F74BF4u) == (float)height) return;
+#ifdef HOMM5_LEGACY_UI
+    void void_touch_legacy_resize(uint32_t width, uint32_t height);
+    void_touch_legacy_resize(width, height);
+#else
     /* Original UI resize is fastcall(width,height), RET 0. It owns coordinate
        updates and relayout; the following scale pump restores the chosen UI size. */
     g_ecx = width; g_edx = height;
     void_call_guest(0x00B295D0u, 0, NULL, 1);
+#endif
 }
 
 void void_touch_set_render_scale(float scale)
@@ -98,7 +103,11 @@ void void_touch_render_pump(void)
         !void_vm_readable(0x01002991u, 1) || !MEM8(0x01002991u) ||
         !void_vm_readable(0x010029A8u, 4) ||
         !void_vm_readable(0x00F74BF0u, 8) ||
-        !void_dispatch_find(0x00A3FFC0u) || !void_dispatch_find(0x00B295D0u)) return;
+        !void_dispatch_find(0x00A3FFC0u)
+#ifndef HOMM5_LEGACY_UI
+        || !void_dispatch_find(0x00B295D0u)
+#endif
+        ) return;
     uint32_t hwnd = void_window_main(), device = MEM32(0x010029A8u);
     if (!hwnd || void_window_thread(hwnd) != void_thread_id() ||
         render_read32(0x010024FCu) != hwnd || MEM32(0x0100294Cu) != hwnd ||

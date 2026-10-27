@@ -29,6 +29,16 @@
         android:windowSoftInputMode="adjustNothing"
         android:configChanges="orientation|screenSize|keyboardHidden|keyboard|navigation|screenLayout|uiMode"
         android:launchMode="singleTask" />
+    <activity android:name=".VanillaGameActivity" android:exported="true" android:label="Heroes V"
+        android:screenOrientation="sensorLandscape" android:windowSoftInputMode="adjustNothing"
+        android:process=":vanilla" android:taskAffinity="org.homm5.port.vanilla"
+        android:configChanges="orientation|screenSize|keyboardHidden|keyboard|navigation|screenLayout|uiMode"
+        android:launchMode="singleTask" />
+    <activity android:name=".HofGameActivity" android:exported="true" android:label="Hammers of Fate"
+        android:screenOrientation="sensorLandscape" android:windowSoftInputMode="adjustNothing"
+        android:process=":hof" android:taskAffinity="org.homm5.port.hof"
+        android:configChanges="orientation|screenSize|keyboardHidden|keyboard|navigation|screenLayout|uiMode"
+        android:launchMode="singleTask" />
     <service android:name=".UnpackService" android:exported="false" android:process=":launcher" />
     <service android:name=".TextureService" android:exported="false" android:process=":launcher" />
   </application>

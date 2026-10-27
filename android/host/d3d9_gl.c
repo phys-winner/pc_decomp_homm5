@@ -828,7 +828,7 @@ void d3d_buffer_flush(d3d_buffer *b);
 void d3d_buffer_flush_range(d3d_buffer *b, uint32_t lo, uint32_t hi);
 
 /* Bound the bytes the GPU actually fetches, not the pooled allocator's whole
- * Lock(0, 0). Scan the CPU index shadow once for all vertex streams. */
+ * Lock(0, 0). Reuse a scanned index range until its next writable lock. */
 static int draw_vertex_bounds(d3d_buffer *ib, const void *up_indices, int up_i32,
     uint32_t start, uint32_t count, int indexed, uint32_t base, uint32_t start_index,
     uint32_t *first, uint32_t *last)
@@ -841,25 +841,32 @@ static int draw_vertex_bounds(d3d_buffer *ib, const void *up_indices, int up_i32
     }
     int i32 = up_indices ? up_i32 : ib && ib->format == 102;
     const uint8_t *indices = (const uint8_t *)up_indices;
+    uint32_t lo = UINT32_MAX, hi = 0;
+    int cached = 0;
     if (!indices) {
         uint64_t offset = (uint64_t)start_index * (i32 ? 4u : 2u);
         uint64_t end = offset + (uint64_t)count * (i32 ? 4u : 2u);
         if (!ib || end > ib->size) return 0;
-        indices = (const uint8_t *)GPTR(ib->shadow) + offset;
+        cached = !ib->locks && ib->bounds_count == count && ib->bounds_start == start_index && ib->bounds_format == ib->format;
+        if (cached) { lo = ib->bounds_lo; hi = ib->bounds_hi; }
+        else indices = (const uint8_t *)GPTR(ib->shadow) + offset;
     }
-    uint32_t lo = UINT32_MAX, hi = 0;
-    if (i32) {
+    if (!cached && i32) {
         for (uint32_t i = 0; i < count; ++i) {
             uint32_t v; memcpy(&v, indices + (size_t)i * 4u, 4);
             if (v < lo) lo = v;
             if (v > hi) hi = v;
         }
-    } else {
+    } else if (!cached) {
         for (uint32_t i = 0; i < count; ++i) {
             uint16_t v; memcpy(&v, indices + (size_t)i * 2u, 2);
             if (v < lo) lo = v;
             if (v > hi) hi = v;
         }
+    }
+    if (!up_indices && !ib->locks && !cached) {
+        ib->bounds_start = start_index; ib->bounds_count = count; ib->bounds_format = ib->format;
+        ib->bounds_lo = lo; ib->bounds_hi = hi;
     }
     int64_t low = (int64_t)lo + (int32_t)base, high = (int64_t)hi + (int32_t)base;
     if (low < 0 || high > UINT32_MAX) return 0;
@@ -1018,14 +1025,19 @@ static uint8_t *sparse_data;
 static uint32_t sparse_capacity, sparse_hash_capacity, sparse_data_capacity;
 /* Spans up to this many vertices use a direct map instead of the hash. */
 #define SPARSE_MAX_SPAN (1u << 20)
-typedef struct { uint32_t generation, dense; } sparse_map_entry;
+#define SPARSE_DENSE_BITS 18u
+#define SPARSE_DENSE_MASK ((1u << SPARSE_DENSE_BITS) - 1u)
+#define SPARSE_GENERATION_MAX (UINT32_MAX >> SPARSE_DENSE_BITS)
+_Static_assert(SPARSE_MAX_INDICES <= SPARSE_DENSE_MASK + 1u, "sparse dense index must fit its packed entry");
+typedef uint32_t sparse_map_entry;
 static sparse_map_entry *sparse_map;
 static uint32_t sparse_map_capacity, sparse_map_generation;
 
 /* One entry per vertex of the draw's referenced span, valid when stamped with
  * this draw's generation: nothing is cleared per draw, and neighbouring
  * indices stay neighbours in memory (hashing scattered every lookup into a
- * cache miss). Dense numbers follow first use, exactly as with the hash. */
+ * cache miss). Packing the dense index and stamp halves this hot map's cache
+ * footprint. Dense numbers follow first use, exactly as with the hash. */
 static int draw_sparse_map(const uint8_t *source, uint32_t unit, uint32_t count, uint32_t base,
     uint32_t first, uint32_t last, uint32_t *unique_count)
 {
@@ -1038,11 +1050,11 @@ static int draw_sparse_map(const uint8_t *source, uint32_t unit, uint32_t count,
         free(sparse_map);
         sparse_map = map; sparse_map_capacity = capacity; sparse_map_generation = 0;
     }
-    if (!++sparse_map_generation) {
+    if (++sparse_map_generation > SPARSE_GENERATION_MAX) {
         memset(sparse_map, 0, (size_t)sparse_map_capacity * sizeof *sparse_map);
         sparse_map_generation = 1;
     }
-    uint32_t generation = sparse_map_generation, unique = 0;
+    uint32_t generation = sparse_map_generation << SPARSE_DENSE_BITS, unique = 0;
     for (uint32_t i = 0; i < count; ++i) {
         uint32_t raw;
         if (unit == 4) memcpy(&raw, source + (size_t)i * 4u, 4);
@@ -1050,12 +1062,14 @@ static int draw_sparse_map(const uint8_t *source, uint32_t unit, uint32_t count,
         int64_t vertex = (int64_t)raw + (int32_t)base;
         if (vertex < first || vertex > last) return 0;
         sparse_map_entry *e = &sparse_map[(uint32_t)vertex - first];
-        if (e->generation != generation) {
-            e->generation = generation;
-            e->dense = unique;
+        /* Subtraction extracts the dense index only when this draw's stamp matches. */
+        uint32_t dense = *e - generation;
+        if (dense > SPARSE_DENSE_MASK) {
+            dense = unique;
+            *e = generation | unique;
             sparse_vertices[unique++] = (uint32_t)vertex;
         }
-        sparse_indices[i] = e->dense;
+        sparse_indices[i] = dense;
     }
     *unique_count = unique;
     return 1;

@@ -21,6 +21,10 @@ import pefile
 from lift_game import ROOT, collect_functions, emit_dispatch, emit_functions
 from pe_rebase import rebase_image
 from fpu_cache import cache_particle_math_source
+from editions import EDITION_IDS, generated_root, module_manifest, game_directory
+
+EDITION = "toe"
+GENERATED = generated_root()
 
 
 def digest(data):
@@ -45,7 +49,7 @@ def prepare(spec, game, upx):
         raise ValueError(f"{spec['file']}: original SHA-256 mismatch")
     unpacked = raw
     if spec.get("unpack"):
-        path = ROOT / "build/unpacked" / spec["file"]
+        path = ROOT / ("build/unpacked" if EDITION == "toe" else f"build/unpacked-{EDITION}") / spec["file"]
         receipt = path.with_suffix(path.suffix + ".json")
         old = read_json(receipt) if receipt.exists() else {}
         if (path.exists() and old.get("original_sha256") == digest(raw)
@@ -71,7 +75,7 @@ def prepare(spec, game, upx):
     rebased = unpacked if original_base == base else rebase_image(unpacked, base)[0]
     if original_base != base and rebase_image(rebased, original_base)[0] != unpacked:
         raise ValueError(f"{spec['file']}: reverse relocation does not reproduce input")
-    binary = ROOT / "generated/input" / spec["file"]
+    binary = GENERATED / "input" / spec["file"]
     binary.parent.mkdir(parents=True, exist_ok=True)
     if not binary.exists() or binary.read_bytes() != rebased:
         binary.write_bytes(rebased)
@@ -82,7 +86,8 @@ def prepare(spec, game, upx):
 
 
 def catalog(binary, name, sha256):
-    path = ROOT / f"config/{name}.catalog.json"
+    path = ROOT / f"config/{name}.catalog.json" if EDITION == "toe" else GENERATED / "catalog" / f"{name}.catalog.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
     receipt = path.with_suffix(".sha256")
     if not path.exists() or not receipt.exists() or receipt.read_text().strip() != sha256:
         subprocess.run([sys.executable, str(ROOT / "reference/pcrecomp/tools/disasm/disasm32.py"),
@@ -98,7 +103,7 @@ def previous_entries(specs):
     entries, headers = [], []
     for spec in specs:
         name = spec["name"]
-        directory = ROOT / f"generated/{name}-x86"
+        directory = GENERATED / f"{name}-x86"
         if not (directory / "report.json").exists():
             continue
         report = read_json(directory / "report.json")
@@ -113,10 +118,10 @@ def previous_entries(specs):
 
 def merge_dispatch(specs):
     entries, headers = previous_entries(specs)
-    completed = [s for s in specs if (ROOT / f"generated/{s['name']}-x86/report.json").exists()
-                 and read_json(ROOT / f"generated/{s['name']}-x86/report.json").get("status") == "GENERATED"]
+    completed = [s for s in specs if (GENERATED / f"{s['name']}-x86/report.json").exists()
+                 and read_json(GENERATED / f"{s['name']}-x86/report.json").get("status") == "GENERATED"]
     if completed:
-        directory = ROOT / f"generated/{completed[-1]['name']}-x86"
+        directory = GENERATED / f"{completed[-1]['name']}-x86"
         destination = directory / "recomp_dispatch.c"
         emit_dispatch(destination, entries, headers)
         report = read_json(directory / "report.json")
@@ -136,7 +141,8 @@ def finalize_sources(directory, sources):
         fixed = noop.sub(lambda m: f"void_lift_trap(0x{m[2]}u, {json.dumps(m[3])}); {m[1]}", text)
         if "FPU state is not a memory image here" in fixed:
             raise ValueError(f"{path}: unmatched inherited x87 no-op")
-        fixed = cache_particle_math_source(fixed)
+        if EDITION == "toe":
+            fixed = cache_particle_math_source(fixed)
         if fixed != text:
             path.write_text(fixed, encoding="utf-8")
         traps.update((address, json.loads(instruction)) for address, instruction in re.findall(
@@ -151,7 +157,7 @@ def finalize_sources(directory, sources):
 
 def refresh_traps(specs):
     for spec in specs:
-        directory = ROOT / f"generated/{spec['name']}-x86"
+        directory = GENERATED / f"{spec['name']}-x86"
         path = directory / "report.json"
         if not path.exists():
             continue
@@ -168,7 +174,7 @@ def refresh_traps(specs):
 def regenerate_function(spec, address, game, upx):
     """Replace one existing emitted body; preserve its original local CFG and EH."""
     name = spec["name"]
-    directory = ROOT / f"generated/{name}-x86"
+    directory = GENERATED / f"{name}-x86"
     report = read_json(directory / "report.json")
     if report.get("status") != "GENERATED":
         raise ValueError(f"{name}: complete generation is required before a targeted repair")
@@ -206,7 +212,7 @@ def regenerate_function(spec, address, game, upx):
 
 def generate(spec, prior, game, upx):
     name = spec["name"]
-    directory = ROOT / f"generated/{name}-x86"
+    directory = GENERATED / f"{name}-x86"
     directory.mkdir(parents=True, exist_ok=True)
     write_json(directory / "report.json", {"status": "GENERATING", "module": spec["file"]})
     binary, proof = prepare(spec, game, upx)
@@ -255,18 +261,22 @@ def generate(spec, prior, game, upx):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--edition", choices=EDITION_IDS, default="toe")
     parser.add_argument("--module", help="Generate only this module and merge all completed modules")
     parser.add_argument("--function", type=lambda value: int(value, 0), help="Replace one existing body in --module without closing the full graph")
     parser.add_argument("--upx", default=os.environ.get("HOMM5_UPX", shutil.which("upx")))
     parser.add_argument("--refresh-traps", action="store_true", help="Normalize existing generated sources and refresh trap reports")
     args = parser.parse_args()
-    specs = read_json(ROOT / "config/modules.json")
+    global EDITION, GENERATED
+    EDITION = args.edition
+    GENERATED = generated_root(EDITION)
+    specs = module_manifest(EDITION)
     if args.refresh_traps:
         refresh_traps(specs)
         return
     if args.module and args.module not in {s["name"] for s in specs}:
         parser.error("Unknown module")
-    game = ROOT / read_json(ROOT / "port.json")["game_directory"]
+    game = game_directory(EDITION)
     if args.function is not None:
         if not args.module:
             parser.error("--function requires --module")
@@ -280,7 +290,7 @@ def main():
             if not args.module:
                 merge_dispatch(specs)
         except Exception as error:
-            write_json(ROOT / f"generated/{spec['name']}-x86/report.json",
+            write_json(GENERATED / f"{spec['name']}-x86/report.json",
                        {"status": "FAILED", "module": spec["file"], "error": str(error)})
             raise
     if args.module:

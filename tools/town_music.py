@@ -13,20 +13,28 @@ TOWNS = (
     "Dungeon.(Music).xdb", "Haven.(Music).xdb", "Inferno.(Music).xdb",
     "Necropolis.(Music).xdb", "Sylvan.(Music).xdb",
 )
+TOWNS_BY_EDITION = {
+    "toe": TOWNS,
+    "vanilla": tuple(name for name in TOWNS if not name.startswith(("a1-", "a2_"))),
+    "hof": tuple(name for name in TOWNS if not name.startswith("a2_")) + ("a1-Renegade.xdb",),
+}
 
 
-def build_town_music_override(root=ROOT, game_dir=None):
+def build_town_music_override(root=ROOT, game_dir=None, edition="toe"):
     root = Path(root)
     inputs = root / "config/music"
-    manifest = json.loads((inputs / "manifest.json").read_text(encoding="utf-8"))
-    if set(manifest) != set(TOWNS):
-        raise ValueError("Town music manifest must contain exactly the eight town resources")
+    towns = TOWNS_BY_EDITION[edition]
+    manifest = json.loads((inputs / ("manifest.json" if edition == "toe" else edition + ".json")).read_text(encoding="utf-8"))
+    if set(manifest) != set(towns):
+        raise ValueError("Town music manifest must contain exactly the " +
+                         ("eight town resources" if edition == "toe" else "canonical town resources for " + edition))
     if game_dir is None:
-        game_dir = json.loads((root / "port.json").read_text(encoding="utf-8"))["game_directory"]
-    with zipfile.ZipFile(root / game_dir / "data/data.pak") as archive:
-        originals = {name: archive.read("Sounds/_(Music)/Towns/" + name) for name in TOWNS}
+        from editions import game_directory
+        game_dir = game_directory(edition, root)
+    from port_ui import source_resource
+    originals = {name: source_resource(root / game_dir, "Sounds/_(Music)/Towns/" + name, edition)[0] for name in towns}
     entries = []
-    for name in TOWNS:
+    for name in towns:
         original = originals[name]
         digest = hashlib.sha256(original).hexdigest()
         if digest != manifest[name]:
@@ -46,7 +54,7 @@ def build_town_music_override(root=ROOT, game_dir=None):
                 raise ValueError(f"Ambiguous town music pause field: {name}")
             patched = patched.replace(before, f"<{field}>0</{field}>".encode("ascii"))
         entries.append(("Sounds/_(Music)/Towns/" + name, patched, digest))
-    output = root / "build/data-overrides" / PAK_NAME
+    output = root / ("build/data-overrides" + ("-" + edition if edition != "toe" else "")) / PAK_NAME
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_suffix(".pak.tmp")
     with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
@@ -58,6 +66,7 @@ def build_town_music_override(root=ROOT, game_dir=None):
             archive.writestr(info, data, compresslevel=9)
     temporary.replace(output)
     receipt = {
+        "edition": edition,
         "pak": PAK_NAME, "sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
         "size": output.stat().st_size, "zip_date": list(ZIP_DATE),
         "members": [{"name": name, "original_sha256": original_sha,

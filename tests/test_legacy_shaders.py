@@ -71,6 +71,9 @@ def build_mojo():
                          "#include <stdio.h>\n#include <ctype.h>\n"
                          "#define FOURCC(a,b,c,d) ((uint32_t)(a)|((uint32_t)(b)<<8)|((uint32_t)(c)<<16)|((uint32_t)(d)<<24))\n" +
                          adapters + "\n__declspec(dllexport) char *probe_patch(const char *s, int p) { return patch_source(s,p); }\n"
+                         "__declspec(dllexport) char *probe_opaque(const char *s) { return alpha_test_source(s,0); }\n"
+                         "__declspec(dllexport) char *probe_alpha_variant(const char *s, int m) { return alpha_test_source(s,m); }\n"
+                         "__declspec(dllexport) int probe_alpha_mode(const uint32_t *s) { return alpha_test_mode(s); }\n"
                          "__declspec(dllexport) uint8_t *probe_ctab(const uint8_t *s, uint32_t n, int p, uint32_t *out) { return with_synthetic_ctab(s,n,p,out); }\n"
                          "__declspec(dllexport) void probe_free(void *p) { free(p); }\n", encoding="utf-8")
         flags = ["/nologo", "/W0", "/std:c11", "/LD", "/O2", "/D_CRT_SECURE_NO_WARNINGS",
@@ -91,6 +94,12 @@ def build_mojo():
     lib.MOJOSHADER_freeParseData.argtypes = [C.POINTER(ParseData)]
     lib.probe_patch.restype = C.c_void_p
     lib.probe_patch.argtypes = [C.c_char_p, C.c_int]
+    lib.probe_opaque.restype = C.c_void_p
+    lib.probe_opaque.argtypes = [C.c_char_p]
+    lib.probe_alpha_variant.restype = C.c_void_p
+    lib.probe_alpha_variant.argtypes = [C.c_char_p, C.c_int]
+    lib.probe_alpha_mode.restype = C.c_int
+    lib.probe_alpha_mode.argtypes = [C.POINTER(C.c_uint32)]
     lib.probe_ctab.restype = C.c_void_p
     lib.probe_ctab.argtypes = [C.c_void_p, C.c_uint, C.c_int, C.POINTER(C.c_uint)]
     lib.probe_free.argtypes = [C.c_void_p]
@@ -141,9 +150,9 @@ def translate_host(lib, code, pixel):
         lib.probe_free(pointer)
 
 
-def embedded_shaders(vertex=False):
+def embedded_shaders(vertex=False, path=None):
     import pefile
-    path = ROOT / "generated/input/H5_Game.exe"
+    path = Path(path) if path is not None else ROOT / "generated/input/H5_Game.exe"
     if not path.exists():
         game = json.loads((ROOT / "port.json").read_text(encoding="utf-8"))["game_directory"]
         path = ROOT / game / "bin/H5_Game.exe"
@@ -187,7 +196,7 @@ def embedded_shaders(vertex=False):
 
 
 class Angle:
-    """Headless GLES 3 context using a locally installed ANGLE distribution."""
+    """Headless GLES 3.1 context using a locally installed ANGLE distribution."""
     def __init__(self):
         candidates = [Path(os.environ.get("ANGLE_DIR", "__missing__")),
                       Path(r"C:\Program Files\obs-studio\obs-plugins\64bit"),
@@ -210,7 +219,7 @@ class Angle:
         config, count = C.c_void_p(), C.c_int()
         assert self.egl.eglChooseConfig(self.display, attrs, C.byref(config), 1, C.byref(count)) and count.value
         self.surface = self.egl.eglCreatePbufferSurface(self.display, config, (C.c_int * 5)(0x3057, 8, 0x3056, 8, 0x3038))
-        self.context = self.egl.eglCreateContext(self.display, config, None, (C.c_int * 3)(0x3098, 3, 0x3038))
+        self.context = self.egl.eglCreateContext(self.display, config, None, (C.c_int * 5)(0x3098, 3, 0x30FB, 1, 0x3038))
         assert self.surface and self.context and self.egl.eglMakeCurrent(self.display, self.surface, self.surface, self.context)
         for name, result_type, args in [
             ("glCreateShader", C.c_uint, [C.c_uint]),
@@ -265,7 +274,7 @@ class Angle:
 
     def render(self, source, coordinates, samplers):
         varying_names = re.findall(rb"in highp vec4 (io_\d+_\d+);", source)
-        vertex = b"#version 300 es\nprecision highp float;\n" + b"".join(b"out highp vec4 " + n + b";\n" for n in varying_names)
+        vertex = source.split(b"\n", 1)[0] + b"\nprecision highp float;\n" + b"".join(b"out highp vec4 " + n + b";\n" for n in varying_names)
         vertex += b"void main() { vec2 p[3] = vec2[3](vec2(-1,-1), vec2(3,-1), vec2(-1,3)); gl_Position = vec4(p[gl_VertexID],0,1);\n"
         for name in varying_names:
             values = coordinates.get(name.decode(), (0, 0, 0, 1))
@@ -308,6 +317,19 @@ class LegacyShadersTest(unittest.TestCase):
     def setUpClass(cls):
         cls.lib = build_mojo()
 
+    def test_shadow_reads_and_arithmetic_keep_float_precision(self):
+        code = assemble(self.lib, "ps_2_0\ndcl t0.xy\ndcl_2d s0\ntexld r0,t0,s0\nmov oC0,r0\n")
+        source, _, _ = translate_host(self.lib, code, pixel=True)
+        self.assertTrue(source.startswith(b"#version 310 es\n"))
+        self.assertIn(b"precision highp float;", source)
+        self.assertNotIn(b"precision mediump float;", source)
+        for kind in (b"sampler2D", b"samplerCube", b"sampler3D"):
+            self.assertLess(source.index(b"precision highp " + kind + b";"),
+                            source.index(b"uniform sampler2D"))
+        angle = Angle()
+        shader = angle.compile(source)
+        angle.gl.glDeleteShader(shader)
+
     def test_embedded_h5_ps1(self):
         shaders = list(embedded_shaders())
         self.assertGreaterEqual(len(shaders), 17)
@@ -322,7 +344,7 @@ class LegacyShadersTest(unittest.TestCase):
         shaders = list(embedded_shaders())
         for address, code in shaders:
             with self.subTest(address=f"{address:08X}"):
-                source, _ = translate(self.lib, code)
+                source, _, _ = translate_host(self.lib, code, pixel=True)
                 shader = angle.compile(source)
                 angle.gl.glDeleteShader(shader)
         print(f"PASS GLES3 compile {len(shaders)} embedded H5 PS1.x shaders")

@@ -1,7 +1,7 @@
 /* Texture converter: the game's DXT (S3TC) textures re-encoded once, on the
  * device, into a format its GPU samples directly (ETC2 or ASTC).
  *
- * Output: <game>/data/zz_port_textures.pak, a stored zip holding the converted
+ * Output: <game>/<bank>/zz_port_textures.pak, a stored zip holding the converted
  * DDS files under the original paths. Each entry's DOS time is the winning
  * original's plus two seconds: H5 resolves equal paths across the data paks by
  * the newer entry (0x009DEF50), so the copy shadows exactly the file it was
@@ -10,7 +10,7 @@
  * in dwReserved1; the D3DX loader (android/host/d3dx9.c) uploads its blocks
  * as they are and reports the original DXT format to the game.
  *
- * <game>/data/zz_port_textures.json describes the conversion for the
+ * <game>/<bank>/zz_port_textures.json describes the conversion for the
  * launcher. Removing the originals rewrites the source paks without the
  * converted entries (raw copies of every other entry). */
 #ifndef HOMM5_TEXCONV_H
@@ -72,7 +72,7 @@ typedef struct {
     int64_t estimate_etc2, estimate_astc;   /* converted pak sizes */
     int converted_format;             /* 0, TEXCONV_ETC2 or TEXCONV_ASTC: an existing conversion */
     int64_t converted_textures, converted_bytes;
-    int originals_removed;            /* the existing conversion's originals are gone */
+    int originals_removed;            /* originals may be gone; undo/format changes are guarded */
     int64_t removable_bytes;          /* what removing the originals frees (compressed size) */
 } texconv_status;
 
@@ -85,6 +85,13 @@ int texconv_convert(const char *game_dir, int format, int threads);
 int texconv_remove_originals(const char *game_dir);
 /* Delete the conversion; refused (-1) once its originals are gone. */
 int texconv_remove_converted(const char *game_dir);
+/* Isolated installed data banks: data, DataLS (1.6), dataa1 (2.1). Preserve
+ * the actual directory spelling; reject every other name before any write.
+ * Each bank keeps its own archive, timestamps and bank-bound manifest. */
+int texconv_scan_bank(const char *game_dir, const char *bank, texconv_status *out);
+int texconv_convert_bank(const char *game_dir, const char *bank, int format, int threads);
+int texconv_remove_originals_bank(const char *game_dir, const char *bank);
+int texconv_remove_converted_bank(const char *game_dir, const char *bank);
 void texconv_cancel(void);
 void texconv_get_progress(texconv_progress *out);
 

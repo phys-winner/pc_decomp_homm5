@@ -19,14 +19,17 @@ from index_region import index_region
 from protocol_transform import Protocol, apply_protocol
 from x87_locals import Plan as X87Plan, apply_x87
 from android_tools import NDK, TOOLCHAIN, CLANG
+from editions import EDITION_IDS, edition_spec, generated_root, module_manifest, build_root
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST = json.loads((ROOT / "config/modules.json").read_text())
+EDITION = "toe"
+GENERATED = generated_root()
+MANIFEST = module_manifest()
 MODULES = tuple(row["name"] for row in MANIFEST)
 # Match the APK minimum; Android before 29 cannot resolve ELF TLS descriptors.
 API = 26
 TARGET = f"aarch64-linux-android{API}"
-OUT = ROOT / "build/arm64"
+OUT = build_root()
 COMMON = ["--target=" + TARGET, "-fno-strict-aliasing", "-fwrapv", "-fvisibility=hidden", "-fPIC",
           "-ffp-contract=off", "-fno-math-errno", "-g0", "-DRECOMP_X87_WINDOW",
           "-ffile-prefix-map=" + str(ROOT) + "=."]
@@ -245,7 +248,8 @@ def packed_sse(text):
 JUMP_TABLE = re.compile(rb"\{ _itail_tgt = \(uint32_t\)\(MEM32\((e[a-d]x|e[sd]i|ebp|esp) \* 4 \+ 0x([0-9A-F]{8})\)\); "
                         rb"goto _ljump; \}")
 LABEL = re.compile(rb"^L_([0-9A-F]{8}):", re.M)
-MODULE_IMAGES = {row["name"]: "generated/input/" + row["file"] for row in MANIFEST}
+MODULE_IMAGES = {row["name"]: GENERATED / "input" / row["file"] for row in MANIFEST}
+ACTIVE_NATIVE_OVERRIDES = None
 
 
 class Image:
@@ -279,9 +283,8 @@ _images = {}
 def module_image(module):
     """The image a generated module was lifted from, checked against its report."""
     if module not in _images:
-        game = json.loads((ROOT / "port.json").read_text())["game_directory"]
-        image = Image(MODULE_IMAGES[module].format(game=game))
-        report = json.loads((ROOT / f"generated/{module}-x86/report.json").read_text())
+        image = Image(MODULE_IMAGES[module])
+        report = json.loads((GENERATED / f"{module}-x86/report.json").read_text())
         expected = report.get("rebased_sha256") or report.get("binary_sha256")
         if expected and expected != image.sha256:
             raise SystemExit(f"{module}: image {MODULE_IMAGES[module]} does not match report.json")
@@ -349,6 +352,21 @@ def x87_plan():
     return _x87_plan
 
 
+def configure_edition(edition):
+    """Select one engine's inputs; no address summaries cross this boundary."""
+    global EDITION, GENERATED, MANIFEST, MODULES, MODULE_IMAGES, OUT
+    global ACTIVE_NATIVE_OVERRIDES, _protocol, _x87_plan
+    EDITION = edition
+    GENERATED = generated_root(edition, root=ROOT)
+    MANIFEST = module_manifest(edition, root=ROOT)
+    MODULES = tuple(row["name"] for row in MANIFEST)
+    MODULE_IMAGES = {row["name"]: GENERATED / "input" / row["file"] for row in MANIFEST}
+    OUT = build_root(edition, root=ROOT)
+    ACTIVE_NATIVE_OVERRIDES = None
+    _images.clear()
+    _protocol = _x87_plan = None
+
+
 # Without per-entry g_cur_func stores, the host's frame pump (BeginScene from
 # H5's frame function 00A3FB70) is told its caller at this one call site.
 FRAME_BEGIN_SCENE = re.compile(rb"^(    )(RECOMP_ICALL(?:_P)?\(MEM32\(edx \+ 0xA4\)[^\r\n]*?;)( /\* 0x00A3FCE3: call dword ptr \[edx \+ 0xa4\] \*/)", re.M)
@@ -401,6 +419,18 @@ def round_x87_precision(text):
     return X87_CONTROL_LOAD.sub(controlled, text)
 
 
+def cutscene_projection(text):
+    # Only the legacy animated cutscene camera lacks the engine's Hor+ conversion.
+    original = b"    edx = MEM32(esi + 0x14); /* 0x007D210A: mov edx, dword ptr [esi + 0x14] */"
+    if original not in text:
+        return text
+    if text.count(original) != 1:
+        raise ValueError("Legacy cutscene FOV load is not unique")
+    declaration = b"uint32_t void_cutscene_fov(uint32_t camera, uint32_t viewport, uint32_t fov, uint32_t stack);\n"
+    replacement = b"    edx = void_cutscene_fov(esi, MEM32(esp + 0x4C), MEM32(esi + 0x14), esp); /* 0x007D210A: legacy cutscene Hor+ */"
+    return text.replace(b"void sub_007D20E0(void) {", declaration + b"void sub_007D20E0(void) {", 1).replace(original, replacement)
+
+
 def override_source(source, local_xmm):
     """The file to compile for a generated source and its extra flags: a
     patched copy under build/ when a transform changes it: x87 precision
@@ -408,7 +438,16 @@ def override_source(source, local_xmm):
     or backedges, with packed arithmetic and direct jump tables."""
     original = source.read_bytes()
     text = round_x87_precision(guard_fpu_memory(original))
-    for name in NATIVE_OVERRIDES:
+    if EDITION == "toe":
+        text = cutscene_projection(text)
+    elif source.name != "recomp_dispatch.c":
+        from port_patches import adapt_generated_source
+        text = adapt_generated_source(text, source.parent.name[:-len("-x86")], EDITION)
+    names = ACTIVE_NATIVE_OVERRIDES
+    if names is None:
+        from port_patches import native_overrides
+        names = native_overrides(EDITION, NATIVE_OVERRIDES)
+    for name in names:
         text = text.replace(b"\nvoid %s(void) {" % name.encode(), b"\nvoid %s_lifted(void) {" % name.encode(), 1)
     if source.name != "recomp_dispatch.c":
         module = source.parent.name[:-len("-x86")]
@@ -417,13 +456,16 @@ def override_source(source, local_xmm):
         text = packed_sse(text)
         text = fast_rep_movs(text)
         if local_xmm:
-            text = index_region(text)
+            if EDITION == "toe":
+                text = index_region(text)
             text = localize_sse(text)
-            text = localize_backedges(text, BACKEDGE_HOT_FUNCTIONS)
-            text = separate_guest_state(text)
-            text = apply_protocol(text, call_protocol(), module)
-            text = apply_x87(text, x87_plan())
-        text = mark_frame_begin_scene(text)
+            if EDITION == "toe":
+                text = localize_backedges(text, BACKEDGE_HOT_FUNCTIONS)
+                text = separate_guest_state(text)
+                text = apply_protocol(text, call_protocol(), module)
+                text = apply_x87(text, x87_plan())
+        if EDITION == "toe":
+            text = mark_frame_begin_scene(text)
     if text == original:
         return source, []
     patched = OUT / "patched" / source.parent.name / source.name
@@ -443,28 +485,33 @@ def sha_file(path):
 
 def available_modules():
     """Generated stages present on disk (PhysX joins once tools/lift_physx.py has run)."""
-    return [m for m in MODULES if (ROOT / f"generated/{m}-x86/report.json").exists()
-            and json.loads((ROOT / f"generated/{m}-x86/report.json").read_text()).get("status") == "GENERATED"]
+    return [m for m in MODULES if (GENERATED / f"{m}-x86/report.json").exists()
+            and json.loads((GENERATED / f"{m}-x86/report.json").read_text()).get("status") == "GENERATED"]
 
 
 def generated_sources():
     sources = []
     modules = available_modules()
     for name in modules:
-        report = json.loads((ROOT / f"generated/{name}-x86/report.json").read_text())
+        report = json.loads((GENERATED / f"{name}-x86/report.json").read_text())
         files = report.get("sources")
         if not isinstance(files, list) or not files:
             raise SystemExit(f"{name}: report.json has no source list")
-        sources += [ROOT / f"generated/{name}-x86" / f for f in files]
-    sources.append(ROOT / f"generated/{modules[-1]}-x86/recomp_dispatch.c")
+        sources += [GENERATED / f"{name}-x86" / f for f in files]
+    if not modules:
+        raise ValueError(EDITION + ": no generated modules")
+    sources.append(GENERATED / f"{modules[-1]}-x86/recomp_dispatch.c")
     return sources
 
 
 def module_compile_flags(module):
     # FMOD's x87 decode batches have no native calls between loop edges. A
-    # smaller handoff interval lets a queued render thread run during decode;
-    # other modules keep the runtime default. Flags join each object's digest.
-    return ["-DRECOMP_YIELD_EVERY=4096u"] if module == "fmod-x86" else []
+    # smaller-than-default handoff interval keeps render progress while giving
+    # the decoder enough work per FIFO round to refill before playback catches it.
+    # HoF's loading transition needs more decode work per contended round.
+    # Other modules keep the runtime default. Flags join each object's digest.
+    edges = 32768 if EDITION == "hof" else 16384
+    return [f"-DRECOMP_YIELD_EVERY={edges}u"] if module == "fmod-x86" else []
 
 
 def host_sources():
@@ -477,6 +524,30 @@ def header_digest(paths):
         digest.update(path.relative_to(ROOT).as_posix().encode())
         digest.update(sha_file(path).encode())
     return digest.hexdigest()
+
+
+def edition_descriptor(out, edition):
+    """Keep module selection private even when engines build concurrently."""
+    spec = edition_spec(edition, root=ROOT)
+    out.mkdir(parents=True, exist_ok=True)
+    include = out / "modules.inc"
+    declarations = ["/* Generated from " + spec["modules"] + "; do not edit. */"]
+    for row in module_manifest(edition, root=ROOT):
+        declarations.append('{%s, %s, %su, %d, %d},' %
+            (json.dumps(row["file"]), json.dumps(row["file"]), row["base"],
+             row.get("exe", False), row.get("optional", False)))
+    header = out / "edition.h"
+    definitions = {"HOMM5_EDITION": edition, "HOMM5_BIN": spec["bin"],
+                   "HOMM5_PROFILE_SUFFIX": spec["profile_suffix"],
+                   "HOMM5_MODULES_INCLUDE": include.resolve().as_posix()}
+    if edition != "toe":
+        definitions["HOMM5_LEGACY_UI"] = 1
+    for path, text in ((include, "\n".join(declarations) + "\n"),
+                       (header, "\n".join("#define " + key + " " + json.dumps(value)
+                                          for key, value in definitions.items()) + "\n")):
+        if not path.exists() or path.read_text() != text:
+            path.write_text(text, encoding="utf-8")
+    return header, include
 
 
 def compile_one(source, obj, flags, fingerprint, cache):
@@ -498,6 +569,7 @@ def compile_one(source, obj, flags, fingerprint, cache):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--edition", choices=EDITION_IDS, default="toe")
     parser.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 4) - 4))
     parser.add_argument("--host-only", action="store_true", help="Recompile host sources and relink only")
     parser.add_argument("--shared", action="store_true", help="Link libhomm5.so for the APK instead of the executable")
@@ -520,25 +592,31 @@ def main():
                         help="Validation build (build/arm64-check): full state at every transfer, callee-saved "
                              "and x87 window checks logged as [protocol] / [x87]")
     args = parser.parse_args()
+    configure_edition(args.edition)
     if args.thinlto_jobs is not None and (not args.thinlto or args.thinlto_jobs < 1):
         parser.error("--thinlto-jobs must be positive and requires --thinlto")
     if not CLANG.is_file():
         parser.error("NDK clang is missing; install NDK 27.2.12479018 or set ANDROID_NDK")
     missing = sorted(set(MODULES) - set(available_modules()))
-    if missing and not args.host_only:
+    if missing:
         parser.error("Static generation is incomplete: " + ", ".join(missing))
     # The first location gains ~12% (42-51 fps against 38-45) from the
     # profile, the map's settled phase more; a build without it is an explicit
     # choice, since it recompiles every generated object.
-    if args.pgo_use is None and not args.no_pgo and not args.pgo_generate and (ROOT / "build/pgo/homm5.profdata").is_file():
-        args.pgo_use = str(ROOT / "build/pgo/homm5.profdata")
+    profile_dir = "pgo" if EDITION == "toe" else "pgo-" + EDITION
+    default_profile = ROOT / "build" / profile_dir / "homm5.profdata"
+    if args.pgo_use is None and not args.no_pgo and not args.pgo_generate and default_profile.is_file():
+        args.pgo_use = str(default_profile)
     if args.no_pgo:
         args.pgo_use = None
+    if (EDITION != "toe" and args.pgo_use and
+            Path(args.pgo_use).resolve() == (ROOT / "build/pgo/homm5.profdata").resolve()):
+        parser.error("The ToE PGO profile cannot be used with another engine")
     # The default generated code keeps registers in locals and accesses guest
     # memory plainly (first location on the Redmi Note 8 Pro: 37-43 fps against
     # 33-39 with both off). The upstream modes build in their own directories
     # (build/arm64-globalregs, build/arm64-volatilemem, ...) for A/B runs.
-    global OUT, GENERATED_FLAGS
+    global OUT, GENERATED_FLAGS, ACTIVE_NATIVE_OVERRIDES
     GENERATED_FLAGS = (GENERATED_FLAGS + ([] if args.global_regs else ["-DRECOMP_LOCAL_REGS"]) +
                        ([] if args.volatile_memory else ["-DRECOMP_PLAIN_MEMORY"]))
     upstream = [name for name, on in (("globalregs", args.global_regs), ("volatilemem", args.volatile_memory),
@@ -546,8 +624,7 @@ def main():
                                       ("check", args.protocol_check)) if on]
     if args.protocol_check:
         GENERATED_FLAGS = GENERATED_FLAGS + ["-DRECOMP_PROTOCOL_CHECK"]
-    if upstream:
-        OUT = ROOT / ("build/arm64-" + "-".join(upstream))
+    OUT = build_root(EDITION, upstream, root=ROOT)
     if args.pgo_generate:
         GENERATED_FLAGS = GENERATED_FLAGS + ["-fprofile-instr-generate"]
     if args.pgo_use:
@@ -560,15 +637,12 @@ def main():
     lto_compile_flags = ["-flto=thin"] if args.thinlto else []
     GENERATED_FLAGS = GENERATED_FLAGS + lto_compile_flags
     mojo_flags = MOJO_FLAGS + lto_compile_flags
-    declarations = ["/* Generated from config/modules.json; do not edit. */"]
-    for row in MANIFEST:
-        declarations.append('{%s, %s, %su, %d, %d},' %
-            (json.dumps(row["file"]), json.dumps(row["file"]), row["base"],
-             row.get("exe", False), row.get("optional", False)))
-    include = ROOT / "android/host/modules.inc"
-    content = "\n".join(declarations) + "\n"
-    if not include.exists() or include.read_text() != content:
-        include.write_text(content)
+    # Missing or stale native seams must stop before any compiler job starts.
+    from port_patches import (validate_native_inputs, native_overrides,
+                              adapt_host_source, finalize_native_receipt)
+    validate_native_inputs(EDITION)
+    ACTIVE_NATIVE_OVERRIDES = native_overrides(EDITION, NATIVE_OVERRIDES)
+    descriptor, include = edition_descriptor(OUT, EDITION)
     os.chdir(ROOT)
     OUT.mkdir(parents=True, exist_ok=True)
     cache_path = OUT / "objects.json"
@@ -577,22 +651,29 @@ def main():
     runtime_headers = [ROOT / "android/runtime/recomp_types.h"]
     # A module's sources see the runtime and their own headers; the merged
     # dispatch table (last module) sees every module's headers.
-    module_digest = {name: header_digest(runtime_headers + sorted((ROOT / f"generated/{name}-x86").glob("*.h")))
+    module_digest = {name: header_digest(runtime_headers + sorted((GENERATED / f"{name}-x86").glob("*.h")))
                      for name in available_modules()}
     gen_digest = header_digest(runtime_headers + sorted(p for name in available_modules()
-                                                        for p in (ROOT / f"generated/{name}-x86").glob("*.h")))
+                                                        for p in (GENERATED / f"{name}-x86").glob("*.h")))
     host_digest = header_digest(runtime_headers + sorted((ROOT / "android/host").glob("*.h")) +
-                                [ROOT / "android/host/modules.inc"] +
+                                [descriptor, include] +
                                 [ROOT / "reference/dlmalloc/malloc.c"])
-    jobs = []
-    if not args.host_only:
-        for source in generated_sources():
-            module = source.parent.name
-            obj = OUT / "obj" / module / (source.stem + ".o")
-            digest = gen_digest if source.name == "recomp_dispatch.c" else module_digest[module[:-len("-x86")]]
-            source, extra = override_source(source, local_xmm=not args.global_regs)
-            flags = GENERATED_FLAGS + module_compile_flags(module) + extra
-            fp = hashlib.sha256(json.dumps([sha_file(source), digest, compiler_sha, flags]).encode()).hexdigest()
+    jobs, generated_objects = [], []
+    for source in generated_sources():
+        module = source.parent.name
+        obj = OUT / "obj" / module / (source.stem + ".o")
+        digest = gen_digest if source.name == "recomp_dispatch.c" else module_digest[module[:-len("-x86")]]
+        source, extra = override_source(source, local_xmm=not args.global_regs)
+        flags = GENERATED_FLAGS + module_compile_flags(module) + extra
+        fp = hashlib.sha256(json.dumps([sha_file(source), digest, compiler_sha, flags]).encode()).hexdigest()
+        if args.host_only:
+            entry = cache.get(source.relative_to(ROOT).as_posix())
+            if (not entry or entry.get("fingerprint") != fp or not obj.is_file() or
+                    entry.get("object_sha256") != sha_file(obj)):
+                raise SystemExit("--host-only: generated object is missing or stale: " + str(obj) +
+                                 "; run a full build without --host-only")
+            generated_objects.append(obj)
+        else:
             jobs.append((source, obj, flags, fp))
     for name in MOJO_SOURCES:
         source = ROOT / MOJO_DIR / name
@@ -600,12 +681,14 @@ def main():
         fp = hashlib.sha256(json.dumps([sha_file(source), header_digest(sorted((ROOT / MOJO_DIR).glob("*.h"))),
                                         compiler_sha, mojo_flags]).encode()).hexdigest()
         jobs.append((source, obj, mojo_flags, fp))
-    host_flags = HOST_FLAGS + lto_compile_flags + (["-DVOID_ANDROID_APP"] if args.shared else [])
+    host_flags = HOST_FLAGS + ["-include", str(descriptor)] + lto_compile_flags + (["-DVOID_ANDROID_APP"] if args.shared else [])
     host_dir = "obj/host-app" if args.shared else "obj/host"
     for source in host_sources():
         obj = OUT / host_dir / (source.stem + ".o")
-        fp = hashlib.sha256(json.dumps([sha_file(source), host_digest, compiler_sha, host_flags]).encode()).hexdigest()
-        jobs.append((source, obj, host_flags, fp))
+        source, extra = adapt_host_source(source, OUT, EDITION)
+        flags = host_flags + extra
+        fp = hashlib.sha256(json.dumps([sha_file(source), host_digest, compiler_sha, flags]).encode()).hexdigest()
+        jobs.append((source, obj, flags, fp))
     # Largest first keeps the pool busy at the end.
     jobs.sort(key=lambda j: -j[0].stat().st_size)
     start = time.time()
@@ -634,14 +717,11 @@ def main():
     print(f"compiled {compiled}, reused {reused}, failed {len(failures)} in {time.time() - start:.0f}s", flush=True)
     if failures:
         sys.exit(1)
-    if args.host_only:
-        skip = "host" if args.shared else "host-app"
-        objects = sorted(str(p) for p in (OUT / "obj").rglob("*.o") if p.parent.name != skip)
-    else:
-        objects = [str(o) for _, o, _, _ in jobs]
+    objects = [str(o) for o in generated_objects] + [str(o) for _, o, _, _ in jobs]
     response = OUT / "link.rsp"
     response.write_text("\n".join(o.replace("\\", "/") for o in objects))
-    output = OUT / ("libhomm5.so" if args.shared else "homm5-arm64")
+    library = edition_spec(EDITION, root=ROOT)["library"]
+    output = OUT / ("lib" + library + ".so" if args.shared else library.replace("_", "-") + "-arm64")
     link = [str(CLANG), "--target=" + TARGET, "-fuse-ld=lld", "-Wl,--no-undefined", "-Wl,--gc-sections", "-Wl,-z,nostart-stop-gc", "-Wl,-z,max-page-size=16384",
             "-Wl,--build-id=sha1", "@" + str(response), "-o", str(output), "-lm", "-llog", "-ldl", "-lEGL", "-lGLESv3", "-lz"]
     link += ["-shared", "-landroid", "-lOpenSLES", "-laaudio"] if args.shared else ["-pie"]
@@ -657,6 +737,7 @@ def main():
     if result.returncode:
         print(result.stderr[-6000:])
         sys.exit(1)
+    finalize_native_receipt(EDITION, output)
     print(f"linked {output} ({output.stat().st_size / 1e6:.1f} MB) in {time.time() - start:.0f}s")
 
 

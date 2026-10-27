@@ -1,0 +1,76 @@
+[
+  {
+    "name": "game",
+    "file": "H5_Game.exe",
+    "source": "bina1/H5_Game.exe",
+    "base": "0x400000",
+    "exe": true,
+    "sha256": "bad3b0c010b9d85193811bdf8ffa2afab30b865ea924c480ff7aac78a1e73140"
+  },
+  {
+    "name": "granny2",
+    "file": "granny2.dll",
+    "source": "bina1/granny2.dll",
+    "base": "0x50000000",
+    "exe": false,
+    "sha256": "2487bcfa1c70924495a0362299684174aa12a80f0b6e14c93b1b041237ddf210"
+  },
+  {
+    "name": "fmod",
+    "file": "fmod.dll",
+    "source": "bina1/fmod.dll",
+    "base": "0x11000000",
+    "exe": false,
+    "sha256": "1e08da161cf78746304a834973971ee47a24817ee4e28df74e3f37dbbb383b22",
+    "unpack": true
+  },
+  {
+    "name": "ubistats",
+    "file": "UbiStats.dll",
+    "source": "bina1/UbiStats.dll",
+    "base": "0x12000000",
+    "exe": false,
+    "sha256": "fa92eafe748019eb39159e2b0c6d75cbaced4f3c635f7623ebf3cbc498439e4b"
+  },
+  {
+    "name": "msvcr71",
+    "file": "msvcr71.dll",
+    "source": "bina1/msvcr71.dll",
+    "base": "0x13000000",
+    "exe": false,
+    "sha256": "8094af5ee310714caebccaeee7769ffb08048503ba478b879edfef5f1a24fefe",
+    "jump_tables": "config/msvcr71.jump-tables.json"
+  },
+  {
+    "name": "msvcp71",
+    "file": "msvcp71.dll",
+    "source": "bina1/msvcp71.dll",
+    "base": "0x14000000",
+    "exe": false,
+    "sha256": "df96156f6a548fd6fe5672918de5ae4509d3c810a57bffd2a91de45a3ed5b23b"
+  },
+  {
+    "name": "zlib1",
+    "file": "zlib1.dll",
+    "source": "bina1/zlib1.dll",
+    "base": "0x15000000",
+    "exe": false,
+    "sha256": "b09537250201236472ccd3caff5c0c12a5fad262e1e951350e9e5ed2a81d9dde"
+  },
+  {
+    "name": "libcurl",
+    "file": "libcurl.dll",
+    "source": "bina1/libcurl.dll",
+    "base": "0x16000000",
+    "exe": false,
+    "sha256": "fc66823caa31c056bcde8e2edfb7f2ac038fa694539d02a2ced91b4c928f30bd"
+  },
+  {
+    "name": "zlibwapi",
+    "file": "zlibwapi.dll",
+    "source": "bina1/zlibwapi.dll",
+    "base": "0x17000000",
+    "exe": false,
+    "sha256": "0d38360003865e84a2842c337d7c440c8ab4c41809cc87b8758df6d852c02afc"
+  }
+]

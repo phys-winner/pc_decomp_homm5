@@ -167,7 +167,7 @@ AAUDIO_HARNESS = r'''
 #define PTHREAD_MUTEX_INITIALIZER 0
 typedef int pthread_mutex_t;
 typedef int32_t aaudio_result_t;
-typedef struct {int closed,started,paused,prefilled,mode;} AAudioStream;
+typedef struct {int closed,started,paused,prefilled,mode,size,capacity,burst,xruns;} AAudioStream;
 typedef struct {int unused;} AAudioStreamBuilder;
 static int lock_depth,audio_paused,opens,closes,starts,stops,builder_deletes;
 static uint64_t pause_generation;
@@ -179,6 +179,8 @@ static int64_t now_ns;
 static int32_t results[128];
 static unsigned result_count,result_index,write_calls,accepted_count,logs,level_reports,fallback_reports;
 static int selected_mode;
+static int hardware_burst=96,hardware_capacity=1920,hardware_size=192;
+static int requested_capacity,buffer_changes,buffer_error;
 static int16_t accepted[16384];
 static AAudioStream streams[16];
 static AAudioStreamBuilder builder;
@@ -205,10 +207,14 @@ static void AAudioStreamBuilder_setSampleRate(AAudioStreamBuilder *b,int rate) {
 static void AAudioStreamBuilder_setPerformanceMode(AAudioStreamBuilder *b,int mode) {
     assert(b==&builder && (mode==12 || mode==10));selected_mode=mode;
 }
+static void AAudioStreamBuilder_setBufferCapacityInFrames(AAudioStreamBuilder *b,int frames) {
+    assert(b==&builder);requested_capacity=frames;
+}
 static aaudio_result_t AAudioStreamBuilder_openStream(AAudioStreamBuilder *b,AAudioStream **out) {
     assert(lock_depth==1 && b==&builder && opens<16);
     if(open_error) return open_error;
-    *out=&streams[opens++];(*out)->mode=selected_mode;return 0;
+    *out=&streams[opens++];(*out)->mode=selected_mode;
+    (*out)->size=hardware_size;(*out)->capacity=hardware_capacity;(*out)->burst=hardware_burst;return 0;
 }
 static void AAudioStreamBuilder_delete(AAudioStreamBuilder *b) {assert(b==&builder);builder_deletes++;}
 static aaudio_result_t AAudioStream_requestStart(AAudioStream *s) {
@@ -223,7 +229,16 @@ static aaudio_result_t AAudioStream_close(AAudioStream *s) {
 static aaudio_result_t AAudioStream_requestStop(AAudioStream *s) {
     assert(lock_depth==1 && s && !s->closed);stops++;return 0;
 }
-static int32_t AAudioStream_getXRunCount(AAudioStream *s) {assert(s && !s->closed);return 0;}
+static int32_t AAudioStream_getXRunCount(AAudioStream *s) {assert(s && !s->closed);return s->xruns;}
+static int32_t AAudioStream_getBufferSizeInFrames(AAudioStream *s) {assert(s && !s->closed);return s->size;}
+static int32_t AAudioStream_getBufferCapacityInFrames(AAudioStream *s) {assert(s && !s->closed);return s->capacity;}
+static int32_t AAudioStream_getFramesPerBurst(AAudioStream *s) {assert(s && !s->closed);return s->burst;}
+static aaudio_result_t AAudioStream_setBufferSizeInFrames(AAudioStream *s,int frames) {
+    assert(s && !s->closed && frames>0);++buffer_changes;
+    if(buffer_error) return buffer_error;
+    frames=(frames+s->burst-1)/s->burst*s->burst;
+    s->size=frames<s->capacity?frames:s->capacity;return s->size;
+}
 static aaudio_result_t AAudioStream_write(AAudioStream *s,const void *data,int32_t frames,int64_t timeout) {
     assert(lock_depth==1 && s && !s->closed && !s->paused);
     assert(timeout>=0 && timeout<=20000000 && frames>0);
@@ -316,6 +331,59 @@ int main(void) {
 
 
 class SoundStreamingTest(unittest.TestCase):
+    def test_aaudio_recovers_underruns_even_when_every_write_succeeds(self):
+        source = (ROOT / "android/host/android_main.c").read_text(encoding="utf8")
+        globals_ = source[source.index("static AAudioStream *stream;"):source.index("static void audio_close_stream(")]
+        functions = "\n".join(function(source, signature) for signature in (
+            "static void audio_close_stream(", "static void audio_close_failed(",
+            "static uint32_t audio_write_frames(", "void void_audio_output("))
+        harness = AAUDIO_HARNESS[:AAUDIO_HARNESS.index("int main(void) {")] + r'''
+int main(void) {
+    int16_t frames[960]={0};
+    reset_script(frames);void_audio_output(frames,480);
+    assert(requested_capacity==1920 && stream->size==960 && accepted_count==960);
+    assert(buffer_changes==1 && !audio_normal_output && !audio_errors);
+    for(int i=0;i<100;i++) {reset_script(frames);void_audio_output(frames,480);}
+    assert(buffer_changes==1 && !audio_normal_output);
+    /* Successful blocking writes can still leave gaps between chunks. */
+    stream->xruns=1;reset_script(frames);void_audio_output(frames,480);assert(stream->size==1440);
+    stream->xruns=2;reset_script(frames);void_audio_output(frames,480);assert(stream->size==1920);
+    for(int i=3;i<=4;i++) {stream->xruns=i;reset_script(frames);void_audio_output(frames,480);assert(stream);}
+    reset_script(frames);void_audio_output(frames,480); /* stable chunk resets failure streak */
+    for(int i=5;i<=7;i++) {
+        stream->xruns=i;reset_script(frames);void_audio_output(frames,480);
+        assert(accepted_count==960 && !memcmp(accepted,frames,sizeof frames));
+        assert((stream!=NULL)==(i<7));
+    }
+    assert(audio_normal_output && fallback_reports==1 && !audio_dropped_frames && !audio_short_writes);
+    reset_script(frames);void_audio_output(frames,480);
+    assert(stream && stream->mode==AAUDIO_PERFORMANCE_MODE_NONE && accepted_count==960);
+    stream->xruns=100;reset_script(frames);void_audio_output(frames,480);assert(stream && fallback_reports==1);
+    /* A new route reports its own burst/capacity, which may exceed our request. */
+    pthread_mutex_lock(&audio_lock);audio_close_stream();pthread_mutex_unlock(&audio_lock);
+    audio_normal_output=0;hardware_burst=512;hardware_size=512;hardware_capacity=2048;
+    reset_script(frames);void_audio_output(frames,480);assert(stream->size==1024);
+    stream->xruns=1;reset_script(frames);void_audio_output(frames,480);assert(stream->size==1536);
+    stream->xruns=2;reset_script(frames);void_audio_output(frames,480);assert(stream->size==2048);
+    /* Unavailable xrun counters do not trigger recovery. */
+    stream->xruns=-1;
+    for(int i=0;i<5;i++) {reset_script(frames);void_audio_output(frames,480);assert(stream);}
+    /* Rejected tuning leaves a usable stream; sustained gaps still recover. */
+    pthread_mutex_lock(&audio_lock);audio_close_stream();pthread_mutex_unlock(&audio_lock);
+    hardware_burst=96;hardware_size=192;hardware_capacity=768;buffer_error=-899;
+    reset_script(frames);void_audio_output(frames,480);assert(stream && stream->size==192);
+    for(int i=1;i<=3;i++) {
+        stream->xruns=i;reset_script(frames);void_audio_output(frames,480);
+        assert((stream!=NULL)==(i<3));
+    }
+    assert(audio_normal_output && fallback_reports==2 && !audio_dropped_frames && !audio_short_writes);
+    assert(!lock_depth);
+    puts("PASS AAudio underruns: chunk-sized buffer, device burst rounding, bounded growth, successful-write recovery and sticky fallback");
+    return 0;
+}
+'''
+        compile_probe("aaudio-underrun-recovery", harness, {"android_audio.h": globals_ + functions})
+
     def test_aaudio_zero_progress_falls_back_once_without_replaying_pcm(self):
         source = (ROOT / "android/host/android_main.c").read_text(encoding="utf8")
         globals_ = source[source.index("static AAudioStream *stream;"):source.index("static void audio_close_stream(")]

@@ -33,7 +33,10 @@ typedef struct { const char *win; char host[1024]; } mount_t;
 static mount_t mounts[8];
 static int mount_count;
 static char game_root[1024], data_root[1024], overlay_root[1024];
-static char cwd[WIN_MAX_PATH] = "C:\\Games\\HeroesV\\bin";
+#ifndef HOMM5_BIN
+#define HOMM5_BIN "bin"
+#endif
+static char cwd[WIN_MAX_PATH] = "C:\\Games\\HeroesV\\" HOMM5_BIN;
 static pthread_mutex_t cwd_lock = PTHREAD_MUTEX_INITIALIZER;
 
 const char *void_root_dir(void) { return game_root; }

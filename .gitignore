@@ -25,6 +25,9 @@
 !/config/
 /config/*
 !/config/modules.json
+!/config/editions.json
+!/config/*.modules.json
+!/config/*.patches.json
 !/config/*.jump-tables.json
 !/config/windows.manifest
 !/config/profiles/
@@ -32,6 +35,8 @@
 !/config/music/
 /config/music/*
 !/config/music/manifest.json
+!/config/music/vanilla.json
+!/config/music/hof.json
 !/config/music/README.md
 
 !/tools/
@@ -77,6 +82,7 @@
 !/reference/astcenc/
 !/reference/etcpak/
 !/reference/zlib/
+!/reference/xz-embedded/
 
 # Defense in depth, including dependency snapshots.
 **/.git/

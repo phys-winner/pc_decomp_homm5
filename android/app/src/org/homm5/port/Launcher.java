@@ -57,6 +57,7 @@ public final class Launcher extends Activity {
     static volatile boolean visible;
 
     private SharedPreferences prefs;
+    private String edition = "toe";
     private File base;   /* /sdcard/HeroesV: saves, profiles, development copies */
     private File game;   /* the chosen game's root; null: none yet */
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -71,8 +72,10 @@ public final class Launcher extends Activity {
 
     private TextView gameTitle, gamePath, note, progressTarget, progressText;
     private LinearLayout copies;
+    private LinearLayout editionCards;
+    private final List<View> editionControls = new ArrayList<>();
     private ProgressBar progress;
-    private View progressBox, permissionBox, play, archiveButton, folderButton, stopButton;
+    private View progressBox, permissionBox, archiveButton, folderButton, stopButton;
     private TextView cleanupButton;
     private FrameLayout skipBox;
     /* Textures: shown when the GPU cannot sample DXT (Textures.Gpu). */
@@ -86,19 +89,24 @@ public final class Launcher extends Activity {
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
+        prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        String requested = getIntent().getStringExtra("edition");
+        if (!Games.valid(requested)) requested = prefs.getString("edition", "toe");
+        edition = Games.valid(requested) ? requested : "toe";
         android.app.ActivityManager manager = (android.app.ActivityManager) getSystemService(ACTIVITY_SERVICE);
         List<android.app.ActivityManager.RunningAppProcessInfo> processes = manager.getRunningAppProcesses();
-        if (!getIntent().getBooleanExtra("game_exited", false) && processes != null) {
+        if (getIntent().getStringExtra("launch_edition") == null && !getIntent().getBooleanExtra("game_exited", false)
+                && !getIntent().getBooleanExtra("show_launcher", false) && processes != null) {
             for (android.app.ActivityManager.RunningAppProcessInfo process : processes) {
-                if (getPackageName().equals(process.processName)) {
-                    startActivity(new Intent(this, GameActivity.class));
+                if (Games.process(getPackageName(), edition).equals(process.processName)) {
+                    startActivity(new Intent(this, gameClass(edition)));
                     finish();
                     return;
                 }
             }
         }
-        prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         base = baseDir();
+        if (launchRequestedGame()) return;
         if (autoLaunch()) return;
         getWindow().setStatusBarColor(Color.rgb(20, 34, 48));
         getWindow().setNavigationBarColor(Color.rgb(2, 3, 5));
@@ -108,12 +116,39 @@ public final class Launcher extends Activity {
     }
 
     static File startupMarker(Context context) { return new File(context.getFilesDir(), "game-started"); }
+    static File startupMarker(Context context, String edition) { return new File(context.getFilesDir(), Games.marker(edition)); }
+
+    static Class<? extends GameActivity> gameClass(String edition) {
+        Games.suffix(edition);
+        return "vanilla".equals(edition) ? VanillaGameActivity.class : "hof".equals(edition) ? HofGameActivity.class : GameActivity.class;
+    }
+
+    static List<String> readyGames(Context context) {
+        List<String> result = new ArrayList<>();
+        for (String id : Games.IDS) if (chosenGame(context, null, id) != null
+                && Assets.runtimeAvailable(context, baseDir(), id)) result.add(id);
+        return result;
+    }
+
+    private boolean launchRequestedGame() {
+        String requested = getIntent().getStringExtra("launch_edition");
+        if (!Games.valid(requested) || !storage() || Unpacker.current != null || Textures.current != null) return false;
+        edition = requested;
+        String source = getIntent().getStringExtra(EXTRA_GAME);
+        if (source == null || !Games.installed(new File(source), edition)) return false;
+        game = new File(source);
+        if (!Assets.runtimeAvailable(this, base, edition)) return false;
+        play();
+        return true;
+    }
 
     private boolean autoLaunch() {
-        if (getIntent().getBooleanExtra("game_exited", false) || !startupMarker(this).isFile()
+        if (getIntent().getStringExtra("launch_edition") != null || getIntent().getBooleanExtra("game_exited", false)
+                || getIntent().getBooleanExtra("show_launcher", false)
+                || !startupMarker(this, edition).isFile()
                 || !storage() || Unpacker.current != null || Textures.current != null) return false;
-        game = chosenGame(this, getIntent());
-        if (game == null || (!Assets.carriesImages(this) && !new File(base, "lifted/H5_Game.exe").isFile())) return false;
+        game = chosenGame(this, getIntent(), edition);
+        if (game == null || !Assets.runtimeAvailable(this, base, edition)) return false;
         play();
         return true;
     }
@@ -153,11 +188,15 @@ public final class Launcher extends Activity {
      *  else, as before the launcher, /sdcard/HeroesV/game or the first copy
      *  there; null if none. */
     static File chosenGame(Context c, Intent intent) {
+        return chosenGame(c, intent, "toe");
+    }
+
+    static File chosenGame(Context c, Intent intent, String edition) {
         String extra = intent != null ? intent.getStringExtra(EXTRA_GAME) : null;
-        if (extra != null && Unpacker.isGame(new File(extra))) return new File(extra);
-        String saved = c.getSharedPreferences(PREFS, MODE_PRIVATE).getString("game", null);
-        if (saved != null && Unpacker.isGame(new File(saved))) return new File(saved);
-        List<File> found = copies(baseDir());
+        if (extra != null && Games.installed(new File(extra), edition)) return new File(extra);
+        String saved = c.getSharedPreferences(PREFS, MODE_PRIVATE).getString(Games.pathKey(edition), null);
+        if (saved != null && Games.installed(new File(saved), edition)) return new File(saved);
+        List<File> found = copies(baseDir(), edition);
         return found.isEmpty() ? null : found.get(0);
     }
 
@@ -169,21 +208,32 @@ public final class Launcher extends Activity {
 
     /** The copies tools/deploy.py puts in /sdcard/HeroesV: game, game-*. */
     static List<File> copies(File base) {
+        return copies(base, "toe");
+    }
+
+    static List<File> copies(File base, String edition) {
         List<File> out = new ArrayList<>();
         File[] dirs = base.listFiles();
         if (dirs == null) return out;
         Arrays.sort(dirs);
-        for (File d : dirs) if (d.isDirectory() && d.getName().startsWith("game") && Unpacker.isGame(d)) out.add(d);
+        for (File d : dirs) if (d.isDirectory() && d.getName().startsWith("game") && Games.installed(d, edition)) out.add(d);
         return out;
     }
 
     static String label(File root) {
-        return Unpacker.isPatched(root) ? text(T_TITLE_TOE) : text(T_TITLE);
+        List<String> names = new ArrayList<>();
+        for (String id : Games.editions(root)) names.add(Games.title(id));
+        return String.join(" / ", names);
     }
 
     private void select(File root) {
+        List<String> found = Games.editions(root);
+        if (found.isEmpty()) return;
+        SharedPreferences.Editor saved = prefs.edit();
+        for (String id : found) saved.putString(Games.pathKey(id), root.getAbsolutePath());
+        if (!found.contains(edition)) edition = found.get(0);
         game = root;
-        prefs.edit().putString("game", root.getAbsolutePath()).apply();
+        saved.putString("edition", edition).apply();
         note(null, false);
         refresh();
     }
@@ -259,7 +309,9 @@ public final class Launcher extends Activity {
     }
 
     private String archiveLabel() {
-        return text(plan.patched ? T_TITLE_TOE : T_TITLE);
+        List<String> titles = new ArrayList<>();
+        for (String id : plan.editions) titles.add(Games.title(id));
+        return String.join(" / ", titles);
     }
 
     private void askTarget() {
@@ -314,13 +366,20 @@ public final class Launcher extends Activity {
         }
         setBusy(text(T_SEARCHING));
         new Thread(() -> {
-            File root = Unpacker.findRoot(dir);
-            boolean complete = root != null && Unpacker.isGame(root);
+            List<File> roots = Games.discover(dir);
             handler.post(() -> {
                 setBusy(null);
-                if (root == null) error(text(E_FOLDER));
-                else if (!complete) error(fmt(E_FOLDER_NO_DATA, root.getPath()));
-                else select(root);
+                if (roots.isEmpty()) error(text(E_FOLDER));
+                else {
+                    for (File root : roots) {
+                        SharedPreferences.Editor saved = prefs.edit();
+                        for (String id : Games.editions(root)) saved.putString(Games.pathKey(id), root.getAbsolutePath());
+                        saved.apply();
+                    }
+                    File selected = roots.get(0);
+                    for (File root : roots) if (Games.installed(root, edition)) { selected = root; break; }
+                    select(selected);
+                }
             });
         }, "folder").start();
     }
@@ -427,20 +486,21 @@ public final class Launcher extends Activity {
     /* ---------------------------------------------------------------- play */
 
     private void play() {
-        if (game == null || Unpacker.current != null || busy != null) return;
-        if (!Unpacker.isGame(game)) {
+        if (game == null || Unpacker.current != null || busy != null
+                || (Textures.current != null && !Textures.current.finished)) return;
+        if (!Games.installed(game, edition)) {
             error(text(E_FOLDER));
             game = null;
             refresh();
             return;
         }
-        if (!Assets.carriesImages(this) && !new File(base, "lifted/H5_Game.exe").isFile()) {
-            error(text(E_IMAGES));
+        if (!Assets.runtimeAvailable(this, base, edition)) {
+            error(text(T_RUNTIME_MISSING));
             return;
         }
-        prefs.edit().putString("game", game.getAbsolutePath()).apply();
+        prefs.edit().putString(Games.pathKey(edition), game.getAbsolutePath()).putString("edition", edition).apply();
         android.util.Log.i("HeroesV", "launcher: playing " + game + ", opening videos " + (skipIntro(this) ? "skipped" : "shown"));
-        startActivity(new Intent(this, GameActivity.class).putExtra(EXTRA_GAME, game.getAbsolutePath()));
+        startActivity(new Intent(this, gameClass(edition)).putExtra(EXTRA_GAME, game.getAbsolutePath()));
         finish();
     }
 
@@ -690,7 +750,7 @@ public final class Launcher extends Activity {
         title.setTypeface(Typeface.create(Typeface.SERIF, Typeface.BOLD));
         names.addView(title);
         TextView subtitle = new TextView(this);
-        subtitle.setText("Tribes of the East");
+        subtitle.setText("Heroes V / Hammers of Fate / Tribes of the East");
         subtitle.setTextColor(Color.rgb(200, 170, 110));
         subtitle.setTextSize(16);
         subtitle.setTypeface(Typeface.create(Typeface.SERIF, Typeface.ITALIC));
@@ -720,6 +780,10 @@ public final class Launcher extends Activity {
         copies = new LinearLayout(this);
         copies.setOrientation(LinearLayout.VERTICAL);
         card.addView(copies);
+
+        editionCards = new LinearLayout(this);
+        editionCards.setOrientation(LinearLayout.VERTICAL);
+        column.addView(editionCards);
 
         buildTextures(column);
 
@@ -762,11 +826,6 @@ public final class Launcher extends Activity {
         note.setVisibility(View.GONE);
         column.addView(note);
 
-        play = button(text(T_PLAY), true, this::play);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, dp(60));
-        lp.setMargins(0, dp(18), 0, 0);
-        column.addView(play, lp);
-
         scroll.addView(column, new FrameLayout.LayoutParams(-1, -2, Gravity.CENTER_HORIZONTAL));
         root.addView(scroll, new FrameLayout.LayoutParams(-1, -1));
         setContentView(root);
@@ -777,11 +836,12 @@ public final class Launcher extends Activity {
         if (files && !storageSeen) {
             storageSeen = true;
             cleanStale();
-            if (game == null) game = chosenGame(this, null);
+            if (game == null) game = chosenGame(this, null, edition);
         }
         permissionBox.setVisibility(files ? View.GONE : View.VISIBLE);
+        refreshEditions(files);
         if (game != null) {
-            gameTitle.setText(files ? label(game) : game.getName());
+            gameTitle.setText(files ? Games.title(edition) : game.getName());
             gameTitle.setTextColor(Color.WHITE);
             gamePath.setText(game.getPath());
             gamePath.setVisibility(View.VISIBLE);
@@ -791,7 +851,7 @@ public final class Launcher extends Activity {
             gamePath.setVisibility(View.GONE);
         }
         copies.removeAllViews();
-        List<File> found = files ? copies(base) : new ArrayList<>();
+        List<File> found = files ? copies(base, edition) : new ArrayList<>();
         if (!found.isEmpty() && !(found.size() == 1 && found.get(0).equals(game))) {
             copies.addView(heading(text(T_FOUND)));
             for (File f : found) copies.addView(copyRow(f));
@@ -803,13 +863,54 @@ public final class Launcher extends Activity {
         refreshTextures();
     }
 
+    private void selectEdition(String id) {
+        edition = id;
+        game = chosenGame(this, null, id);
+        prefs.edit().putString("edition", id).apply();
+        texState = null;
+        cleanupPlan = null;
+        ++cleanupGeneration;
+        note(null, false);
+        refresh();
+    }
+
+    private void refreshEditions(boolean files) {
+        editionCards.removeAllViews();
+        editionControls.clear();
+        for (String id : Games.IDS) {
+            File located = files ? chosenGame(this, null, id) : null;
+            boolean runtime = Assets.runtimeAvailable(this, base, id);
+            LinearLayout box = card(editionCards);
+            TextView title = label(Games.title(id) + "  " + Games.version(id), 17, id.equals(edition) ? GOLD : Color.WHITE);
+            title.setTypeface(Typeface.DEFAULT_BOLD);
+            box.addView(title);
+            if (located != null) box.addView(label(located.getPath(), 12, GREY));
+            box.addView(label(!runtime ? text(T_RUNTIME_MISSING) : located == null ? text(T_NONE) : text(T_READY), 12,
+                runtime && located != null ? GOLD : GREY));
+            TextView start = button(text(T_PLAY), true, () -> playEdition(id));
+            start.setTag(runtime && located != null);
+            box.addView(start, new LinearLayout.LayoutParams(-1, dp(48)));
+            box.setOnClickListener(v -> playEdition(id));
+            box.setTag(runtime && located != null);
+            editionControls.add(box);
+            editionControls.add(start);
+        }
+    }
+
+    private void playEdition(String id) {
+        if (!storage() || Unpacker.current != null || busy != null
+                || (Textures.current != null && !Textures.current.finished)) return;
+        selectEdition(id);
+        play();
+    }
+
     private void enable() {
         boolean idle = Unpacker.current == null && busy == null, files = storage();
         setEnabled(archiveButton, idle && files);
         setEnabled(folderButton, idle && files);
         Textures.Job tex = Textures.current;
         idle = idle && (tex == null || tex.finished);
-        setEnabled(play, idle && files && game != null);
+        for (View control : editionControls) setEnabled(control, idle && files && Boolean.TRUE.equals(control.getTag()));
         boolean extras = files && game != null && cleanupPlan != null && game.equals(cleanupPlan.root) && !cleanupPlan.files.isEmpty();
         cleanupButton.setVisibility(extras ? View.VISIBLE : View.GONE);
         if (extras) cleanupButton.setText(text(T_CLEAN) + "  ·  " + size(cleanupPlan.bytes));
@@ -1045,10 +1146,14 @@ public final class Launcher extends Activity {
             texStatus.setText(fmt(T_TEX_UNREADABLE, st.failure));
         } else if (converted) {
             String status = fmt(T_TEX_DONE, st.converted == Textures.ASTC ? "ASTC" : "ETC2", st.convertedTextures, size(st.convertedBytes))
-                + "\n" + (st.originalsRemoved ? text(T_TEX_GONE) : fmt(T_TEX_KEPT, size(st.removable)));
+                + "\n" + (st.originalsPartiallyRemoved ? text(T_TEX_PARTLY_REMOVED) + "\n" + fmt(T_TEX_KEPT, size(st.removable))
+                    : st.originalsRemoved ? text(T_TEX_GONE) : fmt(T_TEX_KEPT, size(st.removable)));
             texStatus.setText(status);
         } else if (scanned) {
-            texStatus.setText(st.textures > 0 ? fmt(T_TEX_FOUND, st.textures, size(st.bytes)) : text(T_TEX_NOTHING));
+            String status = st.textures > 0 ? fmt(T_TEX_FOUND, st.textures, size(st.bytes)) : text(T_TEX_NOTHING);
+            if (st.mixedFormats) status += "\n" + text(T_TEX_MIXED);
+            else if (st.partial) status += "\n" + text(T_TEX_PARTIAL);
+            texStatus.setText(status);
         }
         /* How much the conversion matters here: by the device's RAM (4 GB phones report about 3.6). */
         long ram = totalMemory();
@@ -1066,7 +1171,7 @@ public final class Launcher extends Activity {
         texConvert.setVisibility(choose ? View.VISIBLE : View.GONE);
         setEnabled(texConvert, idle);
         texProgressBox.setVisibility(running ? View.VISIBLE : View.GONE);
-        texDelete.setVisibility(converted && !st.originalsRemoved && !running ? View.VISIBLE : View.GONE);
+        texDelete.setVisibility(converted && st.removalPending && !running ? View.VISIBLE : View.GONE);
         setEnabled(texDelete, idle);
         texUndo.setVisibility(converted && !st.originalsRemoved && !running ? View.VISIBLE : View.GONE);
         setEnabled(texUndo, idle);
@@ -1116,8 +1221,16 @@ public final class Launcher extends Activity {
         Textures.Status st = texState;
         if (st == null || game == null) return;
         long largest = 0;
-        File[] paks = new File(game, "data").listFiles((dir, name) -> name.toLowerCase(Locale.ROOT).endsWith(".pak"));
-        if (paks != null) for (File f : paks) if (!f.getName().startsWith("zz_port_")) largest = Math.max(largest, f.length());
+        try {
+            for (File bank : Textures.banks(game)) {
+                File[] paks = bank.listFiles((dir, name) -> name.toLowerCase(Locale.ROOT).endsWith(".pak"));
+                if (paks != null) for (File f : paks)
+                    if (!f.getName().toLowerCase(Locale.ROOT).startsWith("zz_port_")) largest = Math.max(largest, f.length());
+            }
+        } catch (RuntimeException e) {
+            error(fmt(E_IO, e.getMessage()));
+            return;
+        }
         dialog().setTitle(text(T_TEX_DELETE))
             .setMessage(fmt(T_TEX_DELETE_ASK, size(st.removable), size(largest)))
             .setPositiveButton(text(T_DELETE), (d, w) -> startTextures(Textures.REMOVE_ORIGINALS, 0))
@@ -1238,16 +1351,17 @@ public final class Launcher extends Activity {
         T_TEX_REWRITING = 83, T_TEX_SCANNING = 84, T_TEX_COUNT = 85, T_TEX_LEFT = 86, T_TEX_FINISHED = 87,
         T_TEX_FAILED = 88, T_TEX_STOPPED = 89, T_TEX_ASK = 90, T_TEX_STOP_ASK = 91, T_TEX_MIN = 92, T_TEX_SEC = 93,
         T_TEX_UNREADABLE = 94, T_TEX_NOTHING = 95, T_TEX_CONVERT_BUTTON = 96, T_TEX_RAM_LOW = 97, T_TEX_RAM_OK = 98,
-        T_TEX_MORE = 99;
+        T_TEX_MORE = 99, T_SELECT_GAME = 100, T_READY = 101, T_RUNTIME_MISSING = 102,
+        T_TEX_PARTIAL = 103, T_TEX_MIXED = 104, T_TEX_PARTLY_REMOVED = 105;
     private static final String[][] TEXTS = {
-        {"Game", "Игра"},
+        {"Game files", "Файлы игр"},
         {"No game chosen yet", "Игра ещё не выбрана"},
         {"ZIP archive…", "ZIP-архив…"},
         {"Folder…", "Папка…"},
         {"The game's files: a ZIP archive of the installed game (it is unpacked) or the folder of the installation — "
-             + "the one with bin\\H5_Game.exe and data\\data.pak.",
+             + "with the bin/data folders, and bina1/dataa1 for Hammers of Fate.",
          "Файлы игры: ZIP-архив установленной игры (он будет распакован) или папка установки — та, где лежат "
-             + "bin\\H5_Game.exe и data\\data.pak."},
+             + "папки bin/data, а для Hammers of Fate также bina1/dataa1."},
         {"On this device", "На устройстве"},
         {"Play", "Играть"},
         {"Reading the archive…", "Читаю архив…"},
@@ -1385,6 +1499,16 @@ public final class Launcher extends Activity {
              + "займут её в несколько раз меньше — больше останется системе и фоновым приложениям, и Android реже "
              + "закроет игру, пока вы переключаетесь на другие приложения."},
         {"details", "подробнее"},
+        {"Select game", "Выбрать игру"},
+        {"Ready to play", "Готова к запуску"},
+        {"This game is not available in the installed build.",
+         "Эта игра недоступна в установленной сборке."},
+        {"Some game files still need texture conversion. Convert again to finish.",
+         "Часть файлов игры ещё требует конвертации текстур. Повторите конвертацию для завершения."},
+        {"The game files use different texture formats. Convert them to one format.",
+         "Файлы игры используют разные форматы текстур. Сконвертируйте их в один формат."},
+        {"Original textures were removed from some files. Continue removing them to finish.",
+         "Оригинальные текстуры удалены из части файлов. Продолжите удаление для завершения."},
     };
 
     static String text(int id) {

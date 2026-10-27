@@ -279,7 +279,7 @@ struct ZipEntry {
     std::string name;            /* as stored */
     uint32_t dostime = 0;        /* date << 16 | time: what 0x0047BC50 compares */
     uint16_t method = 0, flags = 0;
-    uint32_t crc = 0;
+    uint32_t crc = 0, attributes = 0;
     uint64_t csize = 0, usize = 0, lho = 0;
     size_t central = 0, central_size = 0;   /* its record in Zip::central */
     bool directory = false;
@@ -291,6 +291,7 @@ struct Zip {
     uint64_t size = 0, cd_offset = 0, cd_size = 0;
     std::vector<uint8_t> central;
     std::vector<ZipEntry> entries;
+    int priority = 0;
 
     bool open(const std::string &where)
     {
@@ -328,6 +329,7 @@ struct Zip {
             e.method = le16(r + 10);
             e.dostime = (static_cast<uint32_t>(le16(r + 14)) << 16) | le16(r + 12);
             e.crc = le32(r + 16);
+            e.attributes = le32(r + 38);
             e.csize = le32(r + 20);
             e.usize = le32(r + 24);
             uint16_t name = le16(r + 28), extra = le16(r + 30), comment = le16(r + 32);
@@ -674,7 +676,33 @@ int convert_dds(const uint8_t *data, uint64_t size, int format, std::vector<uint
 /* -------------------------------------------------------- the inventory */
 
 constexpr const char *OUTPUT = "zz_port_textures.pak";
+constexpr const char *LEGACY_OUTPUT = "zz_port_textures_v2.pak";
 constexpr const char *MANIFEST = "zz_port_textures.json";
+constexpr uint32_t LEGACY_ATTRIBUTES = 0x48540000u;
+
+bool legacy_priority(uint32_t attributes, int &priority)
+{
+    if ((attributes & 0xFFFF00FFu) != LEGACY_ATTRIBUTES || ((attributes >> 8) & 255u) > 5u) return false;
+    priority = static_cast<int>((attributes >> 8) & 255u) - 1;
+    return true;
+}
+
+bool native_newer(int old_priority, uint32_t old_time, int priority, uint32_t time)
+{
+    return old_priority != priority && old_priority != -1 && priority != -1
+           ? old_priority < priority : old_time < time;
+}
+
+uint32_t texture_crc(const std::vector<uint8_t> &bytes)
+{
+    uint32_t crc = crc32(0L, Z_NULL, 0);
+    for (size_t at = 0; at < bytes.size();) {
+        size_t n = std::min<size_t>(bytes.size() - at, 1u << 20);
+        crc = crc32(crc, bytes.data() + at, static_cast<uInt>(n));
+        at += n;
+    }
+    return crc;
+}
 
 struct Source {
     size_t pak;                  /* index in Inventory::paks */
@@ -710,33 +738,103 @@ std::string join(const std::string &dir, const std::string &name)
 #endif
 }
 
-/* H5's archive key: the path with '\' separators (0x009DF790 converts '/'). */
+bool known_bank(const std::string &bank)
+{
+    return lower(bank) == "data" || lower(bank) == "datals" || lower(bank) == "dataa1";
+}
+
+bool bank_directory(const char *game_dir, const char *bank, std::string &out)
+{
+    if (!game_dir || !*game_dir || !bank || !known_bank(bank)) {
+        fail("Unknown texture data bank");
+        return false;
+    }
+    out = join(game_dir, bank);  // Preserve the installation's actual case on Android.
+#ifdef _WIN32
+    DWORD attributes = GetFileAttributesA(out.c_str());
+    bool directory = attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY);
+#else
+    struct stat st;
+    bool directory = !stat(out.c_str(), &st) && S_ISDIR(st.st_mode);
+#endif
+    if (!directory) { fail("Texture data bank is missing: %s", bank); return false; }
+    return true;
+}
+
+std::string bank_name(const std::string &directory)
+{
+    size_t slash = directory.find_last_of("/\\");
+    return lower(directory.substr(slash == std::string::npos ? 0 : slash + 1));
+}
+
+const char *output_name(const std::string &directory)
+{
+    return bank_name(directory) == "data" ? OUTPUT : LEGACY_OUTPUT;
+}
+
+/* Native secondary-bank mount order and per-archive priority, from 1.6
+ * AF03F0 and 2.1 7B09B0. Those banks do not enumerate arbitrary *.pak files. */
+std::vector<std::pair<std::string, int>> mounted_paks(const std::string &directory)
+{
+    static const std::pair<const char *, int> datals[] = {
+        {"p5-texts.pak", -1}, {"p5-data.pak", 1}, {"p6-texts.pak", -1}, {"p6-data.pak", 2},
+        {"p7-texts.pak", -1}, {"p7-data.pak", 3}, {"p8-texts.pak", -1}, {"p8-data.pak", 4}};
+    static const std::pair<const char *, int> dataa1[] = {
+        {"texts.pak", -1}, {"p0-data.pak", 1}, {"p1-data.pak", 1}, {"p2-data.pak", 1}, {"p3-data.pak", 1},
+        {"p0-texts.pak", -1}, {"p1-texts.pak", -1}, {"p2-texts.pak", -1}, {"p3-texts.pak", -1},
+        {"a1-texts.pak", 2}, {"a1-sound.pak", 2}, {"a1-data.pak", 2}, {"a1p1-data.pak", 3},
+        {"a1p1-texts.pak", -1}, {"a1p1-sound.pak", 3}};
+    std::vector<std::pair<std::string, int>> result;
+    std::vector<std::string> names = paks_in(directory);
+    std::string bank = bank_name(directory);
+    if (bank == "data") {
+        for (const std::string &name : names)
+            if (lower(name) != OUTPUT && lower(name) != LEGACY_OUTPUT) result.emplace_back(name, 0);
+    } else {
+        auto append = [&](const auto &entries) {
+            for (const auto &entry : entries)
+                for (const std::string &name : names)
+                    if (lower(name) == entry.first) { result.emplace_back(name, entry.second); break; }
+        };
+        if (bank == "datals") append(datals);
+        else if (bank == "dataa1") append(dataa1);
+    }
+    return result;
+}
+
+/* Native ZIP hash/equality use a shared byte-normalization table. */
 std::string key_of(const std::string &name)
 {
     std::string key = name;
-    for (char &c : key) if (c == '/') c = '\\';
+    /* Native byte table: ASCII case-fold, either slash, other bytes unchanged. */
+    for (char &c : key) {
+        if (c == '\\') c = '/';
+        else if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
+    }
     return key;
 }
 
 /* Every pak but the conversion, the winner of each path, its DXT sources. */
-bool take_inventory(const char *game_dir, Inventory &inv, bool sources)
+bool take_inventory(const std::string &data_dir, Inventory &inv, bool sources)
 {
-    inv.data_dir = data_dir_of(game_dir);
-    std::vector<std::string> names = paks_in(inv.data_dir);
-    struct Winner { size_t pak, entry; uint32_t time; };
+    inv.data_dir = data_dir;
+    struct Winner { size_t pak, entry; uint32_t time; int priority; };
     std::map<std::string, Winner> winners;
-    for (const std::string &name : names) {
-        if (lower(name) == OUTPUT) continue;
+    for (const auto &[name, priority] : mounted_paks(inv.data_dir)) {
         auto zip = std::make_unique<Zip>();
         if (!zip->open(join(inv.data_dir, name))) { fail("Cannot read the archive %s", name.c_str()); return false; }
+        zip->priority = priority;
         size_t index = inv.paks.size();
         for (size_t i = 0; i < zip->entries.size(); ++i) {
             const ZipEntry &e = zip->entries[i];
             if (e.directory || !ends_with(e.name, ".dds")) continue;
-            Winner candidate{index, i, e.dostime};
+            Winner candidate{index, i, e.dostime, priority};
             auto found = winners.find(key_of(e.name));
             if (found == winners.end()) winners.emplace(key_of(e.name), candidate);
-            else if (found->second.time < e.dostime) found->second = candidate;   /* ties: the first loaded stays */
+            /* Exact native fold (HoF 92A070): -1 compares DOS time with
+             * every priority. This is not a sortable priority/time tuple. */
+            else if (native_newer(found->second.priority, found->second.time, priority, e.dostime))
+                found->second = candidate;   /* ties: the first loaded stays */
         }
         inv.paks.push_back(std::move(zip));
     }
@@ -757,10 +855,51 @@ bool take_inventory(const char *game_dir, Inventory &inv, bool sources)
     return true;
 }
 
+/* Leave every cross-bank DDS collision on the native path, including unconverted DXT1,
+ * so no timestamp bump changes the engines' different bank priorities. */
+bool keep_bank_priority(const char *game_dir, Inventory &inventory)
+{
+    std::vector<std::string> banks;
+#ifdef _WIN32
+    WIN32_FIND_DATAA found;
+    HANDLE find = FindFirstFileA(join(game_dir, "*").c_str(), &found);
+    if (find == INVALID_HANDLE_VALUE) { fail("Cannot inspect texture data banks"); return false; }
+    do if ((found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && known_bank(found.cFileName))
+        banks.push_back(found.cFileName);
+    while (FindNextFileA(find, &found));
+    FindClose(find);
+#else
+    DIR *directory = opendir(game_dir);
+    if (!directory) { fail("Cannot inspect texture data banks"); return false; }
+    while (struct dirent *entry = readdir(directory))
+        if (known_bank(entry->d_name)) banks.push_back(entry->d_name);
+    closedir(directory);
+#endif
+    std::map<std::string, bool> paths;
+    for (const std::string &bank : banks) {
+        if (lower(bank) == bank_name(inventory.data_dir)) continue;
+        Inventory other;
+        if (!take_inventory(join(game_dir, bank), other, false)) return false;
+        for (const auto &pak : other.paks)
+            for (const ZipEntry &entry : pak->entries)
+                if (!entry.directory && ends_with(entry.name, ".dds"))
+                    paths[key_of(entry.name)] = true;
+    }
+    inventory.sources.erase(std::remove_if(inventory.sources.begin(), inventory.sources.end(), [&](const Source &source) {
+        const ZipEntry &entry = inventory.paks[source.pak]->entries[source.entry];
+        if (paths.count(key_of(entry.name))) {
+            inventory.bytes -= static_cast<int64_t>(source.dxt_bytes);
+            return true;
+        }
+        return false;
+    }), inventory.sources.end());
+    return true;
+}
+
 /* ------------------------------------------------------------- manifest */
 
 struct Manifest {
-    int format = 0;
+    int format = 0, version = 1;
     int64_t textures = 0, bytes = 0;
     bool originals_removed = false;
     std::vector<std::string> paths;   /* the converted entries' names (for removal) */
@@ -779,7 +918,8 @@ std::string json_escape(const std::string &text)
 
 bool write_manifest(const std::string &data_dir, const Manifest &m)
 {
-    std::string text = "{\n  \"version\": 1,\n  \"format\": \"";
+    std::string text = "{\n  \"version\": " + std::string(bank_name(data_dir) == "data" ? "1" : "2") +
+                       ",\n  \"bank\": \"" + bank_name(data_dir) + "\",\n  \"format\": \"";
     text += m.format == TEXCONV_ASTC ? "astc" : "etc2";
     char numbers[160];
     snprintf(numbers, sizeof numbers, "\",\n  \"textures\": %lld,\n  \"bytes\": %lld,\n  \"originals_removed\": %s,\n  \"paths\": [",
@@ -790,14 +930,17 @@ bool write_manifest(const std::string &data_dir, const Manifest &m)
         text += json_escape(m.paths[i]);
         text += '"';
     }
-    text += "\n  ]\n}\n";
+    text += "\n  ]";
+    if (bank_name(data_dir) != "data") text += ",\n  \"metadata_policy\": \"native-priority-time-crc-v1\"";
+    text += "\n}\n";
     std::string path = join(data_dir, MANIFEST), temporary = path + ".tmp";
     File out;
     if (!out.create(temporary) || !out.write(text.data(), text.size()) || !out.sync() || !out.close()) {
         remove_file(temporary);
         return false;
     }
-    return replace_file(temporary, path);
+    if (!replace_file(temporary, path)) { remove_file(temporary); return false; }
+    return true;
 }
 
 /* The few fields this module writes, read back without a JSON library. */
@@ -809,10 +952,22 @@ bool read_manifest(const std::string &data_dir, Manifest &m)
     if (!size || size > (64u << 20)) return false;
     std::string text(static_cast<size_t>(size), '\0');
     if (!in.read_at(&text[0], text.size(), 0)) return false;
+    size_t bank = text.find("\"bank\": \"");
+    if (bank == std::string::npos) {
+        if (bank_name(data_dir) != "data") return false;  // Existing ToE manifests.
+    } else {
+        bank += 9;
+        size_t end = text.find('"', bank);
+        if (end == std::string::npos || text.substr(bank, end - bank) != bank_name(data_dir)) return false;
+    }
     auto number = [&](const char *name) -> int64_t {
         size_t at = text.find(std::string("\"") + name + "\":");
         return at == std::string::npos ? -1 : strtoll(text.c_str() + at + strlen(name) + 3, nullptr, 10);
     };
+    m.version = static_cast<int>(number("version"));
+    if (m.version != (bank_name(data_dir) == "data" ? 1 : 2)) return false;
+    if (bank_name(data_dir) != "data" && text.find("\"metadata_policy\": \"native-priority-time-crc-v1\"") == std::string::npos)
+        return false;
     m.format = text.find("\"format\": \"astc\"") != std::string::npos ? TEXCONV_ASTC
              : text.find("\"format\": \"etc2\"") != std::string::npos ? TEXCONV_ETC2 : 0;
     m.textures = number("textures");
@@ -837,7 +992,58 @@ bool read_manifest(const std::string &data_dir, Manifest &m)
         m.paths.push_back(path);
         at = p + 1;
     }
-    return m.format != 0;
+    return m.format != 0 && m.textures >= 0 && m.bytes >= 0 &&
+           static_cast<uint64_t>(m.textures) == m.paths.size();
+}
+
+/* A bank's manifest must name exactly its archive's valid converted DDSs.
+   Destructive removal additionally checks every stored byte's CRC before
+   rewriting any original archive. Ordinary status scans only read headers. */
+bool verify_conversion(const Zip &zip, const Manifest &manifest, bool payload)
+{
+    if (zip.entries.size() != manifest.paths.size()) return false;
+    std::map<std::string, bool> expected;
+    for (const std::string &path : manifest.paths) expected[key_of(path)] = true;
+    std::vector<uint8_t> header, chunk(payload ? 1u << 20 : 0);
+    for (const ZipEntry &entry : zip.entries) {
+        Dds d;
+        if (!expected.erase(key_of(entry.name)) || entry.method != 0 || entry.csize != entry.usize ||
+            !zip.read(entry, header, 128) || !parse_dds(header.data(), header.size(), d) ||
+            le32(header.data() + 36) != TEXCONV_MARKER || le32(header.data() + 40) != TEXCONV_VERSION)
+            return false;
+        int priority;
+        if (manifest.version == 2 && !legacy_priority(entry.attributes, priority)) return false;
+        bool etc = d.fourcc == TEXCONV_ETC2_RGB || d.fourcc == TEXCONV_ETC2_RGBA;
+        bool astc = d.fourcc == TEXCONV_ASTC_4x4 || d.fourcc == TEXCONV_ASTC_5x5 || d.fourcc == TEXCONV_ASTC_6x6;
+        if (!(manifest.format == TEXCONV_ETC2 ? etc : d.fourcc == TEXCONV_ETC2_RGB || astc)) return false;
+        d.fourcc = le32(header.data() + 44);
+        if (!is_dxt(d.fourcc) || 128 + dxt_payload(d) != entry.usize) return false;
+        if (payload) {
+            uint64_t offset;
+            if (!zip.data_offset(entry, offset)) return false;
+            uint32_t crc = crc32(0L, Z_NULL, 0);
+            for (uint64_t at = 0; at < entry.usize;) {
+                if (cancelled) return false;
+                size_t n = static_cast<size_t>(std::min<uint64_t>(chunk.size(), entry.usize - at));
+                if (!zip.file.read_at(chunk.data(), n, offset + at)) return false;
+                crc = crc32(crc, chunk.data(), static_cast<uInt>(n));
+                at += n;
+            }
+            if (crc != entry.crc) return false;
+        }
+    }
+    return expected.empty();
+}
+
+bool original_paths_present(const Inventory &inventory, const Manifest &manifest)
+{
+    std::map<std::string, bool> originals;
+    for (const auto &zip : inventory.paks)
+        for (const ZipEntry &entry : zip->entries)
+            if (!entry.directory) originals[key_of(entry.name)] = true;
+    for (const std::string &path : manifest.paths)
+        if (!originals.count(key_of(path))) return false;
+    return true;
 }
 
 /* -------------------------------------------------------- the zip writer */
@@ -846,10 +1052,11 @@ struct Written {
     std::string name;
     uint32_t dostime, crc;
     uint64_t size, offset;
+    uint32_t attributes;
 };
 
 bool write_local(File &out, uint64_t &position, const std::string &name, uint32_t dostime, const std::vector<uint8_t> &data,
-                 std::vector<Written> &written)
+                 std::vector<Written> &written, uint32_t attributes = 0x20u)
 {
     uint32_t crc = static_cast<uint32_t>(crc32(0L, data.data(), static_cast<uInt>(data.size())));
     std::vector<uint8_t> header;
@@ -866,7 +1073,7 @@ bool write_local(File &out, uint64_t &position, const std::string &name, uint32_
     put16(header, 0);
     header.insert(header.end(), name.begin(), name.end());
     if (!out.write(header.data(), header.size()) || !out.write(data.data(), data.size())) return false;
-    written.push_back({name, dostime, crc, data.size(), position});
+    written.push_back({name, dostime, crc, data.size(), position, attributes});
     position += header.size() + data.size();
     return position < 0xFFFFFFFFull;
 }
@@ -890,7 +1097,7 @@ bool write_central(File &out, uint64_t position, const std::vector<Written> &wri
         put16(central, 0);
         put16(central, 0);
         put16(central, 0);
-        put32(central, 0x20);            /* FILE_ATTRIBUTE_ARCHIVE */
+        put32(central, w.attributes);
         put32(central, static_cast<uint32_t>(w.offset));
         central.insert(central.end(), w.name.begin(), w.name.end());
     }
@@ -914,20 +1121,24 @@ int hardware_threads()
     return n ? static_cast<int>(n) : 4;
 }
 
-int convert(const char *game_dir, int format, int threads)
+int convert(const std::string &data_dir, int format, int threads, const char *game_dir = nullptr)
 {
     cancelled = false;
     begin(TEXCONV_SCANNING, 0, 0);
     if (format != TEXCONV_ETC2 && format != TEXCONV_ASTC) return fail("Unknown texture format %d", format);
     Inventory inv;
-    if (!take_inventory(game_dir, inv, true)) {
+    if (!take_inventory(data_dir, inv, true)) {
         if (cancelled) { set_state(TEXCONV_CANCELLED); return -1; }
         return -1;
     }
     Manifest previous;
-    if (read_manifest(inv.data_dir, previous) && previous.originals_removed)
+    bool has_manifest = read_manifest(inv.data_dir, previous);
+    if ((exists(join(data_dir, MANIFEST)) || exists(join(data_dir, output_name(data_dir)))) && !has_manifest)
+        return fail("Invalid texture conversion manifest in %s", data_dir.c_str());
+    if (has_manifest && (previous.originals_removed || !original_paths_present(inv, previous)))
         return fail("The original textures were removed; restore the game files to convert again");
     if (inv.sources.empty()) return fail("No DXT textures found in %s", inv.data_dir.c_str());
+    if (game_dir && !keep_bank_priority(game_dir, inv)) return -1;
     set_totals(static_cast<int64_t>(inv.sources.size()), inv.bytes);
     /* Larger textures first: the slowest ones do not end the run alone. */
     std::sort(inv.sources.begin(), inv.sources.end(), [](const Source &a, const Source &b) { return a.dxt_bytes > b.dxt_bytes; });
@@ -939,7 +1150,7 @@ int convert(const char *game_dir, int format, int threads)
                     static_cast<long long>(space >> 20));
     set_state(TEXCONV_CONVERTING);
 
-    std::string output = join(inv.data_dir, OUTPUT), temporary = output + ".tmp";
+    std::string output = join(inv.data_dir, output_name(inv.data_dir)), temporary = output + ".tmp";
     File out;
     if (!out.create(temporary)) return fail("Cannot create %s", temporary.c_str());
     uint64_t position = 0;
@@ -970,6 +1181,9 @@ int convert(const char *game_dir, int format, int threads)
             const ZipEntry &e = zip.entries[s.entry];
             std::string why;
             int result = zip.read(e, original) ? convert_dds(original.data(), original.size(), format, converted, why) : -1;
+            if (result >= 0 && bank_name(inv.data_dir) != "data") {
+                if (texture_crc(original) != e.crc) { result = -1; why = "original texture checksum mismatch"; }
+            }
             if (result < 0 && why.empty()) why = "read failed";
             std::unique_lock<std::mutex> hold(lock);
             if (result < 0) {
@@ -1007,7 +1221,10 @@ int convert(const char *game_dir, int format, int threads)
         const Source &s = inv.sources[item.first];
         const ZipEntry &e = inv.paks[s.pak]->entries[s.entry];
         if (!write_failed && !cancelled && !item.second.empty()) {
-            if (!write_local(out, position, e.name, dos_later(e.dostime), item.second, written)) {
+            bool secondary = bank_name(inv.data_dir) != "data";
+            if (secondary) set32(item.second.data() + 60, e.crc);
+            uint32_t attributes = secondary ? LEGACY_ATTRIBUTES | (static_cast<uint32_t>(inv.paks[s.pak]->priority + 1) << 8) : 0x20u;
+            if (!write_local(out, position, e.name, secondary ? e.dostime : dos_later(e.dostime), item.second, written, attributes)) {
                 write_failed = true;
                 std::lock_guard<std::mutex> hold(lock);
                 if (failure.empty()) failure = "Cannot write the converted archive (storage full?)";
@@ -1103,27 +1320,77 @@ bool rewrite_without(Zip &zip, const std::vector<bool> &drop, std::string &why)
     return true;
 }
 
-int remove_originals(const char *game_dir)
+int remove_originals(const std::string &data_dir)
 {
     cancelled = false;
     begin(TEXCONV_SCANNING, 0, 0);
     Inventory inv;
-    if (!take_inventory(game_dir, inv, false)) return -1;
+    if (!take_inventory(data_dir, inv, false)) return -1;
     Manifest manifest;
-    if (!read_manifest(inv.data_dir, manifest) || !exists(join(inv.data_dir, OUTPUT)))
+    if (!read_manifest(inv.data_dir, manifest) || !exists(join(inv.data_dir, output_name(inv.data_dir))))
         return fail("There is no texture conversion to keep");
     Zip converted;
-    if (!converted.open(join(inv.data_dir, OUTPUT))) return fail("The converted archive cannot be read");
+    if (!converted.open(join(inv.data_dir, output_name(inv.data_dir)))) return fail("The converted archive cannot be read");
+    if (!verify_conversion(converted, manifest, true)) {
+        if (cancelled) { set_state(TEXCONV_CANCELLED); return -1; }
+        return fail("The converted archive does not match its manifest or checksum");
+    }
     std::map<std::string, uint32_t> replaced;   /* key -> the converted entry's time */
     for (const ZipEntry &e : converted.entries) replaced[key_of(e.name)] = e.dostime;
-    /* An original goes when the conversion shadows it: same path, older. */
+    struct Covered { uint32_t time, crc; int priority; };
+    std::map<std::string, Covered> covered;
+    if (manifest.version == 2) {
+        std::vector<uint8_t> header;
+        for (const ZipEntry &entry : converted.entries) {
+            int priority;
+            if (!legacy_priority(entry.attributes, priority) || !converted.read(entry, header, 128))
+                return fail("Invalid original texture metadata");
+            covered.emplace(key_of(entry.name), Covered{entry.dostime, le32(header.data() + 60), priority});
+        }
+        struct Winner { const Zip *zip; const ZipEntry *entry; };
+        std::map<std::string, Winner> winners;
+        for (const auto &zip : inv.paks) for (const ZipEntry &entry : zip->entries) {
+            if (entry.directory) continue;
+            std::string key = key_of(entry.name);
+            if (!covered.count(key)) continue;
+            auto found = winners.find(key);
+            if (found == winners.end() || native_newer(found->second.zip->priority, found->second.entry->dostime,
+                                                       zip->priority, entry.dostime))
+                winners[key] = {zip.get(), &entry};
+        }
+        for (auto it = covered.begin(); it != covered.end();) {
+            const Covered &metadata = it->second;
+            auto found = winners.find(it->first);
+            if (found == winners.end() || found->second.zip->priority != metadata.priority ||
+                found->second.entry->dostime != metadata.time || found->second.entry->crc != metadata.crc) {
+                if (!manifest.originals_removed)
+                    return fail("An original texture changed since conversion: %s", it->first.c_str());
+                it = covered.erase(it);  // A previous partial removal may have exposed an older loser.
+            } else ++it;
+        }
+    }
+    /* Secondary banks remove only the exact covered source; data keeps its existing date policy. */
     std::vector<std::vector<bool>> drops;
     int64_t total = 0, freed = 0;
     for (auto &zip : inv.paks) {
         std::vector<bool> drop(zip->entries.size(), false);
         for (size_t i = 0; i < zip->entries.size(); ++i) {
-            auto found = replaced.find(key_of(zip->entries[i].name));
-            if (found != replaced.end() && zip->entries[i].dostime < found->second) {
+            const ZipEntry &entry = zip->entries[i];
+            std::string key = key_of(entry.name);
+            auto found = replaced.find(key);
+            bool drop_entry = found != replaced.end() && entry.dostime < found->second;
+            if (manifest.version == 2) {
+                auto matched = covered.find(key);
+                drop_entry = !entry.directory && matched != covered.end() && zip->priority == matched->second.priority &&
+                             entry.dostime == matched->second.time && entry.crc == matched->second.crc;
+                if (drop_entry) {
+                    std::vector<uint8_t> original;
+                    if (!zip->read(entry, original) || texture_crc(original) != matched->second.crc)
+                        return fail("An original texture checksum changed: %s", entry.name.c_str());
+                    if (cancelled) { set_state(TEXCONV_CANCELLED); return -1; }
+                }
+            }
+            if (drop_entry) {
                 drop[i] = true;
                 freed += static_cast<int64_t>(zip->entries[i].csize);
             }
@@ -1140,6 +1407,13 @@ int remove_originals(const char *game_dir)
                     static_cast<long long>((largest + (64 << 20)) >> 20), static_cast<long long>(space >> 20));
     set_totals(static_cast<int64_t>(inv.paks.size()), total);
     set_state(TEXCONV_REMOVING);
+    /* Commit the only-copy guard before the first archive can be replaced.
+       A partial rewrite/cancel remains resumable; undo cannot delete the
+       sole converted copy after a later filesystem or manifest failure. */
+    if (!manifest.originals_removed && !manifest.paths.empty()) {
+        manifest.originals_removed = true;
+        if (!write_manifest(inv.data_dir, manifest)) return fail("Cannot protect the conversion before removing originals");
+    }
     for (size_t p = 0; p < inv.paks.size(); ++p) {
         Zip &zip = *inv.paks[p];
         if (std::find(drops[p].begin(), drops[p].end(), true) != drops[p].end()) {
@@ -1152,8 +1426,6 @@ int remove_originals(const char *game_dir)
         }
         ++done_textures;
     }
-    manifest.originals_removed = true;
-    if (!write_manifest(inv.data_dir, manifest)) return fail("Cannot update %s", MANIFEST);
     (void)freed;
     set_state(TEXCONV_DONE);
     return 0;
@@ -1163,13 +1435,13 @@ int remove_originals(const char *game_dir)
 
 /* ------------------------------------------------------------------ API */
 
-extern "C" int texconv_scan(const char *game_dir, texconv_status *out)
+static int scan_bank(const std::string &data_dir, texconv_status *out)
 {
     cancelled = false;
     begin(TEXCONV_SCANNING, 0, 0);
     *out = texconv_status{};
     Inventory inv;
-    if (!take_inventory(game_dir, inv, true)) return -1;
+    if (!take_inventory(data_dir, inv, true)) return -1;
     out->textures = static_cast<int64_t>(inv.sources.size());
     out->bytes = inv.bytes;
     /* Converted sizes: ETC2 keeps the DXT size for alpha textures and halves
@@ -1177,12 +1449,18 @@ extern "C" int texconv_scan(const char *game_dir, texconv_status *out)
     out->estimate_etc2 = inv.bytes;
     out->estimate_astc = inv.bytes;
     Manifest m;
-    std::string output = join(inv.data_dir, OUTPUT);
-    if (read_manifest(inv.data_dir, m) && exists(output)) {
+    std::string output = join(inv.data_dir, output_name(inv.data_dir));
+    bool manifest = read_manifest(inv.data_dir, m), archive = exists(output);
+    if ((exists(join(inv.data_dir, MANIFEST)) && !manifest) || manifest != archive)
+        return fail("Incomplete texture conversion in %s", inv.data_dir.c_str());
+    if (manifest && archive) {
+        Zip converted;
+        if (!converted.open(output) || !verify_conversion(converted, m, false))
+            return fail("The converted archive does not match its manifest");
         out->converted_format = m.format;
         out->converted_textures = m.textures;
         out->converted_bytes = m.bytes;
-        out->originals_removed = m.originals_removed ? 1 : 0;
+        out->originals_removed = m.originals_removed || !original_paths_present(inv, m) ? 1 : 0;
         std::map<std::string, bool> names;
         for (const std::string &p : m.paths) names[key_of(p)] = true;
         for (const Source &s : inv.sources) {
@@ -1194,27 +1472,67 @@ extern "C" int texconv_scan(const char *game_dir, texconv_status *out)
     return 0;
 }
 
+extern "C" int texconv_scan(const char *game_dir, texconv_status *out)
+{
+    return scan_bank(data_dir_of(game_dir), out);
+}
+
 extern "C" int texconv_convert(const char *game_dir, int format, int threads)
 {
-    return convert(game_dir, format, threads);
+    return convert(data_dir_of(game_dir), format, threads);
 }
 
 extern "C" int texconv_remove_originals(const char *game_dir)
 {
-    return remove_originals(game_dir);
+    return remove_originals(data_dir_of(game_dir));
+}
+
+static int remove_converted(const std::string &data_dir)
+{
+    begin(TEXCONV_FINISHING, 0, 0);
+    Manifest m;
+    bool manifest = read_manifest(data_dir, m);
+    if ((exists(join(data_dir, MANIFEST)) || exists(join(data_dir, output_name(data_dir)))) && !manifest)
+        return fail("Invalid texture conversion manifest in %s", data_dir.c_str());
+    Inventory originals;
+    if (manifest && !take_inventory(data_dir, originals, false)) return -1;
+    if (manifest && (m.originals_removed || !original_paths_present(originals, m)))
+        return fail("The original textures were removed: the converted ones are the only copy");
+    if (!remove_file(join(data_dir, output_name(data_dir))) || !remove_file(join(data_dir, MANIFEST)))
+        return fail("Cannot delete the converted textures");
+    set_state(TEXCONV_DONE);
+    return 0;
 }
 
 extern "C" int texconv_remove_converted(const char *game_dir)
 {
-    begin(TEXCONV_FINISHING, 0, 0);
-    std::string data_dir = data_dir_of(game_dir);
-    Manifest m;
-    if (read_manifest(data_dir, m) && m.originals_removed)
-        return fail("The original textures were removed: the converted ones are the only copy");
-    if (!remove_file(join(data_dir, OUTPUT)) || !remove_file(join(data_dir, MANIFEST)))
-        return fail("Cannot delete the converted textures");
-    set_state(TEXCONV_DONE);
-    return 0;
+    return remove_converted(data_dir_of(game_dir));
+}
+
+extern "C" int texconv_scan_bank(const char *game_dir, const char *bank, texconv_status *out)
+{
+    if (!out) return fail("Texture status is missing");
+    *out = texconv_status{};
+    std::string directory;
+    return bank_directory(game_dir, bank, directory) ? scan_bank(directory, out) : -1;
+}
+
+extern "C" int texconv_convert_bank(const char *game_dir, const char *bank, int format, int threads)
+{
+    std::string directory;
+    return bank_directory(game_dir, bank, directory) ? convert(directory, format, threads, game_dir) : -1;
+}
+
+extern "C" int texconv_remove_originals_bank(const char *game_dir, const char *bank)
+{
+    std::string directory;
+    return bank_directory(game_dir, bank, directory) ? remove_originals(directory) : -1;
+}
+
+extern "C" int texconv_remove_converted_bank(const char *game_dir, const char *bank)
+{
+    std::string directory;
+    return bank_directory(game_dir, bank, directory) ? remove_converted(directory) : -1;
 }
 
 extern "C" void texconv_cancel(void) { cancelled = true; }

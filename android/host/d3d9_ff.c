@@ -1,4 +1,4 @@
-/* The Direct3D 9 fixed-function pipeline as generated GLSL ES 3.00.
+/* The Direct3D 9 fixed-function pipeline as generated GLSL ES 3.10.
  *
  * The vertex and pixel halves are generated separately, so either can stand
  * in for a missing shader: no shaders at all, a pixel shader fed by
@@ -190,7 +190,7 @@ static GLuint vertex_shader(const ff_vkey *k)
 {
     char src[16384];
     size_t n = 0;
-    APPEND(src, n, "#version 300 es\nprecision highp float;\n"
+    APPEND(src, n, "#version 310 es\nprecision highp float;\n"
         "uniform mat4 ff_wvp;\nuniform mat4 ff_world_view;\nuniform vec4 ff_vp;\nuniform vec2 ff_half;\n"
         "uniform vec4 ff_material[4];\nuniform vec4 ff_ambient;\nuniform vec4 ff_light_dir[8];\n"
         "uniform vec4 ff_light_diffuse[8];\nuniform mat4 ff_tex_matrix[8];\n"
@@ -381,7 +381,7 @@ static GLuint pixel_shader(const ff_fkey *k)
 {
     char src[16384];
     size_t n = 0;
-    APPEND(src, n, "#version 300 es\nprecision highp float;\nprecision highp sampler2D;\n"
+    APPEND(src, n, "#version 310 es\nprecision highp float;\nprecision highp sampler2D;\n"
         "precision highp samplerCube;\nprecision highp sampler3D;\n"
         "uniform vec4 ff_tfactor;\nuniform int vpAlphaFunc;\nuniform float vpAlphaRef;\n"
         "layout(location = 0) out highp vec4 ff_color;\n");

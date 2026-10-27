@@ -39,7 +39,11 @@ static pthread_mutex_t loader_lock = PTHREAD_MUTEX_INITIALIZER;
  * name is what the guest asks for; the file is the pre-based private copy. */
 typedef struct { const char *name; const char *file; uint32_t base; int exe; int optional; } lifted_spec;
 static const lifted_spec lifted[] = {
+#ifdef HOMM5_MODULES_INCLUDE
+#include HOMM5_MODULES_INCLUDE
+#else
 #include "modules.inc"
+#endif
 };
 
 static const char *pseudo_names[] = {
@@ -51,7 +55,10 @@ static const char *pseudo_names[] = {
     "rpcrt4.dll", "wininet.dll", "oleacc.dll", "winspool.drv",
 };
 
-#define VIRTUAL_BIN "C:\\Games\\HeroesV\\bin"
+#ifndef HOMM5_BIN
+#define HOMM5_BIN "bin"
+#endif
+#define VIRTUAL_BIN "C:\\Games\\HeroesV\\" HOMM5_BIN
 static uint32_t exe_base;
 
 /* ------------------------------------------------------------ PE helpers */

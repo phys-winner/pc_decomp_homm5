@@ -266,7 +266,7 @@ void void_touch_adventure_frame(uint32_t screen, float height, float top, float 
     framing.stage = 2;
 }
 
-/* Frame once after each deployment side / battle transition, not after moves. */
+/* Deployment fits its army once; battle framing follows only the visible HUD gap. */
 void void_touch_combat_frame(uint32_t screen, float width, float height, float hud_top, float top, float bottom)
 {
     if (!screen) { framing.camera = 0; return; }
@@ -280,6 +280,15 @@ void void_touch_combat_frame(uint32_t screen, float width, float height, float h
         original_projection = void_dispatch_find(0x007CD0C0u);
         if (!original_projection) return;
         void_dispatch_add(0x007CD0C0u, camera_projection);
+    }
+    if (MEM32(screen + 0x2E0) != 0x1000) {
+        /* Project the arena anchor into the visible HUD gap; creature labels depend on zoom and turn. */
+        framing.camera = camera; framing.screen = screen; framing.phase = 0;
+        framing.height = height;
+        framing.ratio = fminf(1.6f, fmaxf(1.0f, (1.0f - 165.0f / 768.0f) * height / hud_top));
+        framing.centre = (hud_top + 40.0f) / height - 1.0f;
+        framing.stage = 2;
+        return;
     }
     float pose[10];
     if (!void_touch_camera_pose(screen, 1, pose, 0, 0)) return;
@@ -312,10 +321,11 @@ void void_touch_combat_frame(uint32_t screen, float width, float height, float h
 
 /* Two fingers moved up together tilt the view toward the horizon, within the
  * adventure camera mode's own pitch limits (0x0058A5E0: the mode's
- * {rod, rod, pitch, pitch, yaw, yaw} hard limits; the town keeps its range). */
+ * {rod, rod, pitch, pitch, yaw, yaw} hard limits; combat uses its operator's
+ * pitch bounds, and town keeps its range). */
 int void_touch_camera_tilt(uint32_t screen, int kind, float dy)
 {
-    if (!isfinite(dy) || dy == 0 || kind == 1) return 0;
+    if (!isfinite(dy) || dy == 0) return 0;
     /* The town's pending UI, modal and busy checks gate tilting as they gate pan and zoom. */
     if (kind == 2 && !camera_town_prepare(screen)) return 0;
     float pose[10];
@@ -324,6 +334,13 @@ int void_touch_camera_tilt(uint32_t screen, int kind, float dy)
     void_input_screen_size(&width, &height);
     if (height <= 0) return 0;
     float low = -1.5f, high = -0.05f;
+    if (kind == 1) {
+        uint32_t hand = MEM32(screen + 0x3B8);
+        if (void_vm_readable(hand + 0x14C, 8)) {
+            float a = MEMF(hand + 0x14C), b = MEMF(hand + 0x150);
+            if (isfinite(a) && isfinite(b) && a < b && a > -1.6f && b < 0) { low = a; high = b; }
+        }
+    }
     if (kind == 0 && void_dispatch_find(0x0058A5E0u)) {
         uint32_t limits = void_call_guest_this(0x0058A5E0u, 1000, 0, NULL);
         if (void_vm_readable(limits, 24)) {

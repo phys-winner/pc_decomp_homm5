@@ -19,25 +19,36 @@ final class Assets {
 
     /** The folder the game reads its images from (nativeStart's images). */
     static File images(Context c, File base) {
-        File own = new File(c.getFilesDir(), "lifted");
+        return images(c, base, "toe");
+    }
+
+    static File images(Context c, File base, String edition) {
+        String name = Games.images(edition);
+        File own = new File(c.getFilesDir(), name);
         try {
-            if (install(c, "lifted", own)) return own;
+            if (install(c, name, own)) return own;
         } catch (IOException e) {
             android.util.Log.w("HeroesV", "images: " + e);
         }
         /* A development install keeps them in /sdcard/HeroesV/lifted (tools/deploy.py). */
-        return new File(base, "lifted");
+        return new File(base, name);
     }
 
     /** The overlay folder, with the intro playlist present only when skipped. */
     static File overlay(Context c, boolean skipIntro) {
-        File own = new File(c.getFilesDir(), "overlay");
+        return overlay(c, skipIntro, "toe");
+    }
+
+    static File overlay(Context c, boolean skipIntro, String edition) {
+        String name = Games.overlay(edition);
+        File own = new File(c.getFilesDir(), name);
         try {
-            if (!install(c, "overlay", own)) return null;
-            File intro = new File(own, "video/intro_a1.xml");
+            if (!install(c, name, own)) return null;
+            String playlist = Games.intro(edition);
+            File intro = new File(own, "video/" + playlist);
             if (skipIntro) {
                 intro.getParentFile().mkdirs();
-                copy(c, "overlay-intro/intro_a1.xml", intro);
+                copy(c, "overlay-intro" + Games.suffix(edition) + "/" + playlist, intro);
             } else if (intro.exists() && !intro.delete()) {
                 android.util.Log.w("HeroesV", "overlay: cannot remove " + intro);
             }
@@ -50,11 +61,25 @@ final class Assets {
 
     /** Whether the APK carries the game's images (the launcher asks before it starts). */
     static boolean carriesImages(Context c) {
-        try (InputStream in = c.getAssets().open("lifted/index.txt")) {
+        return carriesImages(c, "toe");
+    }
+
+    static boolean carriesImages(Context c, String edition) {
+        return carries(c, Games.images(edition) + "/index.txt");
+    }
+
+    private static boolean carries(Context c, String path) {
+        try (InputStream in = c.getAssets().open(path)) {
             return true;
         } catch (IOException e) {
             return false;
         }
+    }
+
+    static boolean runtimeAvailable(Context c, File base, String edition) {
+        if (!NativeLibrary.available(c, Games.library(edition))) return false;
+        if (carriesImages(c, edition)) return carries(c, Games.overlay(edition) + "/index.txt");
+        return "toe".equals(edition) && new File(base, "lifted/H5_Game.exe").isFile();
     }
 
     /* assets/<name>/index.txt: "path size sha256" a line; the copy notes the

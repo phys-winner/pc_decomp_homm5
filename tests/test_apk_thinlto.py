@@ -47,11 +47,10 @@ class ThinLtoRoutingTest(pgo_tests.ApkPGORoutingTest):
                 self.library(root, "arm64-thinlto", b"thinlto-library")
                 self.invoke(module, ["--thinlto", *(["--skip-native"] if skip else [])])
                 self.assertEqual(self.packaged_library(out), b"thinlto-library")
-                self.assertEqual(len(native), 1 if skip else 2)
+                self.assertEqual(len(native), 1 if skip else 4)
                 self.assertEqual(native[-1], self.texconv_call(root))
                 if not skip:
-                    self.assertEqual(native[0], [sys.executable, str(root / "tools/build_android.py"),
-                                                 "--shared", "--jobs", "12", "--thinlto"])
+                    self.assertEqual(native[:-1], self.native_commands(root, ["--thinlto"]))
                 self.assertEqual(len(sdk), 5)
                 self.assertEqual(removed, [out])
 
@@ -64,11 +63,10 @@ class ThinLtoRoutingTest(pgo_tests.ApkPGORoutingTest):
                 flags = ["--global-regs", "--volatile-memory", "--pgo-generate", "--thinlto"]
                 self.invoke(module, [*flags, "--thinlto-jobs", "3", *(["--skip-native"] if skip else [])])
                 self.assertEqual(self.packaged_library(out), b"all-modes")
-                self.assertEqual(len(native), 1 if skip else 2)
+                self.assertEqual(len(native), 1 if skip else 4)
                 self.assertEqual(native[-1], self.texconv_call(root))
                 if not skip:
-                    self.assertEqual(native[0], [sys.executable, str(root / "tools/build_android.py"),
-                                                 "--shared", "--jobs", "12", *flags, "--thinlto-jobs", "3"])
+                    self.assertEqual(native[:-1], self.native_commands(root, [*flags, "--thinlto-jobs", "3"]))
 
     def test_thinlto_use_and_no_pgo_keep_suffix_and_forward_exact_arguments(self):
         for mode in ("--pgo-use", "--no-pgo"):
@@ -83,12 +81,10 @@ class ThinLtoRoutingTest(pgo_tests.ApkPGORoutingTest):
                     self.invoke(module, ["--thinlto", *pgo_flags, "--thinlto-jobs", "2",
                                          *(["--skip-native"] if skip else [])])
                     self.assertEqual(self.packaged_library(out), b"profiled-or-unprofiled-lto")
-                    self.assertEqual(len(native), 1 if skip else 2)
+                    self.assertEqual(len(native), 1 if skip else 4)
                     self.assertEqual(native[-1], self.texconv_call(root))
                     if not skip:
-                        self.assertEqual(native[0], [sys.executable, str(root / "tools/build_android.py"),
-                                                     "--shared", "--jobs", "12", "--thinlto", *pgo_flags,
-                                                     "--thinlto-jobs", "2"])
+                        self.assertEqual(native[:-1], self.native_commands(root, ["--thinlto", *pgo_flags, "--thinlto-jobs", "2"]))
 
     def test_invalid_thread_options_preserve_existing_apk_before_any_work(self):
         for flags in (["--thinlto-jobs", "2"], ["--thinlto-jobs", "0"],
@@ -111,7 +107,7 @@ class ThinLtoRoutingTest(pgo_tests.ApkPGORoutingTest):
                     self.invoke(module, ["--thinlto", *(["--skip-native"] if skip else [])])
                 self.assertIn("arm64-thinlto", str(error.exception))
                 self.assertEqual((out / "keep-until-valid-library").read_bytes(), b"previous-apk")
-                self.assertEqual(len(native), 0 if skip else 1)   # no texture converter build either
+                self.assertEqual(len(native), 0 if skip else 3)   # no texture converter build either
                 self.assertEqual((sdk, removed), ([], []))
 
 

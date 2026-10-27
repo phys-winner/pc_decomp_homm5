@@ -20,7 +20,7 @@ final class Unpacker {
     static final String GAME_EXE = "bin/H5_Game.exe", DATA = "data/data.pak", PATCH = "data/a2p1-data.pak";
     static final String FOLDER = "HeroesV", TEMP = ".unpacking";
     /** What the game itself reads (tools/deploy.py's list). */
-    static final String[] NEEDED = {"bin", "data", "music", "video", "profiles", "maps", "usercampaigns", "usermods",
+    static final String[] NEEDED = {"bin", "bina1", "data", "dataa1", "datals", "music", "video", "profiles", "maps", "usercampaigns", "usermods",
         "hwcursors", "duelpresets"};
     /* Failures, which the launcher names in its own words. */
     static final int NOT_ZIP = 1, SPLIT = 2, NO_GAME = 3, NOT_HOMM5 = 4, UNSAFE = 5, METHOD = 6, ENCRYPTED = 7,
@@ -48,6 +48,7 @@ final class Unpacker {
         final List<String> paths, folders;   /* files' paths under the root; folders' */
         final long size;
         final boolean patched;
+        final List<String> editions;
 
         Plan(Zip zip, String root, List<Zip.Entry> files, List<String> paths, List<String> folders, long size, boolean patched) {
             this.zip = zip;
@@ -57,6 +58,16 @@ final class Unpacker {
             this.folders = folders;
             this.size = size;
             this.patched = patched;
+            this.editions = new ArrayList<>();
+            for (String edition : Games.IDS) {
+                boolean complete = true;
+                for (String required : Games.required(edition)) {
+                    boolean found = false;
+                    for (String path : paths) if (path.equalsIgnoreCase(required)) { found = true; break; }
+                    if (!found) { complete = false; break; }
+                }
+                if (complete) editions.add(edition);
+            }
         }
     }
 
@@ -100,7 +111,9 @@ final class Unpacker {
             files.add((Zip.Entry) i[0]);
             paths.add((String) i[1]);
         }
-        return new Plan(zip, root, files, paths, folders, size, patched);
+        Plan plan = new Plan(zip, root, files, paths, folders, size, patched);
+        if (plan.editions.isEmpty()) throw new Failure(NOT_HOMM5, root.isEmpty() ? "/" : root);
+        return plan;
     }
 
     /** The folder above the shallowest bin/H5_Game.exe ("" at the top). */
@@ -108,12 +121,14 @@ final class Unpacker {
         String best = null;
         for (Zip.Entry e : entries) {
             String name = e.name;
-            int cut = name.length() - GAME_EXE.length();
-            if (e.directory() || cut < 0 || !name.regionMatches(true, cut, GAME_EXE, 0, GAME_EXE.length())) continue;
-            if (cut > 0 && name.charAt(cut - 1) != '/') continue;
-            String root = name.substring(0, cut);
-            if (root.startsWith("__MACOSX/")) continue;   /* macOS's resource forks */
-            if (best == null || depth(root) < depth(best)) best = root;
+            for (String executable : new String[] {GAME_EXE, "bina1/H5_Game.exe"}) {
+                int cut = name.length() - executable.length();
+                if (e.directory() || cut < 0 || !name.regionMatches(true, cut, executable, 0, executable.length())) continue;
+                if (cut > 0 && name.charAt(cut - 1) != '/') continue;
+                String root = name.substring(0, cut);
+                if (root.startsWith("__MACOSX/")) continue;
+                if (best == null || depth(root) < depth(best)) best = root;
+            }
         }
         if (best == null) throw new Failure(NO_GAME, null);
         return best;
@@ -165,13 +180,13 @@ final class Unpacker {
 
     static boolean isRoot(File dir) {
         File exe = child(child(dir, "bin"), "H5_Game.exe");
-        return exe != null && exe.isFile();
+        File expansion = child(child(dir, "bina1"), "H5_Game.exe");
+        return (exe != null && exe.isFile()) || (expansion != null && expansion.isFile());
     }
 
     /** A complete installation: the game's data archive is there too. */
     static boolean isGame(File root) {
-        File data = child(child(root, "data"), "data.pak");
-        return isRoot(root) && data != null && data.isFile();
+        return !Games.editions(root).isEmpty();
     }
 
     static boolean isPatched(File root) {

@@ -6,6 +6,8 @@
  *   port_render_scale        0.25 .. 1    backbuffer size against the display
  *   port_camera_sensitivity  0.25 .. 4    touch camera rotation, zoom and tilt
  *   port_fps_limit           0 or 30..240 maximum frame rate; 0 follows the display
+ *   port_cursor_offset_x/y   -0.2 .. 0.2  fraction of the shorter screen side
+ *   port_touch_cursor        0 or 1      draw the cursor during finger contact
  *
  * The engine registers its variables from static initializers through
  * 0x00C11400 (ECX name string, EDX value copier, stack: storage, default,
@@ -25,11 +27,12 @@ void void_android_settings_changed(int which, float value);
 static void void_android_settings_changed(int which, float value) { (void)which; (void)value; }
 #endif
 
-enum { PORT_UI, PORT_RENDER, PORT_CAMERA, PORT_FPS, PORT_COUNT };
+enum { PORT_UI, PORT_RENDER, PORT_CAMERA, PORT_FPS, PORT_CURSOR_X, PORT_CURSOR_Y, PORT_TOUCH_CURSOR, PORT_COUNT };
 static const char *const port_names[PORT_COUNT] = {
     "port_ui_scale", "port_render_scale", "port_camera_sensitivity", "port_fps_limit",
+    "port_cursor_offset_x", "port_cursor_offset_y", "port_touch_cursor",
 };
-static float port_defaults[PORT_COUNT] = { 1.0f, 1.0f, 1.0f, 60.0f };
+static float port_defaults[PORT_COUNT] = { 1.0f, 1.0f, 1.0f, 60.0f, 0.0f, 0.0f, 0.0f };
 static float port_applied[PORT_COUNT] = { -1.0f, -1.0f, -1.0f, -1.0f };
 static uint32_t port_storage;             /* PORT_COUNT guest floats */
 static int port_state;                    /* 0 not yet, 1 registering, 2 registered */
@@ -119,6 +122,8 @@ static float port_value(int which, float low, float high)
 }
 
 float void_port_camera_sensitivity(void) { return port_value(PORT_CAMERA, 0.25f, 4.0f); }
+float void_port_cursor_offset(int vertical) { return port_value(vertical ? PORT_CURSOR_Y : PORT_CURSOR_X, -0.2f, 0.2f); }
+int void_port_touch_cursor(void) { return port_value(PORT_TOUCH_CURSOR, 0.0f, 1.0f) >= 0.5f; }
 float void_port_fps_limit(void)
 {
     float value = port_value(PORT_FPS, 0.0f, 240.0f);

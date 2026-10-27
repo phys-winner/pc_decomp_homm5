@@ -704,9 +704,11 @@ WINAPI_EXPORT(U32, SetWindowLongW, 3) { return set_window_long(); }
 
 WINAPI_EXPORT(U32, SetWindowTextW, 2)
 {
-    window_t *w = find_window(ARG(0));
     char *t = void_wstr_utf8(ARG(1));
+    pthread_mutex_lock(&user_lock);
+    window_t *w = find_window(ARG(0));
     if (w && t) snprintf(w->title, sizeof w->title, "%s", t);
+    pthread_mutex_unlock(&user_lock);
     VLOG("[void] SetWindowTextW: %s", t ? t : "");
     free(t);
     return w != NULL;
@@ -714,12 +716,60 @@ WINAPI_EXPORT(U32, SetWindowTextW, 2)
 
 WINAPI_EXPORT(U32, SetWindowTextA, 2)
 {
-    window_t *w = find_window(ARG(0));
     char *t = void_astr_utf8(ARG(1));
+    pthread_mutex_lock(&user_lock);
+    window_t *w = find_window(ARG(0));
     if (w && t) snprintf(w->title, sizeof w->title, "%s", t);
+    pthread_mutex_unlock(&user_lock);
     free(t);
     return w != NULL;
 }
+
+static uint32_t get_window_text(int wide)
+{
+    int32_t capacity = (int32_t)ARG(2);
+    if (capacity <= 0) {
+        if (capacity < 0) void_set_last_error(ERROR_INVALID_PARAMETER_);
+        return 0;
+    }
+    char title[sizeof windows[0].title];
+    pthread_mutex_lock(&user_lock);
+    window_t *w = find_window(ARG(0));
+    if (w) memcpy(title, w->title, sizeof title);
+    else title[0] = 0;
+    pthread_mutex_unlock(&user_lock);
+    title[sizeof title - 1] = 0;
+    if (!w) void_set_last_error(1400u);
+    unsigned char *end = (unsigned char *)title;
+    uint32_t units = 0, limit = (uint32_t)capacity - 1;
+    uint16_t high = 0;
+    while (*end && units < limit) {
+        unsigned char *next = end + 1;
+        while ((*next & 0xC0u) == 0x80u) ++next;
+        uint32_t width = wide && *end >= 0xF0u && next - end == 4 ? 2u : 1u;
+        if (width > limit - units) {
+            /* Win32 truncates UTF-16 by code units, including a lone high surrogate. */
+            uint32_t cp = ((uint32_t)(end[0] & 7u) << 18) | ((uint32_t)(end[1] & 63u) << 12) |
+                          ((uint32_t)(end[2] & 63u) << 6) | (end[3] & 63u);
+            high = (uint16_t)(0xD800u + ((cp - 0x10000u) >> 10));
+            break;
+        }
+        units += width;
+        end = next;
+    }
+    *end = 0;
+    uint32_t out = ARG(1), bytes = (units + (high != 0) + 1u) * (wide ? 2u : 1u);
+    if (!out || !void_vm_writable(out, bytes)) {
+        void_set_last_error(ERROR_INVALID_ADDRESS_);
+        return 0;
+    }
+    uint32_t written = wide ? void_utf8_to_gw(title, out, units + 1) : void_utf8_to_ga(title, out, units + 1);
+    if (high) { MEM16(out + 2 * written++) = high; MEM16(out + 2 * written) = 0; }
+    return written;
+}
+
+WINAPI_EXPORT(U32, GetWindowTextA, 3) { return get_window_text(0); }
+WINAPI_EXPORT(U32, GetWindowTextW, 3) { return get_window_text(1); }
 
 WINAPI_EXPORT(U32, GetForegroundWindow, 0) { return focus_window ? focus_window : main_window; }
 WINAPI_EXPORT(U32, GetActiveWindow, 0) { queue_t *q = queue_for(void_thread_id()); return q ? q->active : 0; }

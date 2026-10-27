@@ -49,8 +49,8 @@ import java.util.Map;
 import java.util.HashSet;
 
 /** Finger gestures are resolved by the game's own UI, orders and camera code. */
-public final class GameActivity extends Activity implements SurfaceHolder.Callback {
-    static { System.loadLibrary("homm5"); }
+public class GameActivity extends Activity implements SurfaceHolder.Callback {
+    protected String gameEdition() { return "toe"; }
 
     private static native void nativeStart(String game, String data, String images, String overlay, String cache,
             int width, int height, boolean verbose);
@@ -72,6 +72,7 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
     /** Startup work done so far (files opened), and whether the first screen is up. */
     private static native int nativeLoadWork();
     private static native boolean nativeLoadReady();
+    private static native void nativeRequestGameSwitch();
     private static volatile WeakReference<GameActivity> currentActivity = new WeakReference<>(null);
 
     private static final int ESC = 0x01;
@@ -80,6 +81,8 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
     private TouchLayer touch;
     private HardwareInput hardware;
     private android.app.AlertDialog gamepadHelp;
+    private android.app.AlertDialog gameSwitchDialog;
+    private volatile Intent pendingGameLaunch;
     private GestureProbe gestureProbe;
     /* Wi-Fi chips drop broadcast and multicast frames to save power unless an
        app holds this: the LAN game finds its sessions by UDP broadcast. */
@@ -103,11 +106,39 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
     private long loadingStart;
     private int loadingExpected;
     private float loadingShown;
+    private boolean nativeReady;
+    private boolean resumed;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
-        currentActivity = new WeakReference<>(this);
         requestWindowFeature(Window.FEATURE_NO_TITLE);
+        game = new FrameLayout(this);
+        createLoading();
+        loadingBar.setIndeterminate(true);
+        loadingText.setText(Locale.getDefault().getLanguage().equals("ru") ? "Подготовка игры…" : "Preparing game…");
+        setContentView(game);
+        new Thread(() -> {
+            try {
+                NativeLibrary.load(this, Games.library(gameEdition()));
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    nativeReady = true;
+                    startGame();
+                });
+            } catch (java.io.IOException | UnsatisfiedLinkError e) {
+                android.util.Log.e("HeroesV", "native library: " + e);
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    new android.app.AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                        .setMessage(e.getMessage()).setPositiveButton(android.R.string.ok, (dialog, which) -> finish())
+                        .setOnCancelListener(dialog -> finish()).show();
+                });
+            }
+        }, "native-library").start();
+    }
+
+    private void startGame() {
+        currentActivity = new WeakReference<>(this);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         if (Build.VERSION.SDK_INT >= 28) {
             /* The picture covers the camera cutout too: without this a landscape window ends at it. */
@@ -136,7 +167,7 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
         createLoading();
         setContentView(game);
 
-        preferences = getSharedPreferences("port_settings", MODE_PRIVATE);
+        preferences = getSharedPreferences(Games.preferences(gameEdition()), MODE_PRIVATE);
         File base = Launcher.baseDir();
         gestureProbe = GestureProbe.register(this, touch, base);
         try {
@@ -149,13 +180,17 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
         } catch (RuntimeException e) {
             android.util.Log.w("HeroesV", "no Wi-Fi multicast lock: " + e);
         }
-        File data = new File(base, "userdata");
+        File data = new File(base, Games.userdata(gameEdition()));
         data.mkdirs();
-        File gameDir = Launcher.chosenGame(this, getIntent());
-        if (gameDir == null) gameDir = new File(base, "game");
-        File images = Assets.images(this, base);
-        File overlay = Assets.overlay(this, Launcher.skipIntro(this));
-        File cache = new File(getCacheDir(), "gl");
+        File gameDir = Launcher.chosenGame(this, getIntent(), gameEdition());
+        if (gameDir == null) {
+            startActivity(new Intent(this, Launcher.class).putExtra("game_exited", true).putExtra("edition", gameEdition()));
+            finish();
+            return;
+        }
+        File images = Assets.images(this, base, gameEdition());
+        File overlay = Assets.overlay(this, Launcher.skipIntro(this), gameEdition());
+        File cache = new File(getCacheDir(), Games.cache(gameEdition()));
         cache.mkdirs();
         /* The saved scales seed the game's port variables before it registers them. */
         nativeUiScale(savedFloat("ui_scale", 1));
@@ -165,6 +200,8 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
         nativeStart(gameDir.getAbsolutePath(), data.getAbsolutePath(), images.getAbsolutePath(),
                 overlay != null ? overlay.getAbsolutePath() : null, cache.getAbsolutePath(), 0, 0,
                 new File(base, "verbose").exists());
+        nativePause(!resumed);
+        if (resumed && lanLock != null && !lanLock.isHeld()) lanLock.acquire();
         startLoading();
     }
 
@@ -246,13 +283,68 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
     /* The native exit has saved the profile; the launcher survives in its own process. */
     private static void onGameExit() {
         GameActivity activity = currentActivity.get();
-        if (activity != null) activity.startActivity(new Intent(activity, Launcher.class)
-                .putExtra("game_exited", true)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK));
+        if (activity != null) {
+            Intent next = activity.pendingGameLaunch;
+            if (next == null) next = new Intent(activity, Launcher.class)
+                    .putExtra("game_exited", true)
+                    .putExtra("edition", activity.gameEdition())
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+            activity.startActivity(next);
+        }
+    }
+
+    private static void onSwitchGame() {
+        GameActivity activity = currentActivity.get();
+        if (activity != null) activity.runOnUiThread(() -> {
+            if (currentActivity.get() == activity) activity.showGameSwitch();
+        });
+    }
+
+    private void showGameSwitch() {
+        if (isFinishing() || isDestroyed() || gameSwitchDialog != null || pendingGameLaunch != null) return;
+        releaseAll();
+        java.util.List<String> installed = Launcher.readyGames(this);
+        String[] titles = new String[installed.size()];
+        for (int i = 0; i < titles.length; ++i) titles[i] = Games.title(installed.get(i))
+                + (installed.get(i).equals(gameEdition()) ? text(T_CURRENT_GAME) : "");
+        gameSwitchDialog = new android.app.AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle(text(T_SWITCH_GAME))
+                .setItems(titles, (dialog, which) -> switchToGame(installed.get(which)))
+                .setNeutralButton(text(T_OPEN_LAUNCHER), (dialog, which) -> switchToGame(null))
+                .setNegativeButton(text(T_CANCEL), null)
+                .create();
+        gameSwitchDialog.setOnDismissListener(dialog -> {
+            gameSwitchDialog = null;
+            hideSystemUi();
+            touch.requestFocus();
+        });
+        gameSwitchDialog.show();
+    }
+
+    private void switchToGame(String edition) {
+        if (pendingGameLaunch != null || gameEdition().equals(edition)) return;
+        Intent target;
+        if (edition == null) {
+            target = new Intent(this, Launcher.class).putExtra("game_exited", true)
+                    .putExtra("show_launcher", true).putExtra("edition", gameEdition())
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+        } else {
+            File folder = Launcher.chosenGame(this, null, edition);
+            if (folder == null || !Assets.runtimeAvailable(this, Launcher.baseDir(), edition)) return;
+            // Launcher owns its preferences in another process; let it record and start the selection.
+            target = new Intent(this, Launcher.class).putExtra("game_exited", true)
+                    .putExtra("edition", edition).putExtra("launch_edition", edition)
+                    .putExtra(Launcher.EXTRA_GAME, folder.getAbsolutePath())
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+        }
+        // The engine saves its profile and closes before onGameExit starts this target.
+        pendingGameLaunch = target;
+        nativeRequestGameSwitch();
     }
 
     /** "Back" is the game's own Escape: its menu and its dialogs' cancel. */
     @Override public void onBackPressed() {
+        if (!nativeReady) { super.onBackPressed(); return; }
         releaseAll();
         pulseKey(ESC);
     }
@@ -266,23 +358,26 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
     @Override public void surfaceDestroyed(SurfaceHolder holder) { refreshSurface = null; releaseAll(); nativeSurface(null); }
 
     @Override protected void onPause() {
+        resumed = false;
         releaseAll();
-        nativePause(true);
+        if (nativeReady) nativePause(true);
         if (lanLock != null && lanLock.isHeld()) lanLock.release();
         super.onPause();
     }
 
     @Override protected void onResume() {
         super.onResume();
-        nativePause(false);
+        resumed = true;
+        if (nativeReady) nativePause(false);
         requestHighRefresh();
         if (lanLock != null && !lanLock.isHeld()) lanLock.acquire();
     }
 
     @Override protected void onDestroy() {
         releaseAll();
-        ((InputManager)getSystemService(Context.INPUT_SERVICE)).unregisterInputDeviceListener(hardware);
+        if (hardware != null) ((InputManager)getSystemService(Context.INPUT_SERVICE)).unregisterInputDeviceListener(hardware);
         if (gamepadHelp != null) gamepadHelp.dismiss();
+        if (gameSwitchDialog != null) gameSwitchDialog.dismiss();
         handler.removeCallbacksAndMessages(null);
         if (gestureProbe != null) unregisterReceiver(gestureProbe);
         if (lanLock != null && lanLock.isHeld()) lanLock.release();
@@ -301,20 +396,13 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
         column.setOrientation(LinearLayout.VERTICAL);
         column.setGravity(Gravity.CENTER_HORIZONTAL);
         TextView title = new TextView(this);
-        title.setText("Heroes of Might and Magic V");
+        title.setText(Games.title(gameEdition()));
         title.setTextColor(Color.rgb(235, 203, 127));
         title.setTextSize(34);
         title.setTypeface(Typeface.create(Typeface.SERIF, Typeface.BOLD));
         title.setGravity(Gravity.CENTER);
+        title.setPadding(0, 0, 0, dp(36));
         column.addView(title, new LinearLayout.LayoutParams(-1, -2));
-        TextView subtitle = new TextView(this);
-        subtitle.setText("Tribes of the East");
-        subtitle.setTextColor(Color.rgb(200, 170, 110));
-        subtitle.setTextSize(20);
-        subtitle.setTypeface(Typeface.create(Typeface.SERIF, Typeface.ITALIC));
-        subtitle.setGravity(Gravity.CENTER);
-        subtitle.setPadding(0, dp(4), 0, dp(36));
-        column.addView(subtitle);
         loadingBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         loadingBar.setMax(1000);
         loadingBar.setProgressTintList(ColorStateList.valueOf(Color.rgb(235, 203, 127)));
@@ -353,7 +441,7 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
             loadingBar.setProgress(Math.round(loadingShown * 1000));
             loadingText.setText(String.format(Locale.getDefault(), "%s  %d%%", text(T_LOADING), Math.round(loadingShown * 100)));
             if (ready) {
-                try { Launcher.startupMarker(GameActivity.this).createNewFile(); }
+                try { Launcher.startupMarker(GameActivity.this, gameEdition()).createNewFile(); }
                 catch (java.io.IOException e) { android.util.Log.w("HeroesV", "startup marker: " + e); }
                 if (work > 50) preferences.edit().putInt("startup_work", work).apply();
                 View done = loading;
@@ -367,12 +455,16 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
         }
     };
 
-    private static final int T_LOADING = 0;
+    private static final int T_LOADING = 0, T_SWITCH_GAME = 1, T_OPEN_LAUNCHER = 2, T_CANCEL = 3, T_CURRENT_GAME = 4;
     private static String text(int id) {
         String lang = Locale.getDefault().getLanguage();
         boolean ru = "ru".equals(lang) || "uk".equals(lang) || "be".equals(lang);
         switch (id) {
         case T_LOADING: return ru ? "Загрузка" : "Loading";
+        case T_SWITCH_GAME: return ru ? "Сменить игру" : "Switch game";
+        case T_OPEN_LAUNCHER: return ru ? "Открыть лаунчер" : "Open launcher";
+        case T_CANCEL: return ru ? "Отмена" : "Cancel";
+        case T_CURRENT_GAME: return ru ? " (текущая)" : " (current)";
         default: return "";
         }
     }
@@ -515,6 +607,7 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
     }
 
     private void releaseAll() {
+        if (touch == null) return;
         if (hardware != null) hardware.release();
         touch.cancelGesture();
         hideTextInput();
@@ -547,8 +640,22 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
         if (isFinishing() || isDestroyed() || gamepadHelp != null) return;
         releaseAll();
         gamepadHelp = new android.app.AlertDialog.Builder(this)
-            .setTitle("Управление с геймпада")
-            .setMessage("Левый стик — курсор; LB / L1 — точное перемещение.\n\n"
+            .setTitle("Управление")
+            .setMessage("Сенсорное управление\n\n"
+                + "Касание — выбор или действие; удержание — описание. В бою отпустите палец, чтобы отдать приказ; "
+                + "касание вторым пальцем отменяет его.\n"
+                + "Два пальца — перемещение, масштаб и поворот камеры; два пальца рядом вверх-вниз — наклон. "
+                + "Одновременное короткое касание поля тремя пальцами — исходные наклон и поворот; в бою также положение камеры.\n\n"
+                + "Разделение армий\n\n"
+                + "Удерживайте отряд и, не отпуская его, коснитесь другим пальцем ячейки армии: "
+                + "один воин перейдёт в первую свободную ячейку. Удержание второго пальца над другой ячейкой "
+                + "открывает окно выбора количества; если там такой же отряд, оба делятся поровну.\n"
+                + "Удерживайте отряд, перетащите на портрет его героя и отпустите — отряды этого типа "
+                + "равномерно займут свободные ячейки; уже отделённые одиночки сохранятся. "
+                + "Быстрое перетаскивание отряда на портрет собирает этот тип вместе. "
+                + "Перетаскивание на портрет другого героя передаёт ему отряд.\n\n"
+                + "Смещение курсора от пальца и его отображение: Настройки → Дополнительные → Управление.\n\n"
+                + "Геймпад\n\nЛевый стик — курсор; LB / L1 — точное перемещение.\n\n"
                 + "A / крест — левый клик. Удерживайте для перетаскивания; два нажатия — двойной клик.\n"
                 + "B / круг — правый клик: описание, отмена действия.\n"
                 + "Правый стик — поворот и наклон камеры; в бою вверх-вниз — сдвиг камеры.\n"
@@ -901,7 +1008,8 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
     /* ------------------------------------------------------------ gestures */
 
     /**
-     * One finger: tap (with double and triple taps), drag, hold. Two or more:
+     * One finger: tap, double tap, drag, hold. A short three-finger chord resets
+     * the camera. Two or more moving fingers:
      * a transform of the whole set (centroid, spread, the angle of its first
      * two), re-based whenever a finger joins or leaves so that the camera never
      * jumps, and continued by the remaining fingers until the last one lifts;
@@ -913,13 +1021,18 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
         private static final int BEGIN = 0, TAP = 1, DOUBLE_TAP = 2, PAN = 3, TRANSFORM = 4,
                 HOLD_BEGIN = 5, HOLD_DRAG = 6, END = 7, TWO_FINGER_BEGIN = 8,
                 TWO_FINGER_CANCEL = 9, ABORT = 10, SECOND_BEGIN = 11, SECOND_TAP = 12, SECOND_HOLD = 13,
-                TRIPLE_TAP = 14, TILT = 15;
-        private static final long HOLD_MS = 450, MULTI_TAP_MS = 300;
+                THREE_FINGER_TAP = 14, TILT = 15;
+        private static final long HOLD_MS = 450, MULTI_TAP_MS = 300, CHORD_JOIN_MS = 120, CHORD_TAP_MS = 300;
         private int pointer = -1, secondPointer = -1;
         private boolean open, panning, holding, multi, transformed, tilting;
         private float downX, downY, lastX, lastY, lastTapX, lastTapY;
-        private int tapCount, nextTapCount;
+        private int nextTapCount;
         private long lastTapTime = -1;
+        private boolean chordCandidate, chord;
+        private long chordDownTime;
+        private int chordContacts;
+        private final int[] chordIds = new int[3];
+        private final float[] chordX = new float[3], chordY = new float[3];
         private Runnable hold, secondaryHold;
         /* The multi-finger set: its baseline and the two fingers giving its angle. */
         private float baseX, baseY, baseSpan, baseAngle, lastSpan, lastAngle;
@@ -934,7 +1047,7 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
             setFocusableInTouchMode(true);
             setContentDescription("Игровое поле: касание — выбор или действие, удержание — описание, "
                     + "два пальца — перемещение, масштаб и поворот, два пальца вверх-вниз — наклон, "
-                    + "касание двумя пальцами — отмена, три касания в бою — камера по умолчанию");
+                    + "касание двумя пальцами — отмена, одновременное касание тремя пальцами — камера по умолчанию");
         }
 
         @Override public boolean onCheckIsTextEditor() { return textEditing; }
@@ -974,6 +1087,8 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
             open = panning = holding = multi = transformed = tilting = false;
             pointer = secondPointer = angleA = angleB = -1;
             secondaryCandidate = secondaryHeld = false;
+            chordCandidate = chord = false;
+            chordContacts = 0;
         }
 
         void cancelGesture() {
@@ -981,7 +1096,6 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
             // A released finger may still have a click waiting for the native UI's next frame.
             nativeTouch(ABORT, 0, 0, 0, 0, 1, 0);
             lastTapTime = -1;
-            tapCount = 0;
         }
 
         private void moveSingle(float x, float y) {
@@ -989,7 +1103,6 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
                 cancelHold();
                 panning = true;
                 lastTapTime = -1;
-                tapCount = 0;
             }
             if (panning && (x != lastX || y != lastY)) {
                 emit(holding ? HOLD_DRAG : PAN, x, y, x - lastX, y - lastY, 1, 0);
@@ -1058,7 +1171,6 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
             multi = true;
             panning = holding = transformed = tilting = false;
             lastTapTime = -1;
-            tapCount = 0;
             if (!rebase(event)) { cancelGesture(); return; }
             downX = lastX; downY = lastY;
             emit(TWO_FINGER_BEGIN, lastX, lastY);
@@ -1124,6 +1236,50 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
             }
         }
 
+        /* Once three contacts form a chord, consume the whole contact set even
+           if it moves or times out: releasing it must never issue an order. */
+        private boolean chordEvent(MotionEvent event) {
+            if (!chordCandidate && !chord) return false;
+            int action = event.getActionMasked(), index = event.getActionIndex();
+            long elapsed = event.getEventTime() - chordDownTime;
+            if (elapsed < 0 || elapsed > CHORD_TAP_MS) chordCandidate = false;
+            for (int n = 0; n < chordContacts; ++n) {
+                int i = event.findPointerIndex(chordIds[n]);
+                if (i >= 0 && (!Float.isFinite(event.getX(i)) || !Float.isFinite(event.getY(i))
+                        || Math.hypot(event.getX(i) - chordX[n], event.getY(i) - chordY[n]) > dp(16)))
+                    chordCandidate = false;
+            }
+            if (action == MotionEvent.ACTION_POINTER_DOWN && chordCandidate) {
+                if (chord || chordContacts >= 3 || event.getPointerCount() > 3 || elapsed > CHORD_JOIN_MS
+                        || holding || panning || transformed || tilting
+                        || !Float.isFinite(event.getX(index)) || !Float.isFinite(event.getY(index))) chordCandidate = false;
+                else {
+                    chordIds[chordContacts] = event.getPointerId(index);
+                    chordX[chordContacts] = event.getX(index); chordY[chordContacts] = event.getY(index);
+                    ++chordContacts;
+                    if (chordContacts == 3) {
+                        chord = true;
+                        cancelHold(); cancelSecondaryHold();
+                        lastTapTime = -1;
+                    }
+                }
+            }
+            if (chord) {
+                if (action == MotionEvent.ACTION_UP) {
+                    if (chordCandidate) {
+                        float x = (chordX[0] + chordX[1] + chordX[2]) / 3;
+                        float y = (chordY[0] + chordY[1] + chordY[2]) / 3;
+                        emit(THREE_FINGER_TAP, x, y);
+                        emit(END, x, y);
+                    } else emit(ABORT, 0, 0);
+                    reset();
+                }
+                return true;
+            }
+            if (action == MotionEvent.ACTION_POINTER_UP || action == MotionEvent.ACTION_UP) chordCandidate = false;
+            return false;
+        }
+
         @Override public boolean onTouchEvent(MotionEvent event) {
             int action = event.getActionMasked(), index = event.getActionIndex();
             if (action == MotionEvent.ACTION_CANCEL) { cancelGesture(); return true; }
@@ -1137,21 +1293,26 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
                 long elapsed = event.getEventTime() - lastTapTime;
                 boolean follows = lastTapTime >= 0 && elapsed >= 0 && elapsed < MULTI_TAP_MS
                         && Math.hypot(downX - lastTapX, downY - lastTapY) < dp(32);
-                nextTapCount = follows ? Math.min(3, tapCount + 1) : 1;
+                nextTapCount = follows ? 2 : 1;
                 open = true;
+                chordCandidate = true;
+                chordDownTime = event.getEventTime();
+                chordContacts = 1;
+                chordIds[0] = pointer; chordX[0] = downX; chordY[0] = downY;
                 emit(BEGIN, downX, downY);
                 hold = () -> {
                     hold = null;
                     if (open && !multi && secondPointer < 0 && !panning) {
                         holding = true;
                         lastTapTime = -1;
-                        tapCount = 0;
                         performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
                         emit(HOLD_BEGIN, downX, downY);
                     }
                 };
                 postDelayed(hold, HOLD_MS);
             } else if (!open) {
+                return true;
+            } else if (chordEvent(event)) {
                 return true;
             } else if (action == MotionEvent.ACTION_POINTER_DOWN) {
                 if (multi) { if (!rebase(event)) cancelGesture(); return true; }
@@ -1165,7 +1326,6 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
                     secondaryDownX = secondaryX = event.getX(index);
                     secondaryDownY = secondaryY = event.getY(index);
                     lastTapTime = -1;
-                    tapCount = 0;
                     emit(SECOND_BEGIN, secondaryX, secondaryY);
                     secondaryHold = () -> {
                         secondaryHold = null;
@@ -1212,9 +1372,8 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
                     moveSingle(x, y);
                     if (!panning && !holding) {
                         int count = nextTapCount;
-                        emit(count == 3 ? TRIPLE_TAP : count == 2 ? DOUBLE_TAP : TAP, x, y);
-                        tapCount = count == 3 ? 0 : count;
-                        lastTapTime = count == 3 ? -1 : event.getEventTime();
+                        emit(count == 2 ? DOUBLE_TAP : TAP, x, y);
+                        lastTapTime = count == 2 ? -1 : event.getEventTime();
                         lastTapX = x; lastTapY = y;
                         performClick();
                     }

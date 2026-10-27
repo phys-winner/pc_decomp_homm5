@@ -1,4 +1,8 @@
 {
   "game_directory": "originals/tribes-of-the-east",
+  "editions": {
+    "vanilla": {"game_directory": "originals/heroes-v"},
+    "hof": {"game_directory": "originals/heroes-v"}
+  },
   "device": ""
 }

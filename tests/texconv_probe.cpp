@@ -94,15 +94,21 @@ int main(int argc, char **argv)
 {
     if (argc < 3) { fprintf(stderr, "usage: see the source\n"); return 1; }
     std::string command = argv[1];
-    if (command == "scan") {
+    if (command == "scan" || (command == "scan-bank" && argc >= 4)) {
         texconv_status s;
-        int result = texconv_scan(argv[2], &s);
+        int result = command == "scan" ? texconv_scan(argv[2], &s) : texconv_scan_bank(argv[2], argv[3], &s);
         printf("scan textures %lld bytes %lld converted %d %lld %lld removed %d removable %lld\n",
                static_cast<long long>(s.textures), static_cast<long long>(s.bytes), s.converted_format,
                static_cast<long long>(s.converted_textures), static_cast<long long>(s.converted_bytes), s.originals_removed,
                static_cast<long long>(s.removable_bytes));
         return report(result);
     }
+    if (command == "convert-bank" && argc >= 5) {
+        int format = !strcmp(argv[4], "astc") ? TEXCONV_ASTC : !strcmp(argv[4], "etc2") ? TEXCONV_ETC2 : 0;
+        return report(texconv_convert_bank(argv[2], argv[3], format, argc >= 6 ? atoi(argv[5]) : 0));
+    }
+    if (command == "remove-originals-bank" && argc >= 4) return report(texconv_remove_originals_bank(argv[2], argv[3]));
+    if (command == "remove-converted-bank" && argc >= 4) return report(texconv_remove_converted_bank(argv[2], argv[3]));
     if (command == "convert" && argc >= 4) {
         int format = !strcmp(argv[3], "astc") ? TEXCONV_ASTC : !strcmp(argv[3], "etc2") ? TEXCONV_ETC2 : 0;
         return report(texconv_convert(argv[2], format, argc >= 5 ? atoi(argv[4]) : 0));

@@ -19,6 +19,7 @@ typedef struct {
     uint8_t *dirty_pages;
     uint32_t page_count, dirty_page_count;
     int locks;
+    uint32_t bounds_count;
 } d3d_buffer;
 #define BUFFER_PAGE_SIZE 4096u
 #define GL_COPY_WRITE_BUFFER 0x8F37u
@@ -82,6 +83,9 @@ static void lock(uint32_t offset, uint32_t size, uint32_t flags) {
 }
 static void unlock(void) { assert(buf_Unlock() == D3D_OK); }
 int main(void) {
+    setup();buffer.bounds_count=17;lock(0,0,D3DLOCK_READONLY);unlock();assert(buffer.bounds_count==17);
+    lock(1,4,D3DLOCK_NOOVERWRITE);assert(!buffer.bounds_count);unlock();
+    buffer.bounds_count=19;args[1]=buffer.size+1;assert(buf_Lock()==D3DERR_INVALIDCALL && buffer.bounds_count==19);
     setup(); lock(0, 0, D3DLOCK_NOOVERWRITE); unlock();
     assert(buffer.dirty_pages && buffer.page_count == 4 && buffer.dirty_page_count == 4 && !binds);
     d3d_buffer_flush_range(&buffer, 4108, 4112);
@@ -135,9 +139,16 @@ BOUNDS_HARNESS = r'''
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-typedef struct { uint32_t size, format, shadow; } d3d_buffer;
+typedef struct {
+    uint32_t size, format, shadow;
+    int locks;
+    uint32_t bounds_start,bounds_count,bounds_format,bounds_lo,bounds_hi;
+} d3d_buffer;
 static uint8_t memory[512];
-#define GPTR(va) (memory + (va))
+static unsigned shadow_maps;
+static int forbid_shadow;
+static void *checked_pointer(uint32_t va) { assert(!forbid_shadow);++shadow_maps;return memory+va; }
+#define GPTR(va) checked_pointer(va)
 static unsigned full_calls, range_calls;
 static uint32_t range_lo, range_hi;
 static void d3d_buffer_flush(d3d_buffer *b) { (void)b; ++full_calls; }
@@ -167,6 +178,22 @@ int main(void) {
     assert(!draw_vertex_bounds(NULL, &overflow, 1, 0, 1, 1, 1, 0, &first, &last));
     ib.format = 102; ib.size = 12; memcpy(GPTR(16), indices, 12);
     assert(draw_vertex_bounds(&ib, NULL, 0, 0, 2, 1, 0, 1, &first, &last) && first == 3 && last == 60000);
+
+    d3d_buffer repeat={12,101,16};memcpy(GPTR(16),words,sizeof words);shadow_maps=0;
+    assert(draw_vertex_bounds(&repeat,NULL,0,0,3,1,0,2,&first,&last) && first==1 && last==7 && shadow_maps==1);
+    forbid_shadow=1;
+    assert(draw_vertex_bounds(&repeat,NULL,0,0,3,1,UINT32_MAX,2,&first,&last) && first==0 && last==6 && shadow_maps==1);
+    assert(!draw_vertex_bounds(&repeat,NULL,0,0,3,1,UINT32_MAX-1,2,&first,&last));
+    assert(!draw_vertex_bounds(&repeat,NULL,0,0,3,1,0,UINT32_MAX,&first,&last));
+    repeat.size=8;assert(!draw_vertex_bounds(&repeat,NULL,0,0,3,1,0,2,&first,&last));repeat.size=12;
+    forbid_shadow=0;
+    assert(draw_vertex_bounds(&repeat,NULL,0,0,2,1,0,2,&first,&last) && first==1 && last==4 && shadow_maps==2);
+    repeat.format=102;memcpy(GPTR(16),indices,12);shadow_maps=0;
+    assert(draw_vertex_bounds(&repeat,NULL,0,0,2,1,0,0,&first,&last) && first==3 && last==1000 && shadow_maps==1);
+    repeat.locks=1;repeat.bounds_count=0;
+    assert(draw_vertex_bounds(&repeat,NULL,0,0,2,1,0,0,&first,&last) && !repeat.bounds_count);
+    uint32_t changed[]={8,9};memcpy(GPTR(16),changed,sizeof changed);
+    assert(draw_vertex_bounds(&repeat,NULL,0,0,2,1,0,0,&first,&last) && first==8 && last==9 && !repeat.bounds_count);
 
     d3d_buffer vb = {2048, 0, 0};
     buffer_flush_vertices(&vb, 20, 32, 12, 2, 4, 1); assert(range_lo == 84 && range_hi == 160);

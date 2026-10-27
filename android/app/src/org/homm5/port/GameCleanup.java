@@ -59,7 +59,10 @@ final class GameCleanup {
         if (name.startsWith(".")) return true;           /* an unpacking in progress, hidden state */
         if (top.isDirectory() && Unpacker.needed(name + "/x")) return true;
         /* The port's own development folders, should one share the folder. */
-        return top.isDirectory() && (name.equalsIgnoreCase("userdata") || name.equalsIgnoreCase("lifted"));
+        if (!top.isDirectory()) return false;
+        for (String edition : Games.IDS)
+            if (name.equalsIgnoreCase(Games.userdata(edition)) || name.equalsIgnoreCase(Games.images(edition))) return true;
+        return false;
     }
 
     private static void collect(File file, List<Entry> out) throws IOException {

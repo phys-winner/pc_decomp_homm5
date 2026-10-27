@@ -1,4 +1,11 @@
 {
+  "xz-embedded": {
+    "url": "https://github.com/tukaani-project/xz-embedded.git",
+    "revision": "ae63ae3a36ed01724674e8f3d750dc47bf125410",
+    "directory": "reference/xz-embedded",
+    "license": "0BSD",
+    "note": "Unmodified decoder subset from The Void's pinned snapshot; android/unpack/unpack.c adapts its parallel ARM64 BCJ unpacker. No sibling checkout is required."
+  },
   "pcrecomp": {
     "url": "https://github.com/sp00nznet/pcrecomp.git",
     "revision": "904ac3129d0c9d05efbeec19a1dce6abbe7f5d26",

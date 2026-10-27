@@ -1,0 +1,1406 @@
+{
+  "edition": "hof",
+  "engine_sha256": "bad3b0c010b9d85193811bdf8ffa2afab30b865ea924c480ff7aac78a1e73140",
+  "features": {
+    "army": [
+      "android/host/touch_engine.c",
+      "android/app/src/org/homm5/port/GameActivity.java"
+    ],
+    "touch": [
+      "android/host/touch_engine.c",
+      "android/host/touch.h",
+      "android/host/touch_queue.c"
+    ],
+    "camera": [
+      "android/host/touch_camera.c",
+      "android/host/touch_engine.c"
+    ],
+    "cursor": [
+      "android/host/touch_engine.c",
+      "android/host/port_settings.c",
+      "tools/port_ui.py"
+    ],
+    "combobox": [
+      "android/host/touch_engine.c"
+    ],
+    "ui_scale": [
+      "android/host/touch_scale.c",
+      "android/host/port_settings.c",
+      "tools/port_ui.py"
+    ],
+    "render_scale": [
+      "android/host/d3d9_device.c",
+      "android/host/d3d9_gl.c",
+      "android/host/d3d9_resource.c",
+      "android/host/touch_render.c"
+    ],
+    "cutscene_horplus": [
+      "android/host/cutscene.c",
+      "tools/port_ui.py",
+      "tools/build_android.py"
+    ],
+    "shadows": [
+      "android/host/d3d9_shader.c"
+    ],
+    "alpha_test": [
+      "android/host/d3d9_shader.c",
+      "android/host/d3d9_ff.c",
+      "android/host/d3d9_internal.h"
+    ],
+    "textures": [
+      "android/app/src/org/homm5/port/Textures.java",
+      "android/host/texture_native.c",
+      "android/texconv/texconv.cpp",
+      "android/texconv/texconv.h",
+      "android/texconv/texconv_jni.cpp"
+    ],
+    "audio": [
+      "android/host/android_main.c",
+      "android/host/dsound.c",
+      "android/host/fmod_stream.c",
+      "config/music/hof.json",
+      "tools/town_music.py"
+    ],
+    "lan": [
+      "android/host/network.c",
+      "android/host/nubi_log.c",
+      "android/runtime/recomp_types.h",
+      "tools/build_android.py"
+    ],
+    "profile": [
+      "android/app/src/org/homm5/port/Games.java",
+      "android/app/src/org/homm5/port/Launcher.java",
+      "android/host/android_main.c",
+      "android/host/files.c",
+      "android/host/pe.c",
+      "android/host/port_settings.c",
+      "android/host/user32.c",
+      "config/editions.json",
+      "tools/build_game_apk.py",
+      "tools/profile_defaults.py"
+    ],
+    "telemetry_disabled": [
+      "tools/profile_defaults.py",
+      "tools/port_patches.py"
+    ],
+    "widescreen_ui": [
+      "tools/port_ui.py",
+      "android/host/touch_scale.c"
+    ]
+  },
+  "sources": {
+    "android/app/src/org/homm5/port/GameActivity.java": "bd2b0badd1f90bfa538a7472057472d2a6225f4705af83f292448e81856ccfeb",
+    "android/app/src/org/homm5/port/Games.java": "1bcd9870245cef51902911eaa307f8a0f493859ab4aedaa1b7e0080b99076e37",
+    "android/app/src/org/homm5/port/Launcher.java": "3b57ec6d58a72a6b4a7b4eb42f919ea2833562733abbed578f542c0d6a09716a",
+    "android/app/src/org/homm5/port/Textures.java": "af6d684c1be1dcd319b1683693a0364cf0da1ebb32893627eeb18364a6d3497f",
+    "android/host/android_main.c": "7f102ddb53ad4365b9a471166dbf9f3cc8edb598ca07b3165481a23456749490",
+    "android/host/cutscene.c": "5a1cae756e24b77d6f1d2850cc36e1da16849a502bebaae7d753a781491cf583",
+    "android/host/d3d9_device.c": "3b94b8675fceef43e4e105d51cd2c9f7899ded0a6280ad7511916a169dd8e005",
+    "android/host/d3d9_ff.c": "831d4031dfff1dfa9f415b1b6b29d006fb0ce417ff2e080086c37e11e9e81979",
+    "android/host/d3d9_gl.c": "40823008f65feeaccff43dec22249972270e39380549349ccbedd071dd9f2d50",
+    "android/host/d3d9_internal.h": "301e78915e5df7fdbac5f5629dd47dc5eec46d08be9d4ef88e4faa0304c287c6",
+    "android/host/d3d9_resource.c": "5d1359c462901df9e03fe067549e0ae58fb1006b08acc102eb6adaf78a4b4e0a",
+    "android/host/d3d9_shader.c": "342369a1d27fc913d3661b65b4cdb5c037f3cafd1da4c5abe19c177a7de536b5",
+    "android/host/dsound.c": "56e5c9732a38afcf31f28894edc1d9488b183236e32774f14df54a9a36b4eb2e",
+    "android/host/files.c": "11a17a578f3b3d4f6d15594a6b66c8ed7ca0da6fd56c5b34fe7759c47a5df6e1",
+    "android/host/fmod_stream.c": "d3af274c8761c4d73eb35f33e65644d5d3d8f5302bb3ed50657ef5a2afe87c27",
+    "android/host/network.c": "57a66cf26f842b519365abd3cae57304afda3723a5695162613b4085cc62ee03",
+    "android/host/nubi_log.c": "c7e2f9cc9712e0f2f1769eb98bc4bffd45d399630fb3ddc371c5d387d139ef32",
+    "android/host/pe.c": "195e4d7a768a0eb53ca7a6eddceca66ecbfa969b55305fd46bdcb03a87771021",
+    "android/host/port_settings.c": "b110b8ebf44b0806da17cfd37d49efba3c6427054868230b725e98ba1853759c",
+    "android/host/texture_native.c": "59ee5a5e836db3321c3b1758c7aea2063c6d13a49d1d42b016a754c8a4521b07",
+    "android/host/touch.h": "325d55f7de7cf716360d76851542721fce88fed2f4265e3b9a208b1a529cf2eb",
+    "android/host/touch_camera.c": "b37d4a3983917727c2d31292d4d84740aac089df22520f2a7623f124cbe5a5dd",
+    "android/host/touch_engine.c": "877b7fe4309dbf078dee559d1087332cfc4d08773f6689d6251bf4a5660f1815",
+    "android/host/touch_queue.c": "fa0d789c54b5278e2c3fb890305c2bd8ee9b1c47a565b60b1662ae672edf1f75",
+    "android/host/touch_render.c": "22cc8ceb651b3a3ae26a9ca24bfde7a78bd62fbcf678f529e2d0a99a991ea1b4",
+    "android/host/touch_scale.c": "1176ec70324c8de88cdfac2938c295a23efc07e0e4732e77fe28962de8afaaec",
+    "android/host/user32.c": "0c65db6ca7334687defee103f66a690dfadfc566298396f4aa1a3d9f872d35ec",
+    "android/runtime/recomp_types.h": "3a99de0422e1fd4aa004554bb3272405dc327710c639ee8c9c856979b09c52b9",
+    "android/texconv/texconv.cpp": "083940c946704e4848852d1a5639b5134cbd57e9734da970fd010a9964a873e3",
+    "android/texconv/texconv.h": "4c154092ceab0a9f9121b565803e0f8a82d8f9a84b3c779337c538efb9bb3da7",
+    "android/texconv/texconv_jni.cpp": "2f0a81e57a82666fd1559ba372c4b6c2c1116b7c0127ca1287d320ed8f97cd8d",
+    "config/editions.json": "d027f842cc9cd9f4024d8de61b1c61930d9453dac85890fb3b759eac1089d304",
+    "config/music/hof.json": "7a06c4670763f58db4b9289f1d0d0040e98d49eb205737a5523c8b63b785101d",
+    "tools/build_android.py": "def7db6b636716296b0b1c6d82e196057f06c557044aeffc586e66a8d55073db",
+    "tools/build_game_apk.py": "f74922f9a0c4e403e05f561aa58df6aedf3b58e0c3d4a20f35a7d20d5d178f07",
+    "tools/editions.py": "b8387259953545ed8b52be2ce8aff98397a61c76a4f8e02d32717374593f3728",
+    "tools/lift_homm5.py": "4df9027a199c145caa065ccc4be9ca65c7bbe23104488cc15fe0d64e076aba62",
+    "tools/port_patches.py": "ed93bc4cc3f7e612d42b5404b45252733e074b4897d1aebf45d00ceef2ac491d",
+    "tools/port_ui.py": "9a866af59976175ff1ed547cf430cbd7d592c71db105a331f61652da36defd4a",
+    "tools/profile_defaults.py": "5e7dd650948f4d9f0a799d8da5209ce41eacaa599e360ac0007addd25c4aa275",
+    "tools/town_music.py": "dec253ea97a813f59390f3077835696f857f2022336622d8b964f7ef315afbb1"
+  },
+  "addresses": {
+    "004039A0": "009D01E0",
+    "0040E960": "004038E0",
+    "0041A760": "00437540",
+    "00433CF0": "00535620",
+    "00488220": "00A366D0",
+    "00493ED0": "009FFD30",
+    "0054E030": "00536190",
+    "0054E0F0": "00536280",
+    "0054E440": "00536970",
+    "00550A70": "00539E80",
+    "00550EB0": "0053A720",
+    "0055AF30": "00604710",
+    "005767A0": "0055D150",
+    "005779D0": "0055E370",
+    "00577DC0": "0055E760",
+    "00587CF0": "0056E180",
+    "005913B0": "00577A80",
+    "0059F450": "00584DB0",
+    "0059F6B0": "00435600",
+    "006035A0": "005D5960",
+    "00603860": "005D5B20",
+    "006038A0": "005D5B60",
+    "00604470": "005D66A0",
+    "00667470": "00630740",
+    "00671310": "00639D80",
+    "006BD740": "00678A50",
+    "00786E20": "0072EDC0",
+    "007CD0C0": "0075BAE0",
+    "007D4720": "00762E80",
+    "00812880": "0078BE20",
+    "00813DE0": "0078D380",
+    "0081F500": "00797930",
+    "0081F670": "00797AA0",
+    "008384D0": "00884EF0",
+    "008385A0": "008851E0",
+    "00838C10": "00885560",
+    "0083F2B0": "007F7900",
+    "008863A0": "00BE5950",
+    "008CD870": "007BF340",
+    "00A3FB70": "00448B80",
+    "00A46BC0": "00A43420",
+    "00A4DCB0": "00BDF440",
+    "00A4DFF0": "00BDF780",
+    "00A4EC70": "00BE03F0",
+    "00A504B0": "00BE1C30",
+    "00A50560": "00BE1CE0",
+    "00A9CDC0": "00BF1220",
+    "00A9DF80": "00BF23D0",
+    "00ABE980": "00B708F0",
+    "00B29220": "00B04480",
+    "00B29970": "00AA0450",
+    "00B95AC0": "00B0B020",
+    "00C11400": "00B54940",
+    "00CC5F50": "004FB670",
+    "00CF6B20": "009F2960",
+    "00D816A0": "00C46690",
+    "00D82710": "00C47700",
+    "00E1DA84": "00DD2B10",
+    "00E230E4": "00DD800C",
+    "00E2A64C": "00DDEEB8",
+    "00E3091C": "00DE4944",
+    "00E30EB4": "00DE4C70",
+    "00E3112C": "00DE4EB4",
+    "00E3261C": "00DE618C",
+    "00E34674": "00DE831C",
+    "00E3584C": "00DE93D4",
+    "00E3DA1C": "00DF1184",
+    "00E4094C": "00DF3B30",
+    "00E44224": "00DF5C94",
+    "00E449BC": "00DF641C",
+    "00E4775C": "00DF87DC",
+    "00E47794": "00DF8814",
+    "00E8603C": "00DFEB48",
+    "00F272C0": "00ED47C0",
+    "00F2DA88": "00ED709C",
+    "00F2DAF4": "00EDB690",
+    "00F323A8": "00EDBCBC",
+    "00F44B08": "00EEF2D8",
+    "00F786F0": "00EEF308",
+    "00F7A234": "00F24260",
+    "00F7AE0C": "00EF7190",
+    "00433F40": "00584270",
+    "00490DB0": "0055C110",
+    "0059EAC0": "005841A0",
+    "0059EAF0": "005841D0",
+    "0059EB20": "00584200",
+    "0059EB60": "00584240",
+    "00B299F0": "00AA04D0",
+    "00D119FC": "00C09BCE",
+    "00835C90": "007AD710",
+    "00FE6DA0": "00F642B0",
+    "00FE6DA4": "00F642B4",
+    "0066D290": "00635F40",
+    "00614160": "005E48F0",
+    "006146C0": "005E4BF0",
+    "0061B760": "005EAE50",
+    "006C1B90": "0067A490",
+    "0103FF38": "0103DDBC",
+    "00550B00": "00539EF0",
+    "00576260": "0055CBF0",
+    "00542A30": "0052A050",
+    "005498C0": "00531620",
+    "00540DA0": "00528AD0",
+    "00544230": "0052BEB0",
+    "0053E3D0": "00525D80",
+    "0053FBE0": "00528590",
+    "0053EEE0": "00526D90",
+    "00548270": "0052FDE0",
+    "00545490": "0052D4E0",
+    "00545160": "0052D0D0",
+    "00669430": "00632420",
+    "006895E0": "00648FE0",
+    "00689790": "00649170",
+    "0075C8E0": "007073D0",
+    "00A4D570": "00B95860",
+    "00C3EC00": "00B091B0",
+    "00C3EF90": "00B09510",
+    "00C89570": "009CD520",
+    "00C89510": "009CD4C0",
+    "0078FDF0": "007365A0",
+    "0078FBC0": "00736370",
+    "00689390": "00648D90",
+    "00604E20": "005D7050",
+    "00603980": "005D5900",
+    "00597360": "0057D5E0",
+    "00600E70": "005D2390",
+    "005A0F40": "00586FA0",
+    "006B89D0": "00673980",
+    "00836440": "007ADEA0",
+    "00E49494": "00DFA45C",
+    "00835B90": "007AD680",
+    "00F74BE4": "00F2417C",
+    "00FE719C": "00F89AB4",
+    "0058A5E0": "005714F0",
+    "00618170": "005E70D0",
+    "007D46B0": "0075C200",
+    "00835E50": "007AD7E0",
+    "00619320": "005E8790",
+    "00F339F4": "00EDD71C",
+    "00F339F8": "00EDD720",
+    "1101325D": "1101325D",
+    "11013488": "11013488",
+    "11013C79": "11013C79",
+    "110277DD": "110277DD",
+    "1102B103": "1102B103",
+    "1102B635": "1102B635",
+    "1102B659": "1102B659",
+    "1102B6BB": "1102B6BB",
+    "1102B6F8": "1102B6F8",
+    "1102B716": "1102B716",
+    "1102B7CA": "1102B7CA",
+    "1102B844": "1102B844",
+    "1102B8A8": "1102B8A8",
+    "1102B9C5": "1102B9C5",
+    "1102BAB5": "1102BAB5",
+    "1102BABE": "1102BABE",
+    "1102BC0B": "1102BC0B",
+    "1102BE47": "1102BE47",
+    "1102D53A": "1102D53A",
+    "110472D0": "110472D0",
+    "00499630": "004574E0",
+    "00A3FFC0": "00448FC0",
+    "00F74BF0": "00F24180",
+    "00F74BF4": "00F24184",
+    "010024FC": "00F3CEBC",
+    "01002930": "00F3D2F0",
+    "01002934": "00F3D2F4",
+    "0100294C": "00F3D30C",
+    "01002991": "00F3D344",
+    "010029A8": "00F3D35C",
+    "00487990": "00A35EE0",
+    "00A4D630": "00B95920",
+    "00A4E570": "00BDFCF0",
+    "00F74BE0": "00F24178",
+    "00F74BE8": "00E2B33C",
+    "00F74BEC": "00E2B340",
+    "15004540": "15004540",
+    "15004620": "15004620",
+    "150054D0": "150054D0",
+    "150091C0": "150091C0",
+    "150091E0": "150091E0",
+    "006B92E0": "00674210",
+    "00FDD12C": "00F5678C"
+  },
+  "reference_addresses": {
+    "android/host/cutscene.c": [
+      "008385A0",
+      "00CF64F0",
+      "00D119FC",
+      "00E3261C",
+      "00F272C0",
+      "00F323A8",
+      "00FE719C"
+    ],
+    "android/host/d3d9_device.c": [
+      "00A3FB70"
+    ],
+    "android/host/d3d9_gl.c": [
+      "00A46BC0"
+    ],
+    "android/host/fmod_stream.c": [
+      "1101325D",
+      "11013488",
+      "11013C79",
+      "110277DD",
+      "1102B103",
+      "1102B635",
+      "1102B659",
+      "1102B6BB",
+      "1102B6F8",
+      "1102B716",
+      "1102B7CA",
+      "1102B844",
+      "1102B8A8",
+      "1102B9C5",
+      "1102BAB5",
+      "1102BABE",
+      "1102BC0B",
+      "1102BE47",
+      "1102D53A",
+      "110472D0"
+    ],
+    "android/host/nubi_log.c": [
+      "0081F500",
+      "0081F670",
+      "008CD870"
+    ],
+    "android/host/port_settings.c": [
+      "00499630",
+      "00C11400"
+    ],
+    "android/host/texture_native.c": [
+      "00A9CDC0",
+      "00CC5F50"
+    ],
+    "android/host/touch_camera.c": [
+      "0058A5E0",
+      "00614200",
+      "006146C0",
+      "00618170",
+      "00671310",
+      "007CD0C0",
+      "007D46B0",
+      "007D4720",
+      "00835E50",
+      "008385A0",
+      "00B29220",
+      "00CF6B20",
+      "00D119FC",
+      "00E1DA84",
+      "00E230E4",
+      "00E2A64C",
+      "00E44224",
+      "00E449BC",
+      "00F272C0",
+      "00F323A8",
+      "00F74BE4",
+      "00FE719C"
+    ],
+    "android/host/touch_engine.c": [
+      "0041A760",
+      "00433CF0",
+      "00433F40",
+      "00490DB0",
+      "00493ED0",
+      "0053E3D0",
+      "0053EEE0",
+      "0053FBE0",
+      "00540DA0",
+      "00542A30",
+      "00544230",
+      "00545160",
+      "00545490",
+      "00548270",
+      "005498C0",
+      "0054E030",
+      "0054E0F0",
+      "0054E440",
+      "00550A70",
+      "00550B00",
+      "00550EB0",
+      "0055AF30",
+      "00576260",
+      "005767A0",
+      "005779D0",
+      "00577DC0",
+      "00587CF0",
+      "0058D5C0",
+      "005913B0",
+      "00594E60",
+      "00597360",
+      "0059EAC0",
+      "0059EAF0",
+      "0059EB20",
+      "0059EB60",
+      "0059F450",
+      "0059F6B0",
+      "005A0F40",
+      "00600E70",
+      "00603360",
+      "00603560",
+      "00603580",
+      "006035A0",
+      "00603860",
+      "006038A0",
+      "00603980",
+      "00604470",
+      "006047F0",
+      "00604E20",
+      "00614160",
+      "00614200",
+      "006146C0",
+      "00619320",
+      "0061B760",
+      "00667470",
+      "00669430",
+      "0066D290",
+      "0067BAB0",
+      "00683450",
+      "00689390",
+      "006895E0",
+      "00689790",
+      "006B2830",
+      "006B89D0",
+      "006B92E0",
+      "006BD740",
+      "006C0FB0",
+      "006C15D0",
+      "006C1B90",
+      "0075C8E0",
+      "00786E20",
+      "0078FBC0",
+      "0078FDF0",
+      "00812880",
+      "00813DE0",
+      "00835B90",
+      "00835C90",
+      "00836440",
+      "008385A0",
+      "00838C10",
+      "0083F2B0",
+      "008863A0",
+      "00A4DCB0",
+      "00AC3590",
+      "00B29220",
+      "00B29970",
+      "00B299F0",
+      "00C3EC00",
+      "00C3EF90",
+      "00C89510",
+      "00C89570",
+      "00D119FC",
+      "00E1DA84",
+      "00E230E4",
+      "00E2A64C",
+      "00E30CA4",
+      "00E30EB4",
+      "00E3112C",
+      "00E34674",
+      "00E3584C",
+      "00E3DA1C",
+      "00E4094C",
+      "00E4775C",
+      "00E47794",
+      "00E49494",
+      "00E8603C",
+      "00F272C0",
+      "00F2DA88",
+      "00F2DAF4",
+      "00F323A8",
+      "00F339F4",
+      "00F339F8",
+      "00F44B08",
+      "00F786F0",
+      "00F7A234",
+      "00F7AE0C",
+      "00FDD12C",
+      "00FE6DA0",
+      "00FE6DA4",
+      "00FE719C",
+      "0103FF38"
+    ],
+    "android/host/touch_render.c": [
+      "008385A0",
+      "00A3FFC0",
+      "00B295D0",
+      "00D119FC",
+      "00E34674",
+      "00F272C0",
+      "00F323A8",
+      "00F74BF0",
+      "00F74BF4",
+      "00FE719C",
+      "010024FC",
+      "01002930",
+      "01002934",
+      "0100294C",
+      "01002991",
+      "010029A8"
+    ],
+    "android/host/touch_scale.c": [
+      "00487990",
+      "00488220",
+      "00488330",
+      "0066A4D0",
+      "008384D0",
+      "008385A0",
+      "00A4E570",
+      "00A504B0",
+      "00A50560",
+      "00ABE980",
+      "00B95AC0",
+      "00D119FC",
+      "00E1DA84",
+      "00E230E4",
+      "00F272C0",
+      "00F2DA88",
+      "00F2DAF4",
+      "00F323A8",
+      "00F74BE0",
+      "00F74BE4",
+      "00F74BE8",
+      "00F74BEC",
+      "00F74BF0",
+      "00F74BF4",
+      "00FE719C"
+    ],
+    "android/host/zlib_native.c": [
+      "15004540",
+      "15004620",
+      "150054D0",
+      "150091C0",
+      "150091E0"
+    ]
+  },
+  "layout_patches": {
+    "android/host/touch_engine.c": [
+      {
+        "old": "static void ui_event(const void_touch_event *event)\n{\n    gesture.x = event->x; gesture.y = event->y;\n    switch (event->kind) {\n    case TOUCH_BEGIN:\n        ui_hover(event->x, event->y);\n        break;\n    case TOUCH_TAP:\n    case TOUCH_DOUBLE_TAP: {\n        if (gesture.committed || gesture.held || gesture.panning) break;\n        int consumed = adventure_announcement(event->x, event->y, 1);\n        if (consumed || gesture.announcement) {\n            gesture.committed = 1;\n            break;\n        }\n        if (!same_screen()) break;\n        if (gesture.dnd && !gesture.dnd_claim) { dnd_cancel(); if (!same_screen()) break; }\n        uint32_t point = logical_point(event->x, event->y);\n        if (!point) break;\n        ui_point_call(gesture.screen, 0x24, point, 0);\n        if (!same_screen()) break;\n        uint32_t child = ui_pick(gesture.screen, event->x, event->y);\n        if (!same_screen()) break;\n        text_choose(gesture.screen, gesture.root, event->x, event->y);\n        if (!same_screen()) break;\n        if (event->kind == TOUCH_DOUBLE_TAP && town_portrait_double(event->x, event->y)) break;\n        if (!same_screen()) break;\n        uint32_t window_consumed = ui_point_call(gesture.screen, event->kind == TOUCH_DOUBLE_TAP ? 0x20 : 0x18, point, 1) & 0xFFu;\n        if (!same_screen()) break;\n        window_consumed |= ui_point_call(gesture.screen, 0x1C, point, 1) & 0xFFu;\n        gesture.committed = 1;\n        if (read32(gesture.screen) == 0x00E34674u) { loading_continue(); break; }\n        if (gesture.dnd_claim && dnd_claim_at(gesture.dnd, event->x, event->y)) {\n            dnd_point(event->kind == TOUCH_DOUBLE_TAP ? 0x30 : 0x28, event->x, event->y);\n            if (dnd_identity(gesture.dnd)) dnd_point(0x2C, event->x, event->y);\n            break;\n        }\n        if (same_screen()) mentor_activate(event->x, event->y, event->kind == TOUCH_DOUBLE_TAP);\n        if (same_screen()) ghost_point(event->x, event->y, 1);\n        if (!child && !window_consumed && same_screen() && !ui_pick(gesture.screen, event->x, event->y)) {\n            if (gesture.book) spellbook_activate(event->x, event->y);\n            else town_activate(event->x, event->y);\n        }\n        break;\n    }\n    case TOUCH_HOLD_BEGIN:\n    case TOUCH_HOLD_DRAG:\n        if (event->kind == TOUCH_HOLD_BEGIN && !gesture.dnd && !gesture.committed) {\n            uint32_t window = ui_pick(gesture.screen, gesture.start_x, gesture.start_y);\n            for (unsigned depth = 0; window && depth < 16 && same_screen(); ++depth) {\n                const uint32_t cast[] = {window, 0, 0x00F2DAF4u, 0x00F786F0u, 0};\n                uint32_t combo = void_call_guest(0x00D119FCu, 5, cast, 0);\n                if (read32(combo) == 0x00E8603Cu && void_vm_readable(combo, 0x168)) {\n                    uint32_t point = logical_point(gesture.start_x, gesture.start_y);\n                    if (!point) break;\n                    /* Open through the normal click, preserving disabled/blocked combo behavior. */\n                    ui_point_call(gesture.screen, 0x18, point, 1);\n                    if (same_screen()) ui_point_call(gesture.screen, 0x1C, point, 1);\n                    if (same_screen() && read32(combo) == 0x00E8603Cu) gesture.combo = combo;\n                    break;\n                }\n                uint32_t parent = object_query(window, 0xD8);\n                if (parent == window) break;\n                window = parent;\n            }\n        }\n        if (gesture.combo) {\n            gesture.held = 1;\n            if (event->kind == TOUCH_HOLD_DRAG) gesture.panning = 1;\n            ui_hover(event->x, event->y);\n            break;\n        }\n        if (event->kind==TOUCH_HOLD_DRAG && gesture.army_portrait) {\n            gesture.panning=gesture.held=1;ui_hover(event->x,event->y);break;\n        }\n        if (event->kind == TOUCH_HOLD_DRAG && gesture.dnd && gesture.dnd_claim) {\n            if (!gesture.dnd_pressed) {\n                dnd_point(0x28, gesture.start_x, gesture.start_y);\n                gesture.dnd_pressed = 1;\n            }\n            if (dnd_identity(gesture.dnd)) dnd_point(0x24, event->x, event->y);\n        }\n        gesture.held = 1;\n        ui_hover(event->x, event->y);\n        break;\n    case TOUCH_PAN: {\n        gesture.panning = 1;\n        if (gesture.ghost_energy && !gesture.held) {\n            ghost_point(event->x, event->y, 0);\n            ui_hover(event->x, event->y);\n            break;\n        }\n        if (gesture.dnd && (!gesture.held || gesture.dnd_pressed)) {\n            if (!gesture.dnd_claim) dnd_cancel();\n            else {\n                if (!gesture.dnd_pressed) {\n                    dnd_point(0x28, gesture.start_x, gesture.start_y);\n                    gesture.dnd_pressed = 1;\n                }\n                if (dnd_identity(gesture.dnd)) dnd_point(0x24, event->x, event->y);\n                ui_hover(event->x, event->y);\n                break;\n            }\n        }\n        if (gesture.book) {\n            gesture.panning = 1;\n            if (!ui_pick(gesture.screen, gesture.start_x, gesture.start_y)) { ui_hover(event->x, event->y); break; }\n        }\n        if (gesture.held || gesture.announcement) { ui_hover(event->x, event->y); break; }\n        if (!gesture.pressed && ui_scroll(event)) break;\n        if (!gesture.pressed) {\n            uint32_t point = logical_point(gesture.start_x, gesture.start_y);\n            if (!point) break;\n            ui_point_call(gesture.screen, 0x18, point, 1);\n            gesture.pressed = 1;\n        }\n        if (same_screen()) ui_hover(event->x, event->y);\n        break;\n    }\n    case TOUCH_TWO_FINGER_BEGIN:\n        dnd_cancel();\n        gesture.second_troop = 0;\n        ui_release(1);\n        gesture.panning = 1;\n        break;\n    case TOUCH_TRANSFORM:\n        gesture.panning = 1;\n        if (!gesture.dnd_pressed && !gesture.pressed)\n            void_touch_ui_pan(gesture.screen, event->dx, event->dy);\n        break;\n    case TOUCH_TWO_FINGER_CANCEL:\n    case TOUCH_ABORT:\n        dnd_cancel();\n        dnd_owner_pump(1);\n        ui_release(1);\n        gesture.cancelled = 1;\n        break;\n    case TOUCH_END:\n        if (gesture.combo) {\n            uint32_t popup = read32(gesture.combo + 0x134);\n            uint32_t vb = read32(popup + 0x10);\n            uint32_t popup_interface = vb ? popup + 0x10 + read32(vb + 8) : 0;\n            if (gesture.panning && read32(gesture.combo) == 0x00E8603Cu && popup && same_screen() &&\n                window_contains(ui_pick(gesture.screen, event->x, event->y), popup_interface) && same_screen()) {\n                uint32_t point = logical_point(event->x, event->y);\n                if (point) {\n                    ui_point_call(gesture.screen, 0x18, point, 1);\n                    if (same_screen()) ui_point_call(gesture.screen, 0x1C, point, 1);\n                    gesture.committed = 1;\n                }\n            }\n            gesture.combo = 0;\n            if (gesture.committed) {\n                gesture.held = 0; gesture.retiring = 1; gesture.release_frame = touch_frame;\n            } else ui_release(0);\n            break;\n        }\n        if (troop_drop(event->x,event->y)) { ui_release(1);break; }\n        if (gesture.dnd_pressed) {\n            if (dnd_claim_at(gesture.dnd, event->x, event->y)) dnd_point(0x2C, event->x, event->y);\n            else dnd_cancel();\n            gesture.dnd_pressed = 0;\n        }\n        if (gesture.committed && !gesture.pressed) {\n            /* Hover exit cancels a button's deferred reaction; let its native frame finish. */\n            gesture.held = 0;\n            gesture.retiring = 1;\n            gesture.release_frame = touch_frame;\n        } else ui_release(0);\n        break;\n    default:\n        break;\n    }\n}\n",
+        "new": "static void ui_event(const void_touch_event *event)\n{\n    gesture.x = event->x; gesture.y = event->y;\n    switch (event->kind) {\n    case TOUCH_BEGIN:\n        ui_hover(event->x, event->y);\n        break;\n    case TOUCH_TAP:\n    case TOUCH_DOUBLE_TAP: {\n        if (gesture.committed || gesture.held || gesture.panning) break;\n        int consumed = adventure_announcement(event->x, event->y, 1);\n        if (consumed || gesture.announcement) {\n            gesture.committed = 1;\n            break;\n        }\n        if (!same_screen()) break;\n        if (gesture.dnd && !gesture.dnd_claim) { dnd_cancel(); if (!same_screen()) break; }\n        uint32_t point = logical_point(event->x, event->y);\n        if (!point) break;\n        ui_point_call(gesture.screen, 0x24, point, 0);\n        if (!same_screen()) break;\n        uint32_t child = ui_pick(gesture.screen, event->x, event->y);\n        if (!same_screen()) break;\n        text_choose(gesture.screen, gesture.root, event->x, event->y);\n        if (!same_screen()) break;\n        if (event->kind == TOUCH_DOUBLE_TAP && town_portrait_double(event->x, event->y)) break;\n        if (!same_screen()) break;\n        uint32_t window_consumed = ui_point_call(gesture.screen, event->kind == TOUCH_DOUBLE_TAP ? 0x20 : 0x18, point, 1) & 0xFFu;\n        if (!same_screen()) break;\n        window_consumed |= ui_point_call(gesture.screen, 0x1C, point, 1) & 0xFFu;\n        gesture.committed = 1;\n        if (read32(gesture.screen) == 0x00E34674u) { loading_continue(); break; }\n        if (gesture.dnd_claim && dnd_claim_at(gesture.dnd, event->x, event->y)) {\n            dnd_point(event->kind == TOUCH_DOUBLE_TAP ? 0x30 : 0x28, event->x, event->y);\n            if (dnd_identity(gesture.dnd)) dnd_point(0x2C, event->x, event->y);\n            break;\n        }\n        if (same_screen()) mentor_activate(event->x, event->y, event->kind == TOUCH_DOUBLE_TAP);\n        if (same_screen()) ghost_point(event->x, event->y, 1);\n        if (!child && !window_consumed && same_screen() && !ui_pick(gesture.screen, event->x, event->y)) {\n            if (gesture.book) spellbook_activate(event->x, event->y);\n            else town_activate(event->x, event->y);\n        }\n        break;\n    }\n    case TOUCH_HOLD_BEGIN:\n    case TOUCH_HOLD_DRAG:\n        if (event->kind == TOUCH_HOLD_BEGIN && !gesture.dnd && !gesture.committed) {\n            uint32_t window = ui_pick(gesture.screen, gesture.start_x, gesture.start_y);\n            for (unsigned depth = 0; window && depth < 16 && same_screen(); ++depth) {\n                const uint32_t cast[] = {window, 0, 0x00F2DAF4u, 0x00F786F0u, 0};\n                uint32_t combo = void_call_guest(0x00D119FCu, 5, cast, 0);\n                if (read32(combo) == 0x00E8603Cu && void_vm_readable(combo, 0x168)) {\n                    uint32_t point = logical_point(gesture.start_x, gesture.start_y);\n                    if (!point) break;\n                    /* Open through the normal click, preserving disabled/blocked combo behavior. */\n                    ui_point_call(gesture.screen, 0x18, point, 1);\n                    if (same_screen()) ui_point_call(gesture.screen, 0x1C, point, 1);\n                    if (same_screen() && read32(combo) == 0x00E8603Cu) gesture.combo = combo;\n                    break;\n                }\n                uint32_t parent = object_query(window, 0xD4);\n                if (parent == window) break;\n                window = parent;\n            }\n        }\n        if (gesture.combo) {\n            gesture.held = 1;\n            if (event->kind == TOUCH_HOLD_DRAG) gesture.panning = 1;\n            ui_hover(event->x, event->y);\n            break;\n        }\n        if (event->kind==TOUCH_HOLD_DRAG && gesture.army_portrait) {\n            gesture.panning=gesture.held=1;ui_hover(event->x,event->y);break;\n        }\n        if (event->kind == TOUCH_HOLD_DRAG && gesture.dnd && gesture.dnd_claim) {\n            if (!gesture.dnd_pressed) {\n                dnd_point(0x28, gesture.start_x, gesture.start_y);\n                gesture.dnd_pressed = 1;\n            }\n            if (dnd_identity(gesture.dnd)) dnd_point(0x24, event->x, event->y);\n        }\n        gesture.held = 1;\n        ui_hover(event->x, event->y);\n        break;\n    case TOUCH_PAN: {\n        gesture.panning = 1;\n        if (gesture.ghost_energy && !gesture.held) {\n            ghost_point(event->x, event->y, 0);\n            ui_hover(event->x, event->y);\n            break;\n        }\n        if (gesture.dnd && (!gesture.held || gesture.dnd_pressed)) {\n            if (!gesture.dnd_claim) dnd_cancel();\n            else {\n                if (!gesture.dnd_pressed) {\n                    dnd_point(0x28, gesture.start_x, gesture.start_y);\n                    gesture.dnd_pressed = 1;\n                }\n                if (dnd_identity(gesture.dnd)) dnd_point(0x24, event->x, event->y);\n                ui_hover(event->x, event->y);\n                break;\n            }\n        }\n        if (gesture.book) {\n            gesture.panning = 1;\n            if (!ui_pick(gesture.screen, gesture.start_x, gesture.start_y)) { ui_hover(event->x, event->y); break; }\n        }\n        if (gesture.held || gesture.announcement) { ui_hover(event->x, event->y); break; }\n        if (!gesture.pressed && ui_scroll(event)) break;\n        if (!gesture.pressed) {\n            uint32_t point = logical_point(gesture.start_x, gesture.start_y);\n            if (!point) break;\n            ui_point_call(gesture.screen, 0x18, point, 1);\n            gesture.pressed = 1;\n        }\n        if (same_screen()) ui_hover(event->x, event->y);\n        break;\n    }\n    case TOUCH_TWO_FINGER_BEGIN:\n        dnd_cancel();\n        gesture.second_troop = 0;\n        ui_release(1);\n        gesture.panning = 1;\n        break;\n    case TOUCH_TRANSFORM:\n        gesture.panning = 1;\n        if (!gesture.dnd_pressed && !gesture.pressed)\n            void_touch_ui_pan(gesture.screen, event->dx, event->dy);\n        break;\n    case TOUCH_TWO_FINGER_CANCEL:\n    case TOUCH_ABORT:\n        dnd_cancel();\n        dnd_owner_pump(1);\n        ui_release(1);\n        gesture.cancelled = 1;\n        break;\n    case TOUCH_END:\n        if (gesture.combo) {\n            uint32_t popup = read32(gesture.combo + 0x134);\n            uint32_t vb = read32(popup + 0x10);\n            uint32_t popup_interface = vb ? popup + 0x10 + read32(vb + 8) : 0;\n            if (gesture.panning && read32(gesture.combo) == 0x00E8603Cu && popup && same_screen() &&\n                window_contains(ui_pick(gesture.screen, event->x, event->y), popup_interface) && same_screen()) {\n                uint32_t point = logical_point(event->x, event->y);\n                if (point) {\n                    ui_point_call(gesture.screen, 0x18, point, 1);\n                    if (same_screen()) ui_point_call(gesture.screen, 0x1C, point, 1);\n                    gesture.committed = 1;\n                }\n            }\n            gesture.combo = 0;\n            if (gesture.committed) {\n                gesture.held = 0; gesture.retiring = 1; gesture.release_frame = touch_frame;\n            } else ui_release(0);\n            break;\n        }\n        if (troop_drop(event->x,event->y)) { ui_release(1);break; }\n        if (gesture.dnd_pressed) {\n            if (dnd_claim_at(gesture.dnd, event->x, event->y)) dnd_point(0x2C, event->x, event->y);\n            else dnd_cancel();\n            gesture.dnd_pressed = 0;\n        }\n        if (gesture.committed && !gesture.pressed) {\n            /* Hover exit cancels a button's deferred reaction; let its native frame finish. */\n            gesture.held = 0;\n            gesture.retiring = 1;\n            gesture.release_frame = touch_frame;\n        } else ui_release(0);\n        break;\n    default:\n        break;\n    }\n}\n",
+        "count": 1
+      },
+      {
+        "old": "static void adventure_double(float x, float y)\n{\n    MEM8(gesture.screen + 0x5E8) = 1;\n    uint32_t controller = gesture.controller;\n    if (!void_vm_readable(controller, 0xF0)) return;\n    uint32_t allowed = void_call_guest_this(0x00603360u, controller, 0, NULL) & 0xFFu;\n    VLOG(\"[touch] double-begin controller=%08X mode=%X allowed=%u details=%u point=%.1f,%.1f\",\n         controller, read32(controller + 0x44), allowed, MEM8(gesture.screen + 0x55C), x, y);\n    if (!allowed) return;\n    uint32_t point = logical_point(x, y), pick = scratch + 8;\n    if (!point || !same_screen()) return;\n    memset((void *)ADDR(pick), 0, 32);\n    MEM32(pick + 0xC) = 0x000E739Cu;\n    const uint32_t pick_args[] = {pick, point};\n    int picked = void_call_guest_this(0x005913B0u, gesture.screen, 2, pick_args) & 0xFFu;\n    VLOG(\"[touch] double-pick valid=%d world=%.3f,%.3f,%.3f cell=%08X object=%08X secondary=%08X flags=%u,%u\",\n         picked, MEMF(pick), MEMF(pick + 4), MEMF(pick + 8), read32(pick + 0xC),\n         read32(pick + 0x10), read32(pick + 0x14), MEM8(pick + 0x18), MEM8(pick + 0x19));\n    if (picked && same_screen()) {\n        uint32_t previous_cell = gesture.screen + 0x750;\n        if (read32(gesture.screen + 0x760) == 1 &&\n            (void_call_guest_this(0x0041A760u, pick + 0xC, 1, &previous_cell) & 0xFFu) &&\n            read32(pick + 0x10) == read32(gesture.screen + 0x754) &&\n            read32(pick + 0x14) == read32(gesture.screen + 0x758) &&\n            MEM8(pick + 0x18) == MEM8(gesture.screen + 0x75C) &&\n            MEM8(pick + 0x19) == MEM8(gesture.screen + 0x75D))\n            MEM32(gesture.screen + 0x760) = 2;\n        uint32_t reference = read32(pick + 0x10);\n        if (void_vm_readable(reference, 8) && !(MEM8(reference + 7) & 0x80u)) {\n            int ghost = void_call_guest_this(0x00603560u, controller, 0, NULL) & 0xFFu;\n            uint32_t object = adventure_borrow(ghost ? 0x0059EB60u : 0x0059EAC0u, pick + 0x10);\n            VLOG(\"[touch] double-cast ghost=%d picked=%08X cast=%08X\", ghost, reference, object);\n            if (!object && !ghost) {\n                uint32_t ship = adventure_borrow(0x0059EAF0u, pick + 0x10);\n                uint32_t passenger = object_query(ship, 0);\n                if (passenger) object = adventure_borrow(0x0059EB20u, passenger);\n                VLOG(\"[touch] double-ship ship=%08X passenger=%08X hero=%08X\", ship, passenger, object);\n            }\n            if (object) {\n                uint32_t selected = void_call_guest_this(ghost ? 0x006038A0u : 0x00603860u,\n                                                        controller, 0, NULL);\n                g_edx = object;\n                int same = void_call_guest_this(0x00433CF0u, selected, 0, NULL) & 0xFFu;\n                uint32_t identity = object_query(ghost ? object : virtual_base(object, 0xC), 0);\n                if (ghost) identity = object_query(identity, 4);\n                uint32_t owner_method = object_method(identity, 0x2C);\n                VLOG(\"[touch] double-selection selected=%08X selected-base=%08X object=%08X object-base=%08X same=%d identity=%08X owner-method=%08X\",\n                     selected, virtual_base(selected, 4), object, virtual_base(object, 4), same, identity, owner_method);\n                if (same && owner_method) {\n                    uint32_t owner = void_call_guest_this(owner_method, identity, 0, NULL);\n                    uint32_t is_own = void_call_guest_this(0x00603580u, controller, 1, &owner) & 0xFFu;\n                    VLOG(\"[touch] double-owner id=%u owned=%u\", owner, is_own);\n                    if (is_own) {\n                        if (ghost) void_call_guest_this(0x00594E60u, gesture.screen, 1, &object);\n                        else {\n                            uint32_t blocked = void_call_guest_this(0x00603980u, controller, 0, NULL) & 0xFFu;\n                            if (!blocked) MEM8(gesture.screen + 0x55C) = 1;\n                            VLOG(\"[touch] double-details busy=%u flag=%u\", blocked, MEM8(gesture.screen + 0x55C));\n                        }\n                    }\n                }\n            }\n        }\n        reference = read32(pick + 0x14);\n        if (same_screen() && void_vm_readable(reference, 8) && !(MEM8(reference + 7) & 0x80u)) {\n            uint32_t town = adventure_borrow(0x00433F40u, pick + 0x14);\n            uint32_t cell = scratch + 404, location = object_method(town, 0xC4);\n            if (town && location && !(void_call_guest_this(0x00603980u, controller, 0, NULL) & 0xFFu)) {\n                void_call_guest_this(location, town, 1, &cell);\n                uint32_t owner_method = object_method(town, 0xBC);\n                if (owner_method && !(void_call_guest_this(0x00603560u, controller, 0, NULL) & 0xFFu)) {\n                    uint32_t owner = void_call_guest_this(owner_method, town, 0, NULL);\n                    if ((void_call_guest_this(0x006035A0u, controller, 1, &owner) & 0xFFu) && !MEM8(pick + 0x19)) {\n                        uint32_t player = void_call_guest_this(0x0058D5C0u, gesture.screen, 0, NULL);\n                        uint32_t fog_method = object_method(player, 0x19C), layer = read32(gesture.screen + 0xB4);\n                        uint32_t fog = fog_method ? void_call_guest_this(fog_method, player, 1, &layer) : 0;\n                        uint32_t packed = MEM32(cell), rows = read32(fog + 0x20);\n                        uint32_t row = read32(rows + 4 * ((packed >> 10) & 0x3FFu));\n                        uint32_t visible = row + (packed & 0x3FFu);\n                        if (row && void_vm_readable(visible, 1) && MEM8(visible)) {\n                            if (void_call_guest_this(0x00603580u, controller, 1, &owner) & 0xFFu)\n                                void_call_guest_this(0x00604470u, controller, 1, &town);\n                            void_call_guest_this(0x006047F0u, controller, 1, &town);\n                        }\n                    }\n                }\n            }\n        }\n    }\n    void_call_guest_this(0x0059F450u, pick, 0, NULL);\n    VLOG(\"[touch] adventure-double point=%.1f,%.1f\", x, y);\n}\n",
+        "new": "static void adventure_double(float x, float y)\n{\n    if (gesture.kind != SCREEN_ADVENTURE || gesture.ui || gesture.aiming ||\n        !isfinite(x) || !isfinite(y) || x < 0 || y < 0 || x > 32767 || y > 32767 ||\n        !same_screen() || target_armed() || !ui_idle()) return;\n    uint32_t screen = gesture.screen;\n    if (read32(screen) != 0x00DD800Cu || !void_dispatch_find(0x0057D870u) ||\n        ui_pick(screen, x, y) || !same_screen() || target_armed() || !ui_idle()) return;\n    if (!scratch) scratch = void_galloc(512);\n    uint32_t argument = scratch + 320;\n    if (!scratch || !void_vm_writable(argument, 40)) return;\n    memset((void *)ADDR(argument), 0, 40);\n    MEM32(argument + 0x24) = ((uint32_t)x & 0x7FFFu) | (((uint32_t)y & 0x7FFFu) << 15);\n    /* The original handler converts this raw point once and owns this edition's hero/ghost/town policy. */\n    publish_point(x, y);\n    if (!same_screen() || target_armed()) return;\n    void_call_guest_this(0x0057D870u, screen, 1, &argument);\n    if (!same_screen()) { gesture.active = 0; publish_point(-1, -1); }\n}\n",
+        "count": 1,
+        "mapped": true
+      },
+      {
+        "old": "static int combat_prepare(float x, float y, int diagnostics)\n{\n    uint32_t screen = gesture.screen, point = logical_point(x, y);\n    if (!point || !same_screen() || !void_vm_writable(screen + 0x2EC, 156)) {\n        if (diagnostics) VLOG(\"[touch] combat-prepare rejected point=%08X screen=%08X\", point, screen);\n        return 0;\n    }\n    float px = MEMF(point), py = MEMF(point + 4);\n    if (diagnostics) VLOG(\"[touch] combat-prepare before state=%X ui=%X active=%08X controller=%08X logical=%.3f,%.3f spell=%u caster=%08X second=%08X\",\n                         read32(screen + 0x2E0), read32(screen + 0x2D4), read32(screen + 0x2AC),\n                         read32(screen + 0x2B4), px, py, read32(screen + 0x394), read32(screen + 0x388), read32(screen + 0x38C));\n    void_call_guest_this(0x00540DA0u, screen, 0, NULL);\n    combat_reset_context();\n    if (!same_screen()) return 0;\n    MEMF(screen + 0x2EC) = px; MEMF(screen + 0x2F0) = py;\n    if (diagnostics) VLOG(\"[touch] combat-ownership state=%X ui=%X\", read32(screen + 0x2E0), read32(screen + 0x2D4));\n    if (!(read32(screen + 0x2E0) & 0x188u) || read32(screen + 0x2D4) == 1) return 0;\n    const uint32_t pick[] = {screen + 0x2F4, screen + 0x2EC};\n    void_call_guest_this(0x00544230u, screen, 2, pick);\n    if (!same_screen()) return 0;\n    if (diagnostics) VLOG(\"[touch] combat-pick refs=%08X,%08X extra=%08X,%08X cell=%d,%d tail=%08X,%08X,%08X\",\n                         read32(screen + 0x2F4), read32(screen + 0x2F8), read32(screen + 0x2FC), read32(screen + 0x300),\n                         (int32_t)read32(screen + 0x304), (int32_t)read32(screen + 0x308), read32(screen + 0x30C),\n                         read32(screen + 0x310), read32(screen + 0x314));\n    uint32_t active = read32(screen + 0x2AC), base = virtual_base(active, 4);\n    int unit_live = base && void_vm_readable(base, 8) && !(MEM8(base + 7) & 0x80u);\n    uint32_t unit_allowed = unit_live ? void_call_guest_this(0x0053E3D0u, screen, 1, &active) & 0xFFu : 0;\n    uint32_t unit_blocked = unit_allowed ? void_call_guest_this(0x0053FBE0u, screen, 1, &active) & 0xFFu : 0;\n    if (diagnostics) VLOG(\"[touch] combat-unit active=%08X base=%08X live=%d allowed53E3D0=%u blocked53FBE0=%u\",\n                         active, base, unit_live, unit_allowed, unit_blocked);\n    if (!unit_live || !unit_allowed || unit_blocked) {\n        MEM32(screen + 0x31C) = 1;\n        return 0;\n    }\n    uint32_t active_slot = screen + 0x2AC;\n    void_call_guest_this(0x0083F2B0u, screen + 0x320, 1, &active_slot);\n    MEM32(screen + 0x32C) = MEM32(screen + 0x304);\n    MEM32(screen + 0x330) = MEM32(screen + 0x308);\n    uint32_t context_blocked = void_call_guest_this(0x0053EEE0u, screen, 0, NULL) & 0xFFu;\n    if (diagnostics) VLOG(\"[touch] combat-guard blocked53EEE0=%u selected=%08X cell=%d,%d\",\n                         context_blocked, read32(screen + 0x320), (int32_t)read32(screen + 0x32C), (int32_t)read32(screen + 0x330));\n    if (context_blocked) return 0;\n    const uint32_t context[] = {screen + 0x2EC, screen + 0x2F4};\n    void_call_guest_this(0x00548270u, screen, 2, context);\n    if (diagnostics) VLOG(\"[touch] combat-resolved action=%u command=%08X command-vt=%08X command-flags=%08X target=%08X cell=%d,%d state=%X ui=%X\",\n                         read32(screen + 0x31C), read32(screen + 0x33C), read32(read32(screen + 0x33C)),\n                         read32(read32(screen + 0x33C) + 4), read32(screen + 0x324), (int32_t)read32(screen + 0x32C),\n                         (int32_t)read32(screen + 0x330), read32(screen + 0x2E0), read32(screen + 0x2D4));\n    return same_screen();\n}\n",
+        "new": "static int combat_prepare(float x, float y, int diagnostics)\n{\n    uint32_t screen = gesture.screen, point = logical_point(x, y);\n    if (!point || !same_screen() || !void_vm_writable(screen + 0x2FC, 144)) {\n        if (diagnostics) VLOG(\"[touch] combat-prepare rejected point=%08X screen=%08X\", point, screen);\n        return 0;\n    }\n    float px = MEMF(point), py = MEMF(point + 4);\n    if (diagnostics) VLOG(\"[touch] combat-prepare before state=%X ui=%X active=%08X controller=%08X logical=%.3f,%.3f spell=%u caster=%08X second=%08X\",\n                         read32(screen + 0x2F0), read32(screen + 0x2E4), read32(screen + 0x2A0),\n                         read32(screen + 0x2A8), px, py, read32(screen + 0x398), read32(screen + 0x38C), read32(screen + 0x390));\n    void_call_guest_this(0x00540DA0u, screen, 0, NULL);\n    combat_reset_context();\n    if (!same_screen()) return 0;\n    MEMF(screen + 0x2FC) = px; MEMF(screen + 0x300) = py;\n    if (diagnostics) VLOG(\"[touch] combat-ownership state=%X ui=%X\", read32(screen + 0x2F0), read32(screen + 0x2E4));\n    if (!(read32(screen + 0x2F0) & 0x188u) || read32(screen + 0x2E4) == 1) return 0;\n    const uint32_t pick[] = {screen + 0x304, screen + 0x2FC};\n    void_call_guest_this(0x00544230u, screen, 2, pick);\n    if (!same_screen()) return 0;\n    if (diagnostics) VLOG(\"[touch] combat-pick refs=%08X,%08X extra=%08X,%08X cell=%d,%d tail=%08X,%08X,%08X\",\n                         read32(screen + 0x304), read32(screen + 0x308), read32(screen + 0x30C), read32(screen + 0x310),\n                         (int32_t)read32(screen + 0x314), (int32_t)read32(screen + 0x318), read32(screen + 0x31C),\n                         read32(screen + 0x320), read32(screen + 0x324));\n    uint32_t active = read32(screen + 0x2A0), base = virtual_base(active, 4);\n    int unit_live = base && void_vm_readable(base, 8) && !(MEM8(base + 7) & 0x80u);\n    uint32_t unit_allowed = unit_live ? void_call_guest_this(0x0053E3D0u, screen, 1, &active) & 0xFFu : 0;\n    uint32_t unit_blocked = unit_allowed ? void_call_guest_this(0x0053FBE0u, screen, 1, &active) & 0xFFu : 0;\n    if (diagnostics) VLOG(\"[touch] combat-unit active=%08X base=%08X live=%d allowed53E3D0=%u blocked53FBE0=%u\",\n                         active, base, unit_live, unit_allowed, unit_blocked);\n    if (!unit_live || !unit_allowed || unit_blocked) {\n        MEM32(screen + 0x32C) = 1;\n        return 0;\n    }\n    uint32_t active_slot = screen + 0x2A0;\n    void_call_guest_this(0x0083F2B0u, screen + 0x330, 1, &active_slot);\n    MEM32(screen + 0x33C) = MEM32(screen + 0x314);\n    MEM32(screen + 0x340) = MEM32(screen + 0x318);\n    uint32_t context_blocked = void_call_guest_this(0x0053EEE0u, screen, 0, NULL) & 0xFFu;\n    if (diagnostics) VLOG(\"[touch] combat-guard blocked53EEE0=%u selected=%08X cell=%d,%d\",\n                         context_blocked, read32(screen + 0x330), (int32_t)read32(screen + 0x33C), (int32_t)read32(screen + 0x340));\n    if (context_blocked) return 0;\n    const uint32_t context[] = {screen + 0x2FC, screen + 0x304};\n    void_call_guest_this(0x00548270u, screen, 2, context);\n    if (diagnostics) VLOG(\"[touch] combat-resolved action=%u command=%08X command-vt=%08X command-flags=%08X target=%08X cell=%d,%d state=%X ui=%X\",\n                         read32(screen + 0x32C), read32(screen + 0x34C), read32(read32(screen + 0x34C)),\n                         read32(read32(screen + 0x34C) + 4), read32(screen + 0x334), (int32_t)read32(screen + 0x33C),\n                         (int32_t)read32(screen + 0x340), read32(screen + 0x2F0), read32(screen + 0x2E4));\n    return same_screen();\n}\n",
+        "count": 1
+      },
+      {
+        "old": "static void troop_second(const void_touch_event *event)\n{\n    if (!same_screen() || gesture.cancelled) return;\n    if (event->kind==TOUCH_SECOND_BEGIN) {\n        troop_cell cell;\n        gesture.second_troop=gesture.ui && gesture.dnd && troop_cell_at(gesture.x,gesture.y,&cell);\n        if (gesture.second_troop) {\n            uint32_t source=read32(read32(gesture.dnd+0x1C)+0xC);\n            gesture.second_troop=dnd_held(gesture.dnd) ? troop_cell_window(source,&cell) :\n                                troop_cell_at(gesture.start_x,gesture.start_y,&cell);\n        }\n        if (gesture.second_troop && !dnd_held(gesture.dnd)) {\n            /* Stationary hold was tooltip-only. Pick up only this proven troop slot. */\n            dnd_point(0x28,gesture.start_x,gesture.start_y);\n            if (dnd_identity(gesture.dnd)) dnd_point(0x2C,gesture.start_x,gesture.start_y);\n            if (dnd_identity(gesture.dnd) && dnd_held(gesture.dnd)) {\n                gesture.dnd_pressed=1;dnd_point(0x24,gesture.x,gesture.y);\n            }\n        }\n        gesture.second_troop=gesture.second_troop && dnd_identity(gesture.dnd) && dnd_held(gesture.dnd);\n        VLOG(\"[touch] troop-second screen=%08X claimed=%d held=%d\",gesture.screen,gesture.second_troop,\n             dnd_identity(gesture.dnd) && dnd_held(gesture.dnd));\n        gesture.second_info = !gesture.combo && !gesture.second_troop && gesture.held &&\n                              object_method(gesture.root, 0x70) && tooltip_target_at(event->x,event->y);\n        if (!gesture.second_troop && !gesture.second_info && gesture.ui) {dnd_cancel();ui_release(1);gesture.panning=1;}\n    } else if (gesture.second_troop) troop_split(event->x,event->y,event->kind==TOUCH_SECOND_HOLD);\n    else if (gesture.second_info && gesture.held && same_screen()) {\n        uint32_t point=logical_point(gesture.x,gesture.y),method=object_method(gesture.root,0x70);\n        if (point && method && tooltip_target_at(event->x,event->y) && same_screen()) {\n            point=logical_point(gesture.x,gesture.y);\n            const uint32_t args[]={point,1};\n            /* 487A80 -> 8867D0 repicks the source before asking its tooltip provider\n               for details. Keep the held source point; the second finger only triggers it. */\n            publish_point(gesture.x,gesture.y);\n            void_call_guest_this(method,gesture.root,2,args);\n            if (same_screen()) {\n                gesture.inspecting=1;gesture.inspect_x=gesture.x;gesture.inspect_y=gesture.y;\n                ui_hover(gesture.x,gesture.y);\n                VLOG(\"[touch] tooltip-inspect screen=%08X point=%.1f,%.1f\",gesture.screen,gesture.x,gesture.y);\n            }\n        }\n    }\n    /* The secondary finger must never move the held troop/camera/ability point. */\n    if (same_screen() && !gesture.cancelled)\n        publish_point(gesture.inspecting?gesture.inspect_x:gesture.x,gesture.inspecting?gesture.inspect_y:gesture.y);\n    else publish_point(-1,-1);\n}\n",
+        "new": "static void troop_second(const void_touch_event *event)\n{\n    if (!same_screen() || gesture.cancelled) return;\n    if (event->kind==TOUCH_SECOND_BEGIN) {\n        troop_cell cell;\n        gesture.second_troop=gesture.ui && gesture.dnd && troop_cell_at(gesture.x,gesture.y,&cell);\n        if (gesture.second_troop) {\n            uint32_t source=read32(read32(gesture.dnd+0x1C)+0xC);\n            gesture.second_troop=dnd_held(gesture.dnd) ? troop_cell_window(source,&cell) :\n                                troop_cell_at(gesture.start_x,gesture.start_y,&cell);\n        }\n        if (gesture.second_troop && !dnd_held(gesture.dnd)) {\n            /* Stationary hold was tooltip-only. Pick up only this proven troop slot. */\n            dnd_point(0x28,gesture.start_x,gesture.start_y);\n            if (dnd_identity(gesture.dnd)) dnd_point(0x2C,gesture.start_x,gesture.start_y);\n            if (dnd_identity(gesture.dnd) && dnd_held(gesture.dnd)) {\n                gesture.dnd_pressed=1;dnd_point(0x24,gesture.x,gesture.y);\n            }\n        }\n        gesture.second_troop=gesture.second_troop && dnd_identity(gesture.dnd) && dnd_held(gesture.dnd);\n        VLOG(\"[touch] troop-second screen=%08X claimed=%d held=%d\",gesture.screen,gesture.second_troop,\n             dnd_identity(gesture.dnd) && dnd_held(gesture.dnd));\n        gesture.second_info = !gesture.combo && !gesture.second_troop && gesture.held &&\n                              object_method(gesture.root, 0x6C) && tooltip_target_at(event->x,event->y);\n        if (!gesture.second_troop && !gesture.second_info && gesture.ui) {dnd_cancel();ui_release(1);gesture.panning=1;}\n    } else if (gesture.second_troop) troop_split(event->x,event->y,event->kind==TOUCH_SECOND_HOLD);\n    else if (gesture.second_info && gesture.held && same_screen()) {\n        uint32_t point=logical_point(gesture.x,gesture.y),method=object_method(gesture.root,0x6C);\n        if (point && method && tooltip_target_at(event->x,event->y) && same_screen()) {\n            point=logical_point(gesture.x,gesture.y);\n            const uint32_t args[]={point,1};\n            /* 487A80 -> 8867D0 repicks the source before asking its tooltip provider\n               for details. Keep the held source point; the second finger only triggers it. */\n            publish_point(gesture.x,gesture.y);\n            void_call_guest_this(method,gesture.root,2,args);\n            if (same_screen()) {\n                gesture.inspecting=1;gesture.inspect_x=gesture.x;gesture.inspect_y=gesture.y;\n                ui_hover(gesture.x,gesture.y);\n                VLOG(\"[touch] tooltip-inspect screen=%08X point=%.1f,%.1f\",gesture.screen,gesture.x,gesture.y);\n            }\n        }\n    }\n    /* The secondary finger must never move the held troop/camera/ability point. */\n    if (same_screen() && !gesture.cancelled)\n        publish_point(gesture.inspecting?gesture.inspect_x:gesture.x,gesture.inspecting?gesture.inspect_y:gesture.y);\n    else publish_point(-1,-1);\n}\n",
+        "count": 1
+      },
+      {
+        "old": "static int troop_cell_window(uint32_t window, troop_cell *cell)\n{\n    uint32_t screen=gesture.screen;\n    if (!window || !same_screen() || !ui_idle()) return 0;\n    memset(cell,0,sizeof *cell);\n    if (read32(screen)==0x00E3584Cu && void_vm_readable(screen,0x75C)) {\n        uint32_t config=screen+(MEM8(screen+0x4B8)?0x338:0x1B8);\n        if (read32(config+4)!=1) return 0;\n        if (read32(screen+0x1B4) && (!void_dispatch_find(0x006C1B90u) ||\n            !(void_call_guest_this(0x006C1B90u,screen,0,NULL)&0xFFu) || !same_screen())) return 0;\n        for (unsigned row=0;row<2;++row) {\n            if (row && !MEM8(config)) continue;\n            uint32_t vector=screen+(row?0x654:0x53C),cells=read32(vector),end=read32(vector+4);\n            if (!cells || end-cells!=7*12 || !void_vm_readable(cells,7*12)) continue;\n            for (unsigned index=0;index<7;++index) {\n                if (virtual_base(read32(cells+12*index),8)!=window) continue;\n                uint32_t owner=read32(screen+(row?0x1B4:0x1B0)),army=object_query(owner,0x48);\n                if (!army || !object_method(army,8) || !same_screen() || !ui_idle()) return 0;\n                cell->window=window;cell->army=army;cell->owner=owner;cell->row=cells;cell->index=index;cell->stride=12;\n                cell->command=read32(screen+0x1A8);cell->world=read32(screen+0x1A4);cell->policy=read32(screen+0x758);\n                return cell->command && cell->world;\n            }\n        }\n        return 0;\n    }\n    if (read32(screen)!=0x00E2A64Cu || !town_army_ready()) return 0;\n    for (unsigned row=0;row<2;++row) {\n        uint32_t cells=read32(screen+(row?0x2B4:0x2A8));\n        if (!cells || !void_vm_readable(cells,28)) continue;\n        for (unsigned index=0;index<7;++index) {\n            if (read32(cells+4*index)!=window) continue;\n            uint32_t side=row,view=object_query(read32(screen+0x220),0x90);\n            uint32_t method=object_method(view,0),army_side=row?1:2;\n            uint32_t owner=method?void_call_guest_this(method,view,1,&side):0;\n            uint32_t army=void_call_guest_this(0x00614160u,screen,1,&army_side);\n            if (!army || !object_method(army,8) || !same_screen() || !ui_idle()) return 0;\n            cell->window=window;cell->army=army;cell->owner=owner;\n            cell->row=cells;cell->index=index;cell->stride=4;\n            cell->command=read32(screen+0x224);cell->world=read32(screen+0x21C);\n            return cell->command && cell->world;\n        }\n    }\n    return 0;\n}\n",
+        "new": "static int troop_cell_window(uint32_t window, troop_cell *cell)\n{\n    uint32_t screen=gesture.screen;\n    if (!window || !same_screen() || !ui_idle()) return 0;\n    memset(cell,0,sizeof *cell);\n    if (read32(screen)==0x00E3584Cu && void_vm_readable(screen,0x700)) {\n        uint32_t config=screen+(MEM8(screen+0x4AC)?0x32C:0x1AC);\n        if (read32(config+4)!=1) return 0;\n        if (read32(screen+0x1A8) && (!void_dispatch_find(0x006C1B90u) ||\n            !(void_call_guest_this(0x006C1B90u,screen,0,NULL)&0xFFu) || !same_screen())) return 0;\n        for (unsigned row=0;row<2;++row) {\n            if (row && !MEM8(config)) continue;\n            uint32_t vector=screen+(row?0x5F8:0x508),cells=read32(vector),end=read32(vector+4);\n            if (!cells || end-cells!=7*12 || !void_vm_readable(cells,7*12)) continue;\n            for (unsigned index=0;index<7;++index) {\n                if (virtual_base(read32(cells+12*index),8)!=window) continue;\n                uint32_t owner=read32(screen+(row?0x1A8:0x1A4)),army=object_query(owner,0x18);\n                if (!army || !object_method(army,8) || !same_screen() || !ui_idle()) return 0;\n                cell->window=window;cell->army=army;cell->owner=owner;cell->row=cells;cell->index=index;cell->stride=12;\n                cell->command=read32(screen+0x19C);cell->world=read32(screen+0x198);cell->policy=read32(screen+0x6FC);\n                return cell->command && cell->world;\n            }\n        }\n        return 0;\n    }\n    if (read32(screen)!=0x00E2A64Cu || !town_army_ready()) return 0;\n    for (unsigned row=0;row<2;++row) {\n        uint32_t cells=read32(screen+(row?0x2A8:0x29C));\n        if (!cells || !void_vm_readable(cells,28)) continue;\n        for (unsigned index=0;index<7;++index) {\n            if (virtual_base(read32(cells+12*index),8)!=window) continue;\n            uint32_t side=row,view=object_query(read32(screen+0x214),0x90);\n            uint32_t method=object_method(view,0),army_side=row?1:2;\n            uint32_t owner=method?void_call_guest_this(method,view,1,&side):0;\n            uint32_t army=void_call_guest_this(0x00614160u,screen,1,&army_side);\n            if (!army || !object_method(army,8) || !same_screen() || !ui_idle()) return 0;\n            cell->window=window;cell->army=army;cell->owner=owner;\n            cell->row=cells;cell->index=index;cell->stride=4;\n            cell->command=read32(screen+0x218);cell->world=read32(screen+0x210);\n            return cell->command && cell->world;\n        }\n    }\n    return 0;\n}\n",
+        "count": 1
+      },
+      {
+        "old": "static void world_tooltip(void)\n{\n    uint32_t screen = gesture.screen;\n    unsigned offset = gesture.kind == SCREEN_ADVENTURE ? 0x5EC : gesture.kind == SCREEN_COMBAT ? 0x434 :\n                      gesture.kind == SCREEN_TOWN ? 0x388 : 0;\n    if (!offset || !same_screen()) return;\n    if (gesture.kind == SCREEN_COMBAT && read32(screen + 0x2D4)) return;   /* a window owns combat input */\n    uint32_t controller = read32(screen + offset);\n    if (!void_vm_readable(controller, 0x48) || object_method(controller, 0x1C) != 0x006B89D0u) return;\n    if (void_verbose) {\n        /* What 0x006B89D0 sees: the cursor, the UI's claim on it and the picked objects. */\n        uint32_t cursor = scratch + 480, ui = read32(controller + 12), picker = read32(controller + 16);\n        uint32_t iface = ui ? read32(read32(ui + 4) + 8) + ui + 4 : 0;\n        uint32_t over_method = iface ? object_method(iface, 52) : 0;\n        uint32_t over = over_method ? void_call_guest_this(over_method, iface, 1, &cursor) & 0xFFu : 0xFFu;\n        uint32_t pick_method = picker ? object_method(picker, 0) : 0, out = void_galloc(64);\n        if (!out) return;\n        void_call_guest_this(0x0054E440u, out, 0, NULL);   /* the empty pick 0x006B89D0 builds */\n        uint32_t pick_args[] = {out, cursor};\n        if (pick_method) void_call_guest_this(pick_method, picker, 2, pick_args);\n        VLOG(\"[touch] world-info probe cursor=%.1f,%.1f over-ui=%u picker=%08X/%08X list=%u obj=%08X,%08X extra=%08X \"\n             \"current=%08X,%08X last=%u now=%u\",\n             MEMF(cursor), MEMF(cursor + 4), over, picker, pick_method, (MEM32(out + 4) - MEM32(out)) / 4,\n             MEM32(out + 12), MEM32(out + 16), MEM32(out + 40), read32(controller + 36), read32(controller + 64),\n             read32(controller + 20), read32(0x00FDD12Cu));\n        if (pick_method) void_call_guest_this(0x0054E0F0u, out, 0, NULL);\n        void_gfree(out);\n    }\n    const uint32_t args[] = {1, read32(0x00FDD12Cu)};\n    void_call_guest_this(0x006B89D0u, controller, 2, args);\n    VLOG(\"[touch] world-info screen=%08X kind=%d\", screen, gesture.kind);\n}\n",
+        "new": "static void world_tooltip(void)\n{\n    uint32_t screen = gesture.screen;\n    unsigned offset = gesture.kind == SCREEN_ADVENTURE ? 0x570 : gesture.kind == SCREEN_COMBAT ? 0x420 :\n                      gesture.kind == SCREEN_TOWN ? 0x37C : 0;\n    if (!offset || !same_screen()) return;\n    if (gesture.kind == SCREEN_COMBAT && read32(screen + 0x2E4)) return;   /* a window owns combat input */\n    uint32_t controller = read32(screen + offset);\n    if (!void_vm_readable(controller, 0x48) || object_method(controller, 0x1C) != 0x006B89D0u) return;\n    if (void_verbose) {\n        /* What 0x006B89D0 sees: the cursor, the UI's claim on it and the picked objects. */\n        uint32_t cursor = scratch + 480, ui = read32(controller + 12), picker = read32(controller + 16);\n        uint32_t iface = ui ? read32(read32(ui + 4) + 8) + ui + 4 : 0;\n        uint32_t over_method = iface ? object_method(iface, 52) : 0;\n        uint32_t over = over_method ? void_call_guest_this(over_method, iface, 1, &cursor) & 0xFFu : 0xFFu;\n        uint32_t pick_method = picker ? object_method(picker, 0) : 0, out = void_galloc(64);\n        if (!out) return;\n        void_call_guest_this(0x0054E440u, out, 0, NULL);   /* the empty pick 0x006B89D0 builds */\n        uint32_t pick_args[] = {out, cursor};\n        if (pick_method) void_call_guest_this(pick_method, picker, 2, pick_args);\n        VLOG(\"[touch] world-info probe cursor=%.1f,%.1f over-ui=%u picker=%08X/%08X list=%u obj=%08X,%08X extra=%08X \"\n             \"current=%08X,%08X last=%u now=%u\",\n             MEMF(cursor), MEMF(cursor + 4), over, picker, pick_method, (MEM32(out + 4) - MEM32(out)) / 4,\n             MEM32(out + 12), MEM32(out + 16), MEM32(out + 40), read32(controller + 36), read32(controller + 64),\n             read32(controller + 20), read32(0x00FDD12Cu));\n        if (pick_method) void_call_guest_this(0x0054E0F0u, out, 0, NULL);\n        void_gfree(out);\n    }\n    const uint32_t args[] = {1, read32(0x00FDD12Cu)};\n    void_call_guest_this(0x006B89D0u, controller, 2, args);\n    VLOG(\"[touch] world-info screen=%08X kind=%d\", screen, gesture.kind);\n}\n",
+        "count": 1
+      },
+      {
+        "old": "static void combat_point(float x, float y, int commit)\n{\n    if (x < 0 || y < 0 || x > 32767 || y > 32767) return;\n    if (!combat_prepare(x, y, commit)) return;\n    if (!refresh_target_mode()) return;\n    if (!commit) {\n        void_call_guest_this(0x005498C0u, gesture.screen, 0, NULL);\n        return;\n    }\n    /* The commit consumes prepared engine context; this point is never queued as input. */\n    uint32_t argument = scratch + 320;\n    memset((void *)ADDR(argument), 0, 40);\n    MEM32(argument + 0x24) = ((uint32_t)x & 0x7FFFu) | (((uint32_t)y & 0x7FFFu) << 15);\n    VLOG(\"[touch] combat-before-commit state=%X ui=%X action=%u command=%08X controller=%08X active=%08X spell=%u caster=%08X second=%08X\",\n         read32(gesture.screen + 0x2E0), read32(gesture.screen + 0x2D4), read32(gesture.screen + 0x31C),\n         read32(gesture.screen + 0x33C), read32(gesture.screen + 0x2B4), read32(gesture.screen + 0x2AC),\n         read32(gesture.screen + 0x394), read32(gesture.screen + 0x388), read32(gesture.screen + 0x38C));\n    uint32_t result = void_call_guest_this(0x00545490u, gesture.screen, 1, &argument) & 0xFFu;\n    VLOG(\"[touch] combat-context point=%.1f,%.1f state=%X result=%u ui=%X action=%u command=%08X active=%08X spell=%u caster=%08X second=%08X\",\n         x, y, read32(gesture.screen + 0x2E0), result, read32(gesture.screen + 0x2D4), read32(gesture.screen + 0x31C),\n         read32(gesture.screen + 0x33C), read32(gesture.screen + 0x2AC), read32(gesture.screen + 0x394),\n         read32(gesture.screen + 0x388), read32(gesture.screen + 0x38C));\n}\n",
+        "new": "static void combat_point(float x, float y, int commit)\n{\n    if (x < 0 || y < 0 || x > 32767 || y > 32767) return;\n    if (!combat_prepare(x, y, commit)) return;\n    if (!refresh_target_mode()) return;\n    if (!commit) {\n        void_call_guest_this(0x005498C0u, gesture.screen, 0, NULL);\n        return;\n    }\n    /* The commit consumes prepared engine context; this point is never queued as input. */\n    uint32_t argument = scratch + 320;\n    memset((void *)ADDR(argument), 0, 40);\n    MEM32(argument + 0x24) = ((uint32_t)x & 0x7FFFu) | (((uint32_t)y & 0x7FFFu) << 15);\n    VLOG(\"[touch] combat-before-commit state=%X ui=%X action=%u command=%08X controller=%08X active=%08X spell=%u caster=%08X second=%08X\",\n         read32(gesture.screen + 0x2F0), read32(gesture.screen + 0x2E4), read32(gesture.screen + 0x32C),\n         read32(gesture.screen + 0x34C), read32(gesture.screen + 0x2A8), read32(gesture.screen + 0x2A0),\n         read32(gesture.screen + 0x398), read32(gesture.screen + 0x38C), read32(gesture.screen + 0x390));\n    uint32_t result = void_call_guest_this(0x00545490u, gesture.screen, 1, &argument) & 0xFFu;\n    VLOG(\"[touch] combat-context point=%.1f,%.1f state=%X result=%u ui=%X action=%u command=%08X active=%08X spell=%u caster=%08X second=%08X\",\n         x, y, read32(gesture.screen + 0x2F0), result, read32(gesture.screen + 0x2E4), read32(gesture.screen + 0x32C),\n         read32(gesture.screen + 0x34C), read32(gesture.screen + 0x2A0), read32(gesture.screen + 0x398),\n         read32(gesture.screen + 0x38C), read32(gesture.screen + 0x390));\n}\n",
+        "count": 1
+      },
+      {
+        "old": "static void port_game_message(void)\n{\n    uint32_t self = g_ecx;\n    void_regs saved;\n    void_regs_save(&saved);\n    uint32_t db = void_call_guest_this(0x00B299F0u, self + 0xC, 0, NULL);\n    uint32_t begin = read32(db + 0x48), end = read32(db + 0x4C);\n    int launcher = db && end - begin == 13 && void_vm_readable(begin, 13) &&\n                   !memcmp(GPTR(begin), \"port_launcher\", 13);\n    int gamepad = db && end - begin == 12 && void_vm_readable(begin, 12) &&\n                  !memcmp(GPTR(begin), \"port_gamepad\", 12);\n    int switch_game = db && end - begin == 16 && void_vm_readable(begin, 16) &&\n                      !memcmp(GPTR(begin), \"port_switch_game\", 16);\n    void_regs_load(&saved);\n    if (gamepad || switch_game) {\n        if (switch_game) void_android_switch_game();\n        else void_android_gamepad_help();\n        g_eax = (g_eax & ~255u) | 1u;\n        g_esp += 16;\n        return;\n    }\n    if (!launcher) { original_game_message(); return; }\n    uint32_t screen = current_screen(), table = read32(screen);\n    if (table == 0x00E3DA1Cu && read32(screen + 0x1A0) == 2) {\n        /* Accept pending options through the original profile-saving path. */\n        void_call_guest_this(0x0075C8E0u, screen, 0, NULL);\n        launcher_pending = 1;\n        launcher_question_seen = 0;\n        void_call_guest(0x00689790u, 0, NULL, 1); /* Original exit-attempt command. */\n    }\n    void_regs_load(&saved);\n    g_eax = (g_eax & ~255u) | 1u;\n    g_esp += 16;                         /* Run's return address and three arguments */\n}\n",
+        "new": "static void port_game_message(void)\n{\n    uint32_t self = g_ecx;\n    void_regs saved;\n    void_regs_save(&saved);\n    uint32_t db = void_call_guest_this(0x00B299F0u, self + 0xC, 0, NULL);\n    uint32_t begin = read32(db + 0x48), end = read32(db + 0x4C);\n    int launcher = db && end - begin == 13 && void_vm_readable(begin, 13) &&\n                   !memcmp(GPTR(begin), \"port_launcher\", 13);\n    int gamepad = db && end - begin == 12 && void_vm_readable(begin, 12) &&\n                  !memcmp(GPTR(begin), \"port_gamepad\", 12);\n    int switch_game = db && end - begin == 16 && void_vm_readable(begin, 16) &&\n                      !memcmp(GPTR(begin), \"port_switch_game\", 16);\n    void_regs_load(&saved);\n    if (gamepad || switch_game) {\n        if (switch_game) void_android_switch_game();\n        else void_android_gamepad_help();\n        g_eax = (g_eax & ~255u) | 1u;\n        g_esp += 16;\n        return;\n    }\n    if (!launcher) { original_game_message(); return; }\n    uint32_t screen = current_screen(), table = read32(screen);\n    if (table == 0x00E3DA1Cu && read32(screen + 0x194) == 2) {\n        /* Accept pending options through the original profile-saving path. */\n        void_call_guest_this(0x0075C8E0u, screen, 0, NULL);\n        launcher_pending = 1;\n        launcher_question_seen = 0;\n        void_call_guest(0x00689790u, 0, NULL, 1); /* Original exit-attempt command. */\n    }\n    void_regs_load(&saved);\n    g_eax = (g_eax & ~255u) | 1u;\n    g_esp += 16;                         /* Run's return address and three arguments */\n}\n",
+        "count": 1
+      },
+      {
+        "old": "static uint32_t mentor_window(uint32_t point)\n{\n    uint32_t screen = gesture.screen;\n    uint32_t state = screen + (MEM8(screen + 0x4B8) ? 0x338 : 0x1B8);\n    uint32_t mode = read32(state + 4), begin, end;\n    if (mode == 3) {\n        begin = read32(screen + 0x5A0); end = read32(screen + 0x5A4);\n        for (unsigned i = 0, n = window_vector(begin, end, 16); i < n; ++i) {\n            uint32_t window = read32(begin + i * 16);\n            if (window_hit(window, point)) return window;\n        }\n        begin = read32(screen + 0x5AC); end = read32(screen + 0x5B0);\n        for (unsigned i = 1, n = window_vector(begin, end, 4); i < n; ++i) {\n            uint32_t window = read32(begin + i * 4);\n            if (window_hit(window, point)) return window;\n        }\n    } else if (mode == 4) {\n        begin = read32(screen + 0x5D4); end = read32(screen + 0x5D8);\n        for (unsigned i = 0, n = window_vector(begin, end, 36); i < n; ++i) {\n            uint32_t entry = begin + i * 36, window = read32(entry + 4);\n            if (window_hit(window, point)) return window;\n            uint32_t children = read32(entry + 8), children_end = read32(entry + 12);\n            for (unsigned j = 0, count = window_vector(children, children_end, 4); j < count; ++j) {\n                window = read32(children + j * 4);\n                if (window_hit(window, point)) return window;\n            }\n        }\n    }\n    return 0;\n}\n",
+        "new": "",
+        "count": 1
+      },
+      {
+        "old": "static void adventure_point(float x, float y, int commit)\n{\n    uint32_t controller = gesture.controller;\n    if (!void_vm_readable(controller, 0xF0) ||\n        (void_call_guest_this(0x00603980u, controller, 0, NULL) & 0xFFu)) return;\n    uint32_t point = logical_point(x, y);\n    if (!point || !same_screen()) return;\n    uint32_t pick = scratch + 8;\n    memset((void *)ADDR(pick), 0, 32);\n    MEM32(pick + 0xC) = 0x000E739Cu;\n    uint32_t args[] = {pick, point};\n    int picked = void_call_guest_this(0x005913B0u, gesture.screen, 2, args) & 0xFFu;\n    if (picked && same_screen() && refresh_target_mode()) {\n        if (commit) {\n            /* This evaluates context and queues the original CWorldCmd objects. */\n            void_call_guest_this(0x00597360u, gesture.screen, 1, &pick);\n            VLOG(\"[touch] adventure-context point=%.1f,%.1f\", x, y);\n        } else {\n            uint32_t action = scratch + 40;\n            memset((void *)ADDR(action), 0, 72);\n            MEM32(action + 0xC) = 0x000E739Cu;\n            MEM8(action + 0x38) = 1;\n            const uint32_t evaluate[] = {action, pick, 0};\n            void_call_guest_this(0x00600E70u, controller, 3, evaluate);\n            void_call_guest_this(0x005A0F40u, action, 0, NULL);\n        }\n    }\n    void_call_guest_this(0x0059F450u, pick, 0, NULL);\n}\n",
+        "new": "static void adventure_point(float x, float y, int commit)\n{\n    uint32_t controller = gesture.controller;\n    if (!void_vm_readable(controller, 0xF0) ||\n        (void_call_guest_this(0x00603980u, controller, 0, NULL) & 0xFFu)) return;\n    uint32_t point = logical_point(x, y);\n    if (!point || !same_screen()) return;\n    uint32_t pick = scratch + 8;\n    memset((void *)ADDR(pick), 0, 32);\n    MEM32(pick + 0xC) = 0x000E739Cu;\n    uint32_t args[] = {pick, point};\n    int picked = void_call_guest_this(0x005913B0u, gesture.screen, 2, args) & 0xFFu;\n    if (picked && same_screen() && refresh_target_mode()) {\n        if (commit) {\n            /* This evaluates context and queues the original CWorldCmd objects. */\n            void_call_guest_this(0x00597360u, gesture.screen, 1, &pick);\n            VLOG(\"[touch] adventure-context point=%.1f,%.1f\", x, y);\n        } else {\n            uint32_t action = scratch + 40;\n            memset((void *)ADDR(action), 0, 60);\n            MEM32(action + 0xC) = 0x000E739Cu;\n            MEM8(action + 0x2C) = 1;\n            const uint32_t evaluate[] = {action, pick, 0};\n            void_call_guest_this(0x00600E70u, controller, 3, evaluate);\n            void_call_guest_this(0x005A0F40u, action, 0, NULL);\n        }\n    }\n    void_call_guest_this(0x0059F450u, pick, 0, NULL);\n}\n",
+        "count": 1
+      },
+      {
+        "old": "int void_touch_text_focus(uint32_t *field, int *kind, uint32_t *epoch)\n{\n    *field = 0;\n    if (!text_target.screen) return 0;\n    uint32_t screen = current_screen();\n    if (screen != text_target.screen || read32(screen + 0xA0) != text_target.root ||\n        !void_vm_readable(text_target.root_window, 64)) {\n        VLOG(\"[ime] drop changed screen/root for field=%08X\", text_target.field);\n        text_target.screen = 0;\n        return 0;\n    }\n    uint32_t focused = void_call_guest_this(0x00A4DCB0u, text_target.root_window, 0, NULL);\n    if (focused != text_target.field || read32(focused) != text_target.table ||\n        !void_vm_readable(focused, text_target.kind == 1 ? 322 : 272)) {\n        if (!text_target.pending || touch_frame - text_target.frame > 3) {\n            VLOG(\"[ime] drop focus expected=%08X actual=%08X\", text_target.field, focused);\n            text_target.screen = 0;\n        }\n        return 0;\n    }\n    if (text_target.kind == 1 && MEM8(focused + 321)) { text_target.screen = 0; return 0; }\n    if (text_target.pending) VLOG(\"[ime] focused field=%08X kind=%d epoch=%u\", focused, text_target.kind, text_target.epoch);\n    text_target.pending = 0;\n    *field = focused; *kind = text_target.kind; *epoch = text_target.epoch;\n    return 1;\n}\n",
+        "new": "int void_touch_text_focus(uint32_t *field, int *kind, uint32_t *epoch)\n{\n    *field = 0;\n    if (!text_target.screen) return 0;\n    uint32_t screen = current_screen();\n    if (screen != text_target.screen || read32(screen + 0x98) != text_target.root ||\n        !void_vm_readable(text_target.root_window, 64)) {\n        VLOG(\"[ime] drop changed screen/root for field=%08X\", text_target.field);\n        text_target.screen = 0;\n        return 0;\n    }\n    uint32_t focused = void_call_guest_this(0x00A4DCB0u, text_target.root_window, 0, NULL);\n    if (focused != text_target.field || read32(focused) != text_target.table ||\n        !void_vm_readable(focused, text_target.kind == 1 ? 322 : 272)) {\n        if (!text_target.pending || touch_frame - text_target.frame > 3) {\n            VLOG(\"[ime] drop focus expected=%08X actual=%08X\", text_target.field, focused);\n            text_target.screen = 0;\n        }\n        return 0;\n    }\n    if (text_target.kind == 1 && MEM8(focused + 321)) { text_target.screen = 0; return 0; }\n    if (text_target.pending) VLOG(\"[ime] focused field=%08X kind=%d epoch=%u\", focused, text_target.kind, text_target.epoch);\n    text_target.pending = 0;\n    *field = focused; *kind = text_target.kind; *epoch = text_target.epoch;\n    return 1;\n}\n",
+        "count": 1
+      },
+      {
+        "old": "static int combat_double(float x, float y)\n{\n    if (gesture.aiming || target_armed() || !combat_prepare(x, y, 1)) return 0;\n    uint32_t screen = gesture.screen, active = read32(screen + 0x320), base = virtual_base(active, 4);\n    if (!base || !void_vm_readable(base, 8) || (MEM8(base + 7) & 0x80u) ||\n        active != read32(screen + 0x2F4) || !(read32(screen + 0x2E0) & 0x188u) ||\n        read32(screen + 0x2D4) != 0 || target_armed() || !object_query(active, 0x74) ||\n        !same_screen() || ui_pick(screen, x, y) || !same_screen() || target_armed()) return 0;\n    /* Native double-click's input_Combat_Cast helper never reads its forwarded argument. */\n    uint32_t unused = 0;\n    gesture.committed = 1;\n    void_call_guest_this(0x00545160u, screen, 1, &unused);\n    int current = same_screen();\n    if (!current || ui_pick(screen, x, y) || !same_screen()) publish_point(-1, -1);\n    if (!current) gesture.active = 0;\n    VLOG(\"[touch] combat-double active=%08X current=%d\", active, current);\n    return 1;\n}\n",
+        "new": "static int combat_double(float x, float y)\n{\n    if (gesture.aiming || target_armed() || !combat_prepare(x, y, 1)) return 0;\n    uint32_t screen = gesture.screen, active = read32(screen + 0x330), base = virtual_base(active, 4);\n    if (!base || !void_vm_readable(base, 8) || (MEM8(base + 7) & 0x80u) ||\n        active != read32(screen + 0x304) || !(read32(screen + 0x2F0) & 0x188u) ||\n        read32(screen + 0x2E4) != 0 || target_armed() || !object_query(active, 0x8) ||\n        !same_screen() || ui_pick(screen, x, y) || !same_screen() || target_armed()) return 0;\n    /* Native double-click's input_Combat_Cast helper never reads its forwarded argument. */\n    uint32_t unused = 0;\n    gesture.committed = 1;\n    void_call_guest_this(0x00545160u, screen, 1, &unused);\n    int current = same_screen();\n    if (!current || ui_pick(screen, x, y) || !same_screen()) publish_point(-1, -1);\n    if (!current) gesture.active = 0;\n    VLOG(\"[touch] combat-double active=%08X current=%d\", active, current);\n    return 1;\n}\n",
+        "count": 1
+      },
+      {
+        "old": "static void port_menu_pump(void)\n{\n    uint32_t screen = current_screen(), table = read32(screen);\n    if (table == 0x00E3DA1Cu) {\n        uint32_t root = read32(screen + 0xA0);\n        if (root >= 0xF8) port_launcher_visibility(root - 0xF8, 0, read32(screen + 0x1A0) == 2);\n    }\n    if (void_android_take_game_switch() && screen && !switch_confirm_pending) {\n        void_android_return_to_launcher();\n        switch_confirm_pending = 1;\n        void_call_guest(0x00689790u, 0, NULL, 1);\n        return;\n    }\n    if (switch_confirm_pending && table == 0x00E3112Cu) {\n        uint32_t zero = 0;\n        switch_confirm_pending = 0;\n        void_call_guest_this(0x006895E0u, screen + 0x174, 1, &zero);\n        return;\n    }\n    if (launcher_pending) {\n        if (table == 0x00E3112Cu) launcher_question_seen = 1;\n        else if (launcher_question_seen) launcher_pending = launcher_question_seen = 0;\n    }\n}\n",
+        "new": "static void port_menu_pump(void)\n{\n    uint32_t screen = current_screen(), table = read32(screen);\n    if (table == 0x00E3DA1Cu) {\n        uint32_t root = read32(screen + 0x98);\n        if (root >= 0xF8) port_launcher_visibility(root - 0xF8, 0, read32(screen + 0x194) == 2);\n    }\n    if (void_android_take_game_switch() && screen && !switch_confirm_pending) {\n        void_android_return_to_launcher();\n        switch_confirm_pending = 1;\n        void_call_guest(0x00689790u, 0, NULL, 1);\n        return;\n    }\n    if (switch_confirm_pending && table == 0x00E3112Cu) {\n        uint32_t zero = 0;\n        switch_confirm_pending = 0;\n        void_call_guest_this(0x006895E0u, screen + 0x168, 1, &zero);\n        return;\n    }\n    if (launcher_pending) {\n        if (table == 0x00E3112Cu) launcher_question_seen = 1;\n        else if (launcher_question_seen) launcher_pending = launcher_question_seen = 0;\n    }\n}\n",
+        "count": 1
+      },
+      {
+        "old": "static int town_portrait_double(float x, float y)\n{\n    if (!town_ready() || !void_dispatch_find(0x00619320u)) return 0;\n    uint32_t screen = gesture.screen, point = logical_point(x, y);\n    if (!point) return 0;\n    uint32_t portrait = read32(screen + 0x2A0);\n    if (!window_hit(portrait, point)) {\n        portrait = read32(screen + 0x2A4);\n        point = logical_point(x, y);\n        if (!point || !window_hit(portrait, point)) return 0;\n    }\n    if (!same_screen() || !window_contains(ui_pick(screen, x, y), portrait) || !same_screen() || !ui_idle()) return 0;\n    /* Native dblclick_pointer action before WM queues a cursor-dependent deferred duplicate. */\n    gesture.committed = 1;\n    uint32_t page = 1;\n    void_call_guest_this(0x00619320u, screen, 1, &page);\n    VLOG(\"[touch] town-hero-double screen=%08X\", screen);\n    return 1;\n}\n",
+        "new": "static int town_portrait_double(float x, float y)\n{\n    if (!town_ready() || !void_dispatch_find(0x00619320u)) return 0;\n    uint32_t screen = gesture.screen, point = logical_point(x, y);\n    if (!point) return 0;\n    uint32_t portrait = read32(screen + 0x294);\n    if (!window_hit(portrait, point)) {\n        portrait = read32(screen + 0x298);\n        point = logical_point(x, y);\n        if (!point || !window_hit(portrait, point)) return 0;\n    }\n    if (!same_screen() || !window_contains(ui_pick(screen, x, y), portrait) || !same_screen() || !ui_idle()) return 0;\n    /* Native dblclick_pointer action before WM queues a cursor-dependent deferred duplicate. */\n    gesture.committed = 1;\n    uint32_t page = 1;\n    void_call_guest_this(0x00619320u, screen, 1, &page);\n    VLOG(\"[touch] town-hero-double screen=%08X\", screen);\n    return 1;\n}\n",
+        "count": 1
+      },
+      {
+        "old": "static void loading_continue(void)\n{\n    uint32_t screen = gesture.screen;\n    if (read32(screen) != 0x00E34674u || !same_screen() || !ui_idle() ||\n        !void_vm_writable(screen + 0x1A4, 4) || read32(screen + 0x1A4) != 5 ||\n        !void_dispatch_find(0x006B2830u) || !void_dispatch_find(0x00689390u) ||\n        !void_dispatch_find(0x00AC3590u) || !void_dispatch_find(0x00838C10u)) return;\n    /* Original ready-only branch of 6B2BB0: consume readiness before cleanup/queue callbacks. */\n    MEM32(screen + 0x1A4) = 0;\n    void_call_guest_this(0x006B2830u, screen, 0, NULL);\n    void_call_guest_this(0x00689390u, 1, 0, NULL);\n    uint32_t command = void_call_guest(0x00AC3590u, 0, NULL, 1);\n    if (command) void_call_guest_this(0x00838C10u, command, 0, NULL);\n    VLOG(\"[touch] loading-continue screen=%08X command=%08X\", screen, command);\n}\n",
+        "new": "static void loading_continue(void)\n{\n    uint32_t screen = gesture.screen;\n    if (read32(screen) != 0x00DE831Cu || !same_screen() || !ui_idle() ||\n        !void_vm_writable(screen + 0x198, 4) || read32(screen + 0x198) != 5 ||\n        !void_dispatch_find(0x00648D90u) || !void_dispatch_find(0x00B744F0u) ||\n        !void_dispatch_find(0x00885560u)) return;\n    uint32_t vb = read32(screen + 0x10);\n    uint32_t interface = vb ? screen + 0x10 + read32(vb + 8) : 0;\n    if (!void_vm_readable(interface, 4)) return;\n    /* This edition queues its native screen-bound ready command, which owns the transition. */\n    MEM32(screen + 0x198) = 0;\n    void_call_guest_this(0x00648D90u, 1, 0, NULL);\n    uint32_t command = void_call_guest_this(0x00B744F0u, interface, 0, NULL);\n    if (command) void_call_guest_this(0x00885560u, command, 0, NULL);\n    VLOG(\"[touch] loading-continue screen=%08X command=%08X\", screen, command);\n}\n",
+        "count": 1,
+        "mapped": true
+      },
+      {
+        "old": "static void placement_point(float x, float y, int phase)\n{\n    uint32_t point = logical_point(x, y), placement = read32(gesture.screen + 0x488);\n    if (!point || !placement || !same_screen()) return;\n    uint32_t pick = scratch + 8;\n    memset((void *)ADDR(pick), 0, 40);\n    const uint32_t pick_args[] = {pick, point};\n    void_call_guest_this(0x00544230u, gesture.screen, 2, pick_args);\n    if (phase == 1) {\n        const uint32_t args[] = {point, pick + 0x10};\n        void_call_guest_this(0x005767A0u, placement, 2, args);\n    } else {\n        uint32_t player = void_call_guest_this(0x00669430u, gesture.screen, 0, NULL);\n        const uint32_t args[] = {point, pick + 0x10, player};\n        void_call_guest_this(phase == 0 ? 0x005779D0u : 0x00577DC0u, placement, 3, args);\n    }\n    void_call_guest_this(0x0054E030u, pick, 0, NULL);\n}\n",
+        "new": "static void placement_point(float x, float y, int phase)\n{\n    uint32_t point = logical_point(x, y), placement = read32(gesture.screen + 0x474);\n    if (!point || !placement || !same_screen()) return;\n    uint32_t pick = scratch + 8;\n    memset((void *)ADDR(pick), 0, 40);\n    const uint32_t pick_args[] = {pick, point};\n    void_call_guest_this(0x00544230u, gesture.screen, 2, pick_args);\n    if (phase == 1) {\n        const uint32_t args[] = {point, pick + 0x10};\n        void_call_guest_this(0x005767A0u, placement, 2, args);\n    } else {\n        uint32_t player = void_call_guest_this(0x00669430u, gesture.screen, 0, NULL);\n        const uint32_t args[] = {point, pick + 0x10, player};\n        void_call_guest_this(phase == 0 ? 0x005779D0u : 0x00577DC0u, placement, 3, args);\n    }\n    void_call_guest_this(0x0054E030u, pick, 0, NULL);\n}\n",
+        "count": 1
+      },
+      {
+        "old": "static void touch_cursor_software_draw(void)\n{\n    uint32_t owner = g_ecx, table = read32(owner);\n    if (table == 0x00E49494u && void_vm_readable(owner, 0x50) &&\n        read32(table + 8) == 0x00836440u && read32(table + 0x24) == 0x00835B90u) {\n        if (!original_cursor_hardware_query) {\n            original_cursor_hardware_query = void_dispatch_find(0x00835B90u);\n            if (original_cursor_hardware_query)\n                void_dispatch_add(0x00835B90u, touch_cursor_hardware_query);\n        }\n        if (original_cursor_hardware_query) {\n            uint32_t previous = cursor_software_owner;\n            cursor_software_owner = owner;\n            original_cursor_draw();\n            cursor_software_owner = previous;\n            return;\n        }\n    }\n    original_cursor_draw();\n}\n",
+        "new": "static void touch_cursor_software_draw(void)\n{\n    uint32_t owner = g_ecx, table = read32(owner);\n    if (table == 0x00E49494u && void_vm_readable(owner, 0x50) &&\n        read32(table + 8) == 0x00836440u && read32(table + 0x28) == 0x00835B90u) {\n        if (!original_cursor_hardware_query) {\n            original_cursor_hardware_query = void_dispatch_find(0x00835B90u);\n            if (original_cursor_hardware_query)\n                void_dispatch_add(0x00835B90u, touch_cursor_hardware_query);\n        }\n        if (original_cursor_hardware_query) {\n            uint32_t previous = cursor_software_owner;\n            cursor_software_owner = owner;\n            original_cursor_draw();\n            cursor_software_owner = previous;\n            return;\n        }\n    }\n    original_cursor_draw();\n}\n",
+        "count": 1
+      },
+      {
+        "old": "static uint32_t text_edit_at(uint32_t screen, float x, float y, int *kind)\n{\n    uint32_t window = ui_pick(screen, x, y);\n    for (unsigned depth = 0; window && depth < 16; ++depth) {\n        const uint32_t line[] = {window, 0, 0x00F2DAF4u, 0x00F7A234u, 0};\n        uint32_t field = void_call_guest(0x00D119FCu, 5, line, 0);\n        if (field && void_vm_readable(field, 322) && !MEM8(field + 321)) { *kind = 1; return field; }\n        const uint32_t box[] = {window, 0, 0x00F2DAF4u, 0x00F7AE0Cu, 0};\n        field = void_call_guest(0x00D119FCu, 5, box, 0);\n        if (field && void_vm_readable(field, 272)) { *kind = 2; return field; }\n        uint32_t parent = object_query(window, 0xD8);\n        if (parent == window) break;\n        window = parent;\n    }\n    return 0;\n}\n",
+        "new": "static uint32_t text_edit_at(uint32_t screen, float x, float y, int *kind)\n{\n    uint32_t window = ui_pick(screen, x, y);\n    for (unsigned depth = 0; window && depth < 16; ++depth) {\n        const uint32_t line[] = {window, 0, 0x00F2DAF4u, 0x00F7A234u, 0};\n        uint32_t field = void_call_guest(0x00D119FCu, 5, line, 0);\n        if (field && void_vm_readable(field, 322) && !MEM8(field + 321)) { *kind = 1; return field; }\n        const uint32_t box[] = {window, 0, 0x00F2DAF4u, 0x00F7AE0Cu, 0};\n        field = void_call_guest(0x00D119FCu, 5, box, 0);\n        if (field && void_vm_readable(field, 272)) { *kind = 2; return field; }\n        uint32_t parent = object_query(window, 0xD4);\n        if (parent == window) break;\n        window = parent;\n    }\n    return 0;\n}\n",
+        "count": 1
+      },
+      {
+        "old": "static void mentor_activate(float x, float y, int twice)\n{\n    uint32_t screen = gesture.screen;\n    if (read32(screen) != 0x00E3584Cu || !same_screen() || !ui_idle() ||\n        !void_vm_readable(screen, 0x7EC) || read32(screen + 0x7DC) != 6 || read32(screen + 0x7E8)) return;\n    uint32_t point = logical_point(x, y), window = point ? mentor_window(point) : 0;\n    if (!window || !same_screen() || !window_contains(ui_pick(screen, x, y), window) || !same_screen() || !ui_idle()) return;\n    if (read32(screen + 0x7DC) != 6 || read32(screen + 0x7E8)) return;\n    point = logical_point(x, y);\n    if (point && (void_call_guest_this(0x006C15D0u, screen, 1, &point) & 0xFFu) &&\n        twice && same_screen() && ui_idle()) void_call_guest_this(0x006C0FB0u, screen, 0, NULL);\n}\n",
+        "new": "static void mentor_activate(float x, float y, int twice)\n{\n    /* Memory Mentor is Tribes of the East content; ordinary hero windows retain native UI handling. */\n    (void)x; (void)y; (void)twice;\n}\n",
+        "count": 1
+      },
+      {
+        "old": "static int troop_portrait_at(float x,float y,troop_cell *cell)\n{\n    uint32_t screen=gesture.screen;int hero=read32(screen)==0x00E3584Cu;\n    if (!hero && (gesture.kind!=SCREEN_TOWN || !town_army_ready())) return 0;\n    uint32_t hit=ui_pick(gesture.screen,x,y);\n    for (unsigned row=0;row<2;++row) {\n        uint32_t portrait=read32(screen+(hero?(row?0x600:0x4E8):(row?0x2A4:0x2A0)));\n        uint32_t cells=read32(screen+(hero?(row?0x654:0x53C):(row?0x2B4:0x2A8)));\n        uint32_t window=hero?virtual_base(read32(cells),8):read32(cells);\n        if (portrait && window_contains(hit,portrait) && troop_cell_window(window,cell)) return 1;\n    }\n    return 0;\n}\n",
+        "new": "static int troop_portrait_at(float x,float y,troop_cell *cell)\n{\n    uint32_t screen=gesture.screen;int hero=read32(screen)==0x00E3584Cu;\n    if (!hero && (gesture.kind!=SCREEN_TOWN || !town_army_ready())) return 0;\n    uint32_t hit=ui_pick(gesture.screen,x,y);\n    for (unsigned row=0;row<2;++row) {\n        uint32_t portrait=read32(screen+(hero?(row?0x5CC:0x4DC):(row?0x298:0x294)));\n        uint32_t cells=read32(screen+(hero?(row?0x5F8:0x508):(row?0x2A8:0x29C)));\n        uint32_t window=hero?virtual_base(read32(cells),8):read32(cells);\n        if (portrait && window_contains(hit,portrait) && troop_cell_window(window,cell)) return 1;\n    }\n    return 0;\n}\n",
+        "count": 1
+      },
+      {
+        "old": "static void troop_inactive(uint32_t window)\n{\n    if (!same_screen() || !ui_idle()) return;\n    uint32_t constants=void_call_guest_this(0x00490DB0u,0x0103FF38u,0,NULL);\n    uint32_t sound=object_query(window,0xDC),play=object_method(sound,0x28);\n    const uint32_t cast[]={window,0,0x00F2DAF4u,0x00F2DA88u,0};\n    uint32_t owner=constants&&play?void_call_guest(0x00D119FCu,5,cast,0):0;\n    if (owner && void_vm_readable(constants+0x7C,4) && same_screen()) {\n        const uint32_t args[]={constants+0x7C,owner};\n        void_call_guest_this(play,sound,2,args);\n    }\n}\n",
+        "new": "static void troop_inactive(uint32_t window)\n{\n    if (!same_screen() || !ui_idle()) return;\n    uint32_t constants=void_call_guest_this(0x00490DB0u,0x0103FF38u,0,NULL);\n    uint32_t sound=object_query(window,0xD8),play=object_method(sound,0x28);\n    const uint32_t cast[]={window,0,0x00F2DAF4u,0x00F2DA88u,0};\n    uint32_t owner=constants&&play?void_call_guest(0x00D119FCu,5,cast,0):0;\n    if (owner && void_vm_readable(constants+0x7C,4) && same_screen()) {\n        const uint32_t args[]={constants+0x7C,owner};\n        void_call_guest_this(play,sound,2,args);\n    }\n}\n",
+        "count": 1
+      },
+      {
+        "old": "static void town_activate(float x, float y)\n{\n    uint32_t screen = gesture.screen;\n    if (!town_ready()) return;\n    uint32_t transition = read32(screen + 0x3DC);\n    if (!object_method(transition, 0x48) || (object_query(transition, 0x48) & 0xFFu) || !same_screen()) return;\n    uint32_t point = logical_point(x, y);\n    if (point) {\n        /* Original city handler's native building pick, permissions and action dispatch. */\n        void_call_guest_this(0x0061B760u, screen, 1, &point);\n        VLOG(\"[touch] town-building screen=%08X\", screen);\n    }\n}\n",
+        "new": "static void town_activate(float x, float y)\n{\n    uint32_t screen = gesture.screen;\n    if (!town_ready()) return;\n    uint32_t transition = read32(screen + 0x3D0);\n    if (!object_method(transition, 0x48) || (object_query(transition, 0x48) & 0xFFu) || !same_screen()) return;\n    uint32_t point = logical_point(x, y);\n    if (point) {\n        /* Original city handler's native building pick, permissions and action dispatch. */\n        void_call_guest_this(0x0061B760u, screen, 1, &point);\n        VLOG(\"[touch] town-building screen=%08X\", screen);\n    }\n}\n",
+        "count": 1
+      },
+      {
+        "old": "static int adventure_announcement(float x, float y, int activate)\n{\n    if (gesture.kind != SCREEN_ADVENTURE || !same_screen()) return 0;\n    uint32_t manager = read32(gesture.screen + 0xEC), point = logical_point(x, y);\n    if (!manager || !point || !void_vm_readable(manager, 4) || !same_screen()) return 0;\n    /* The native manager alone owns icon actions; activation zero only probes its hit list. */\n    const uint32_t args[] = {point, (uint32_t)activate};\n    return (void_call_guest_this(0x00667470u, manager, 2, args) & 0xFFu) != 0;\n}\n",
+        "new": "static int adventure_announcement(float x, float y, int activate)\n{\n    if (gesture.kind != SCREEN_ADVENTURE || !same_screen()) return 0;\n    uint32_t manager = read32(gesture.screen + 0xE4), point = logical_point(x, y);\n    if (!manager || !point || !void_vm_readable(manager, 4) || !same_screen()) return 0;\n    /* The native manager alone owns icon actions; activation zero only probes its hit list. */\n    const uint32_t args[] = {point, (uint32_t)activate};\n    return (void_call_guest_this(0x00667470u, manager, 2, args) & 0xFFu) != 0;\n}\n",
+        "count": 1
+      },
+      {
+        "old": "static uint32_t ghost_window(uint32_t point, int energy_only)\n{\n    uint32_t begin = read32(gesture.screen + 0x1D8), end = read32(gesture.screen + 0x1DC);\n    for (unsigned i = 0, n = window_vector(begin, end, 36); i < n; ++i) {\n        uint32_t entry = begin + i * 36, window = read32(entry + 0x20);\n        if (window_hit(window, point)) return window;\n        window = read32(entry + 0x1C);\n        if (!energy_only && window_hit(window, point)) return window;\n    }\n    return 0;\n}\n",
+        "new": "static uint32_t ghost_window(uint32_t point, int energy_only)\n{\n    uint32_t begin = read32(gesture.screen + 0x1CC), end = read32(gesture.screen + 0x1D0);\n    for (unsigned i = 0, n = window_vector(begin, end, 36); i < n; ++i) {\n        uint32_t entry = begin + i * 36, window = read32(entry + 0x20);\n        if (window_hit(window, point)) return window;\n        window = read32(entry + 0x1C);\n        if (!energy_only && window_hit(window, point)) return window;\n    }\n    return 0;\n}\n",
+        "count": 1
+      },
+      {
+        "old": "static int town_army_ready(void)\n{\n    uint32_t screen = gesture.screen;\n    if (read32(screen) != 0x00E2A64Cu || !same_screen() || !ui_idle() ||\n        !void_vm_readable(screen, 0x479) ||\n        MEM8(screen + 0x29C) || MEM8(screen + 0x478)) return 0;\n    if ((void_call_guest_this(0x00614200u, screen, 0, NULL) & 0xFFu) || !same_screen() ||\n        (void_call_guest_this(0x006146C0u, screen, 0, NULL) & 0xFFu) || !same_screen()) return 0;\n    return ui_idle();\n}\n",
+        "new": "static int town_army_ready(void)\n{\n    uint32_t screen = gesture.screen;\n    if (read32(screen) != 0x00E2A64Cu || !same_screen() || !ui_idle() ||\n        !void_vm_readable(screen, 0x46D) ||\n        MEM8(screen + 0x290) || MEM8(screen + 0x46C)) return 0;\n    /* Hammers' native town click gate requires its town roster, not the later ToE helper. */\n    uint32_t view = read32(screen + 0x214);\n    if (!object_method(view, 0x90) || !object_query(view, 0x90) || !same_screen() ||\n        (void_call_guest_this(0x006146C0u, screen, 0, NULL) & 0xFFu) || !same_screen()) return 0;\n    return ui_idle();\n}",
+        "count": 1
+      },
+      {
+        "old": "static int ghost_owned_point(float x, float y, int energy_only)\n{\n    uint32_t screen = gesture.screen;\n    if (read32(screen) != 0x00E4094Cu || !same_screen() || !ui_idle() || !void_vm_readable(screen, 0x218)) return 0;\n    uint32_t point = logical_point(x, y), window = point ? ghost_window(point, energy_only) : 0;\n    if (!window || !same_screen() || !window_contains(ui_pick(screen, x, y), window) || !same_screen() || !ui_idle()) return 0;\n    return 1;\n}\n",
+        "new": "static int ghost_owned_point(float x, float y, int energy_only)\n{\n    uint32_t screen = gesture.screen;\n    if (read32(screen) != 0x00E4094Cu || !same_screen() || !ui_idle() || !void_vm_readable(screen, 0x20C)) return 0;\n    uint32_t point = logical_point(x, y), window = point ? ghost_window(point, energy_only) : 0;\n    if (!window || !same_screen() || !window_contains(ui_pick(screen, x, y), window) || !same_screen() || !ui_idle()) return 0;\n    return 1;\n}\n",
+        "count": 1
+      },
+      {
+        "old": "static void combat_cancel(void)\n{\n    if (gesture.placement) {\n        uint32_t placement = read32(gesture.screen + 0x488);\n        if (placement) void_call_guest_this(0x00576260u, placement, 0, NULL);\n    }\n    void_call_guest_this(0x00542A30u, gesture.screen, 0, NULL);\n    combat_reset_context();\n    MEM32(gesture.screen + 0x31C) = 1;\n    void_call_guest_this(0x005498C0u, gesture.screen, 0, NULL);\n}\n",
+        "new": "static void combat_cancel(void)\n{\n    if (gesture.placement) {\n        uint32_t placement = read32(gesture.screen + 0x474);\n        if (placement) void_call_guest_this(0x00576260u, placement, 0, NULL);\n    }\n    void_call_guest_this(0x00542A30u, gesture.screen, 0, NULL);\n    combat_reset_context();\n    MEM32(gesture.screen + 0x32C) = 1;\n    void_call_guest_this(0x005498C0u, gesture.screen, 0, NULL);\n}\n",
+        "count": 1
+      },
+      {
+        "old": "static int same_screen(void)\n{\n    uint32_t screen = current_screen();\n    return screen && screen == gesture.screen && screen_kind(screen) == gesture.kind &&\n           read32(screen + 0xA0) == gesture.root &&\n           ((gesture.kind == SCREEN_MENU || gesture.kind == SCREEN_TOWN) ||\n            read32(screen + (gesture.kind == SCREEN_ADVENTURE ? 0x5F4 : 0x2B4)) == gesture.controller);\n}\n",
+        "new": "static int same_screen(void)\n{\n    uint32_t screen = current_screen();\n    return screen && screen == gesture.screen && screen_kind(screen) == gesture.kind &&\n           read32(screen + 0x98) == gesture.root &&\n           ((gesture.kind == SCREEN_MENU || gesture.kind == SCREEN_TOWN) ||\n            read32(screen + (gesture.kind == SCREEN_ADVENTURE ? 0x578 : 0x2A8)) == gesture.controller);\n}\n",
+        "count": 1
+      },
+      {
+        "old": "static void combat_reset_context(void)\n{\n    uint32_t temporary = scratch + 160;\n    memset((void *)ADDR(temporary), 0, 156);\n    void_call_guest_this(0x00550A70u, temporary, 0, NULL);\n    void_call_guest_this(0x00550EB0u, gesture.screen + 0x2EC, 1, &temporary);\n    void_call_guest_this(0x00550B00u, temporary, 0, NULL);\n}\n",
+        "new": "static void combat_reset_context(void)\n{\n    uint32_t temporary = scratch + 160;\n    memset((void *)ADDR(temporary), 0, 144);\n    void_call_guest_this(0x00550A70u, temporary, 0, NULL);\n    void_call_guest_this(0x00550EB0u, gesture.screen + 0x2FC, 1, &temporary);\n    void_call_guest_this(0x00550B00u, temporary, 0, NULL);\n}\n",
+        "count": 1
+      },
+      {
+        "old": "static int window_contains(uint32_t hit, uint32_t window)\n{\n    for (unsigned depth = 0; hit && depth < 32; ++depth) {\n        if (!same_screen()) return 0;\n        if (hit == window) return 1;\n        uint32_t parent = object_query(hit, 0xD8);\n        if (parent == hit) break;\n        hit = parent;\n    }\n    return 0;\n}\n",
+        "new": "static int window_contains(uint32_t hit, uint32_t window)\n{\n    for (unsigned depth = 0; hit && depth < 32; ++depth) {\n        if (!same_screen()) return 0;\n        if (hit == window) return 1;\n        uint32_t parent = object_query(hit, 0xD4);\n        if (parent == hit) break;\n        hit = parent;\n    }\n    return 0;\n}\n",
+        "count": 1
+      },
+      {
+        "old": "    uint32_t picker = gesture.book == 1 ? 0x00683450u : 0x0067BAB0u;\n    unsigned vector = gesture.book == 1 ? 0x1B4 : 0x1A8;\n    unsigned stride = gesture.book == 1 ? 36 : 40;\n    unsigned scene = gesture.book == 1 ? 0x1CC : 0x1C0;\n    unsigned closing = gesture.book == 1 ? 0x1ED : 0x1D4;",
+        "new": "    uint32_t picker = 0x00642070u;\n    unsigned vector = 0x1A8;\n    unsigned stride = 36;\n    unsigned scene = 0x1C0;\n    unsigned closing = 0x1E1;",
+        "count": 1,
+        "mapped": true
+      },
+      {
+        "old": "static int target_armed(void)\n{\n    return gesture.kind == SCREEN_ADVENTURE ? read32(gesture.controller + 0x44) == 5 :\n           gesture.kind == SCREEN_COMBAT && (read32(gesture.screen + 0x394) ||\n           read32(gesture.screen + 0x388) || read32(gesture.screen + 0x38C));\n}\n",
+        "new": "static int target_armed(void)\n{\n    return gesture.kind == SCREEN_ADVENTURE ? read32(gesture.controller + 0x44) == 5 :\n           gesture.kind == SCREEN_COMBAT && (read32(gesture.screen + 0x398) ||\n           read32(gesture.screen + 0x38C) || read32(gesture.screen + 0x390));\n}\n",
+        "count": 1
+      },
+      {
+        "old": "static uint32_t adventure_borrow(uint32_t cast, uint32_t reference)\n{\n    uint32_t output = scratch + 400;\n    MEM32(output) = 0;\n    void_call_guest_this(cast, output, 1, &reference);\n    return MEM32(output);\n}\n",
+        "new": "",
+        "count": 1
+      },
+      {
+        "old": "static void adventure_cancel(void)\n{\n    if (gesture.kind == SCREEN_ADVENTURE && void_vm_readable(gesture.controller, 0xF0))\n        void_call_guest_this(0x00604E20u, gesture.controller, 0, NULL);\n}\n",
+        "new": "static void adventure_cancel(void)\n{\n    if (gesture.kind == SCREEN_ADVENTURE && void_vm_readable(gesture.controller, 0xF0))\n        void_call_guest_this(0x00604E20u, gesture.controller, 0, NULL);\n}\n",
+        "count": 1
+      },
+      {
+        "old": "static int town_ready(void)\n{\n    return read32(gesture.screen + 0x294) && town_army_ready();\n}\n",
+        "new": "static int town_ready(void)\n{\n    return read32(gesture.screen + 0x288) && town_army_ready();\n}\n",
+        "count": 1
+      },
+      {
+        "old": "    return table == 0x00E30EB4u ? 1 : table == 0x00E30CA4u ? 2 : 0;",
+        "new": "    return table == 0x00DE4C70u ? 1 : 0;",
+        "count": 1,
+        "mapped": true
+      },
+      {
+        "old": "gesture.kind == SCREEN_ADVENTURE ? 0x5F4 : 0x2B4",
+        "new": "gesture.kind == SCREEN_ADVENTURE ? 0x578 : 0x2A8",
+        "count": 1
+      },
+      {
+        "old": "read32(gesture.screen + 0x2E0) == 0x1000",
+        "new": "read32(gesture.screen + 0x2F0) == 0x1000",
+        "count": 1
+      },
+      {
+        "old": "read32(gesture.screen + 0x150)",
+        "new": "read32(gesture.screen + 0x148)",
+        "count": 2
+      },
+      {
+        "old": "read32(gesture.screen + 0x14C)",
+        "new": "read32(gesture.screen + 0x144)",
+        "count": 1
+      },
+      {
+        "old": "read32(gesture.screen + 0x488)",
+        "new": "read32(gesture.screen + 0x474)",
+        "count": 1
+      },
+      {
+        "old": "object_method(window, 0xD8)",
+        "new": "object_method(window, 0xD4)",
+        "count": 1
+      },
+      {
+        "old": "read32(screen + 0x150)",
+        "new": "read32(screen + 0x148)",
+        "count": 1
+      },
+      {
+        "old": "screen + 0xA0",
+        "new": "screen + 0x98",
+        "count": 5
+      }
+    ],
+    "android/host/touch_camera.c": [
+      {
+        "old": "#include \"host.h\"\n#include \"input.h\"\n#include \"touch.h\"\n#include <math.h>\n#include <string.h>\n\n/* CameraPos and projection calls are the original H5 engine's interfaces. */\nstatic uint32_t camera_scratch;\nstatic void_fn original_edge_scroll;\n\nstatic uint32_t camera_method(uint32_t object, uint32_t offset)\n{\n    if (!void_vm_readable(object, 4)) return 0;\n    uint32_t table = MEM32(object);\n    if (!void_vm_readable(table, offset + 4)) return 0;\n    uint32_t method = MEM32(table + offset);\n    return void_dispatch_find(method) ? method : 0;\n}\n\nstatic int camera_town_owner(uint32_t screen, uint32_t root, uint32_t controller)\n{\n    if (!void_vm_readable(screen, 0x479) || MEM32(screen) != 0x00E2A64Cu ||\n        MEM32(screen + 0xA0) != root || MEM32(screen + 0x220) != controller ||\n        MEM8(screen + 0x29C) || MEM8(screen + 0x478)) return 0;\n    uint32_t pending = MEM32(screen + 0x14C);\n    if (!void_vm_readable(pending, 4) || MEM32(pending) != pending ||\n        !void_vm_readable(0x00FE719Cu, 4) ||\n        !void_vm_readable(MEM32(0x00FE719Cu), 12) ||\n        !void_dispatch_find(0x008385A0u) || !void_dispatch_find(0x00D119FCu)) return 0;\n    uint32_t top = void_call_guest(0x008385A0u, 0, NULL, 1);\n    if (!void_vm_readable(top, 8)) return 0;\n    uint32_t table = MEM32(top + 4);\n    if (!void_vm_readable(table, 8)) return 0;\n    uint32_t base = top + 4 + MEM32(table + 4);\n    if (!void_vm_readable(base, 4)) return 0;\n    const uint32_t args[] = {base, 0, 0x00F272C0u, 0x00F323A8u, 0};\n    return void_call_guest(0x00D119FCu, 5, args, 0) == screen;\n}\n\nstatic int camera_town_prepare(uint32_t screen)\n{\n    if (!void_vm_writable(screen, 0x479)) return 0;\n    uint32_t root = MEM32(screen + 0xA0), controller = MEM32(screen + 0x220);\n    if (!void_vm_readable(root, 4) || !camera_town_owner(screen, root, controller) ||\n        !void_dispatch_find(0x00614200u) || !void_dispatch_find(0x006146C0u)) return 0;\n    /* Original Town input interrupts the animated flyup before accepting manual motion. */\n    if ((void_call_guest_this(0x00614200u, screen, 0, NULL) & 0xFFu) ||\n        !camera_town_owner(screen, root, controller) ||\n        (void_call_guest_this(0x006146C0u, screen, 0, NULL) & 0xFFu) ||\n        !camera_town_owner(screen, root, controller)) return 0;\n    if (!MEM32(screen + 0x294)) {\n        if (!camera_method(controller, 0x90) || !void_dispatch_find(0x00618170u)) return 0;\n        void_call_guest_this(0x00618170u, screen, 0, NULL);\n        if (!camera_town_owner(screen, root, controller) || !MEM32(screen + 0x294)) return 0;\n    }\n    return 1;\n}\n\nstatic void camera_store(uint32_t address, float value)\n{\n    memcpy(GPTR(address), &value, sizeof value);\n}\n\nstatic int camera_plane_point(uint32_t screen, float x, float y, float height,\n                              float result[2])\n{\n    uint32_t raw = camera_scratch + 0x6E0, point = camera_scratch + 0x6F0;\n    uint32_t direction = camera_scratch + 0x700, origin = camera_scratch + 0x710;\n    camera_store(raw, x); camera_store(raw + 4, y);\n    uint32_t logical = void_call_guest_this(0x00B29220u, raw, 0, NULL);\n    if (!void_vm_readable(logical, 8)) return 0;\n    memcpy(GPTR(point), GPTR(logical), 8);\n    uint32_t args[3] = {camera_scratch, 0, 0};\n    memcpy(&args[1], &height, sizeof height);\n    g_edx = point;\n    void_call_guest_this(0x00671310u, screen, 2, args);\n    args[0] = camera_scratch + 0x14;\n    args[1] = camera_scratch + 0x0C;\n    args[2] = camera_scratch + 0x04;\n    g_edx = origin;\n    void_call_guest_this(0x00CF6B20u, direction, 3, args);\n    float ray[3], eye[3];\n    memcpy(ray, GPTR(direction), sizeof ray);\n    memcpy(eye, GPTR(origin), sizeof eye);\n    for (int i = 0; i < 3; ++i)\n        if (!isfinite(ray[i]) || !isfinite(eye[i])) return 0;\n    if (fabsf(ray[2]) < 0.00001f) return 0;\n    float distance = (height - eye[2]) / ray[2];\n    if (!isfinite(distance) || distance <= 0) return 0;\n    result[0] = eye[0] + distance * ray[0];\n    result[1] = eye[1] + distance * ray[1];\n    return isfinite(result[0]) && isfinite(result[1]);\n}\n\nint void_touch_camera(uint32_t screen, int kind, float x, float y,\n                      float dx, float dy, float scale, float rotation)\n{\n    if (!isfinite(x) || !isfinite(y) || !isfinite(dx) || !isfinite(dy) ||\n        !isfinite(scale) || !isfinite(rotation) || scale <= 0 || kind < 0 || kind > 2) return 0;\n    /* The options' camera sensitivity scales turning and zooming; a pan keeps\n       the ground under the fingers. */\n    float sensitivity = void_port_camera_sensitivity();\n    if (sensitivity != 1.0f) {\n        rotation *= sensitivity;\n        scale = powf(scale, sensitivity);\n        if (!isfinite(rotation) || !isfinite(scale) || scale <= 0) return 0;\n    }\n    int town = kind == 2;\n    uint32_t table = town ? 0x00E2A64Cu : kind == 1 ? 0x00E1DA84u : 0x00E230E4u;\n    uint32_t operator_offset = town ? 0x374u : kind == 1 ? 0x3B8u : 0x5E4u;\n    if (!void_vm_readable(screen, operator_offset + 4) ||\n        MEM32(screen) != table) return 0;\n    if (town && ((dx == 0 && scale == 1 && rotation == 0) || !camera_town_prepare(screen))) return 0;\n    uint32_t camera = MEM32(screen + 0xA4), hand = MEM32(screen + operator_offset);\n    if (!void_vm_readable(hand, town ? 0x178u : 0x14Cu)) return 0;\n    if (town && (MEM32(hand) != 0x00E449BCu || MEM32(hand + 0x144) != camera)) return 0;\n    uint32_t get = camera_method(camera, 0x54), set = camera_method(hand, 0x50);\n    uint32_t unfollow = town ? 0 : camera_method(hand, 0x5C);\n    if (!get || !set || (!town && !unfollow)) return 0;\n    uint32_t source = void_call_guest_this(get, camera, 0, NULL);\n    if (!void_vm_readable(source, 40)) return 0;\n    float position[10];\n    memcpy(position, GPTR(source), sizeof position);\n    for (int i = 0; i < 10; ++i) if (!isfinite(position[i])) return 0;\n    if (position[0] <= 0) return 0;\n    if (!camera_scratch) camera_scratch = void_galloc(0x800);\n    if (!camera_scratch) return 0;\n    float before[2], after[2], old_rod = position[0], old_yaw = position[2];\n    int anchored = !town && (dx != 0 || dy != 0 || scale != 1 || rotation != 0);\n    if (anchored) {\n        if (!camera_plane_point(screen, x - dx, y - dy, position[9], before) ||\n            !camera_plane_point(screen, x, y, position[9], after)) return 0;\n    }\n    const float turn = 6.2831853071795864769f;\n    if (town && dx != 0) {\n        int width, height;\n        void_input_screen_size(&width, &height);\n        if (width <= 0 || height <= 0) return 0;\n        rotation += turn * (dx / (float)width) * sensitivity;\n        if (!isfinite(rotation)) return 0;\n    }\n    if (rotation != 0)\n        position[2] = remainderf(remainderf(position[2], turn) - remainderf(rotation, turn), turn);\n    float rod_limits[2];\n    /* The town operator stores its camera at +144, and rod bounds in settings. */\n    memcpy(rod_limits, GPTR(hand + (town ? 0x68u : 0x144u)), sizeof rod_limits);\n    if (!isfinite(rod_limits[0]) || !isfinite(rod_limits[1]) ||\n        rod_limits[0] > rod_limits[1] || rod_limits[1] <= 0) return 0;\n    position[0] = fminf(rod_limits[1], fmaxf(fmaxf(0.0001f, rod_limits[0]), position[0] / scale));\n    if (anchored) {\n        /* Native yaw orbits +Z (7CD4F0); dolly scales plane intersections about the anchor. */\n        float yaw = remainderf(position[2] - old_yaw, turn), ratio = position[0] / old_rod;\n        float c = cosf(yaw), s = sinf(yaw), ax = after[0] - position[7], ay = after[1] - position[8];\n        position[7] = before[0] - ratio * (c * ax - s * ay);\n        position[8] = before[1] - ratio * (s * ax + c * ay);\n    }\n    if (!isfinite(position[0]) || position[0] <= 0 ||\n        !isfinite(position[7]) || !isfinite(position[8])) return 0;\n    uint32_t args[2] = {camera_scratch + 0x6B0, 1};\n    memcpy(GPTR(args[0]), position, sizeof position);\n    if (town) {\n        void_call_guest_this(set, hand, 2, args);\n        return 1;\n    }\n    uint32_t bounds[3] = {camera_scratch + 0x720, args[0], hand + 0x144};\n    void_call_guest_this(0x007D4720u, hand, 3, bounds);\n    g_esi = bounds[0]; g_edi = args[0];\n    void_call_guest(0x007D46B0u, 0, NULL, 1);\n    memcpy(position, GPTR(args[0]), sizeof position);\n    for (int i = 0; i < 10; ++i) if (!isfinite(position[i])) return 0;\n    /* Release the engine's follow target, as its existing manual view actions do. */\n    uint32_t none[2] = {0, 0};\n    void_call_guest_this(unfollow, hand, 2, none);\n    void_call_guest_this(set, hand, 2, args);\n    return 1;\n}\n\n/* The operator and camera of a screen: the shared preamble of the setters. */\nstatic int camera_parts(uint32_t screen, int kind, uint32_t *camera_out, uint32_t *hand_out, uint32_t *get_out,\n                        uint32_t *set_out, uint32_t *unfollow_out)\n{\n    int town = kind == 2;\n    uint32_t table = town ? 0x00E2A64Cu : kind == 1 ? 0x00E1DA84u : 0x00E230E4u;\n    uint32_t operator_offset = town ? 0x374u : kind == 1 ? 0x3B8u : 0x5E4u;\n    if (kind < 0 || kind > 2 || !void_vm_readable(screen, operator_offset + 4) || MEM32(screen) != table) return 0;\n    uint32_t camera = MEM32(screen + 0xA4), hand = MEM32(screen + operator_offset);\n    if (!void_vm_readable(hand, town ? 0x178u : 0x14Cu)) return 0;\n    if (town && (MEM32(hand) != 0x00E449BCu || MEM32(hand + 0x144) != camera)) return 0;\n    uint32_t get = camera_method(camera, 0x54), set = camera_method(hand, 0x50);\n    uint32_t unfollow = town ? 0 : camera_method(hand, 0x5C);\n    if (!get || !set || (!town && !unfollow)) return 0;\n    *camera_out = camera; *hand_out = hand; *get_out = get; *set_out = set; *unfollow_out = unfollow;\n    return 1;\n}\n\nint void_touch_camera_pose(uint32_t screen, int kind, float pose[10], int set_pose, int immediate)\n{\n    uint32_t camera, hand, get, set, unfollow;\n    if (!camera_parts(screen, kind, &camera, &hand, &get, &set, &unfollow)) return 0;\n    if (!set_pose) {\n        uint32_t source = void_call_guest_this(get, camera, 0, NULL);\n        if (!void_vm_readable(source, 40)) return 0;\n        memcpy(pose, GPTR(source), 40);\n        for (int i = 0; i < 10; ++i) if (!isfinite(pose[i])) return 0;\n        return pose[0] > 0;\n    }\n    for (int i = 0; i < 10; ++i) if (!isfinite(pose[i])) return 0;\n    if (!camera_scratch) camera_scratch = void_galloc(0x800);\n    if (!camera_scratch) return 0;\n    uint32_t args[2] = {camera_scratch + 0x6B0, immediate ? 1u : 0u};\n    memcpy(GPTR(args[0]), pose, 40);\n    if (unfollow) {\n        uint32_t none[2] = {0, 0};\n        void_call_guest_this(unfollow, hand, 2, none);\n    }\n    void_call_guest_this(set, hand, 2, args);\n    return 1;\n}\n\nstatic struct {\n    uint32_t camera, screen, phase;\n    float height, previous[10], ratio, centre;\n    unsigned stable, stage;\n} framing;\nstatic void_fn original_projection;\n\nstatic void camera_projection(void)\n{\n    uint32_t camera = g_ecx;\n    if (camera != framing.camera || !framing.stage ||\n        !void_vm_readable(framing.screen, 0xA8) ||\n        MEM32(framing.screen) != (framing.phase == 3 ? 0x00E230E4u : 0x00E1DA84u) ||\n        MEM32(framing.screen + 0xA4) != camera ||\n        MEMF(0x00F74BE4u) != framing.height || framing.height >= 768 ||\n        !void_vm_writable(camera, 0x98)) {\n        original_projection();\n        return;\n    }\n    /* The deployment controller resets its target every frame. Apply the view\n       correction only while building the shared render/picking projection. */\n    float rod = MEMF(camera + 0x70), centre = MEMF(camera + 0x60);\n    MEMF(camera + 0x70) = rod * framing.ratio;\n    MEMF(camera + 0x60) = centre + framing.centre;\n    original_projection();\n    MEMF(camera + 0x70) = rod;\n    MEMF(camera + 0x60) = centre;\n}\n\nvoid void_touch_adventure_frame(uint32_t screen, float height, float top, float bottom)\n{\n    if (!void_vm_readable(screen, 0xA8) || MEM32(screen) != 0x00E230E4u ||\n        !isfinite(height) || height <= 0 || height >= 768 ||\n        !isfinite(top) || !isfinite(bottom) || top < 0 || bottom > height ||\n        bottom - top < height * .2f) return;\n    uint32_t camera = MEM32(screen + 0xA4);\n    if (!void_vm_readable(camera, 0x98) || MEM32(camera) != 0x00E44224u) return;\n    if (!original_projection) {\n        original_projection = void_dispatch_find(0x007CD0C0u);\n        if (!original_projection) return;\n        void_dispatch_add(0x007CD0C0u, camera_projection);\n    }\n    /* Keep native follow/pan targets, but put their centre in the unobscured map. */\n    framing.camera = camera; framing.screen = screen; framing.phase = 3;\n    framing.height = height; framing.ratio = 1;\n    framing.centre = (top + bottom) / height - 1;\n    framing.stage = 2;\n}\n\n/* Deployment fits its army once; battle framing follows only the visible HUD gap. */\nvoid void_touch_combat_frame(uint32_t screen, float width, float height, float hud_top, float top, float bottom)\n{\n    if (!screen) { framing.camera = 0; return; }\n    if (!void_vm_readable(screen, 0x3BC) || MEM32(screen) != 0x00E1DA84u ||\n        !isfinite(width) || !isfinite(height) || height <= 0 ||\n        !isfinite(hud_top) || hud_top < height * .35f || hud_top >= height ||\n        !isfinite(top) || !isfinite(bottom) || bottom < top) return;\n    uint32_t camera = MEM32(screen + 0xA4);\n    if (!void_vm_readable(camera, 0x98) || MEM32(camera) != 0x00E44224u) return;\n    if (!original_projection) {\n        original_projection = void_dispatch_find(0x007CD0C0u);\n        if (!original_projection) return;\n        void_dispatch_add(0x007CD0C0u, camera_projection);\n    }\n    if (MEM32(screen + 0x2E0) != 0x1000) {\n        /* Project the arena anchor into the visible HUD gap; creature labels depend on zoom and turn. */\n        framing.camera = camera; framing.screen = screen; framing.phase = 0;\n        framing.height = height;\n        framing.ratio = fminf(1.6f, fmaxf(1.0f, (1.0f - 165.0f / 768.0f) * height / hud_top));\n        framing.centre = (hud_top + 40.0f) / height - 1.0f;\n        framing.stage = 2;\n        return;\n    }\n    float pose[10];\n    if (!void_touch_camera_pose(screen, 1, pose, 0, 0)) return;\n    uint32_t phase = MEM32(screen + 0x2E0) == 0x1000 ? (pose[2] < 0 ? 1 : 2) : 0;\n    if (framing.camera != camera || framing.screen != screen || framing.phase != phase || framing.height != height) {\n        memset(&framing, 0, sizeof framing);\n        framing.camera = camera; framing.screen = screen;\n        framing.phase = phase; framing.height = height;\n    }\n    if (framing.stage == 2) return;\n    int settled = 1;\n    for (int i = 0; i < 10; ++i) if (fabsf(pose[i] - framing.previous[i]) > .001f) settled = 0;\n    memcpy(framing.previous, pose, sizeof pose);\n    framing.stable = settled ? framing.stable + 1 : 0;\n    if (framing.stable < 12) return;\n    if (!framing.stage) {\n        framing.ratio = fminf(1.6f, fmaxf(1.0f, (1.0f - 165.0f / 768.0f) * height / hud_top));\n        framing.stage = 1; framing.stable = 0;\n        return;\n    }\n    /* Leave room above count rectangles for the creatures' models. */\n    float target = (hud_top + 40.0f) * .5f;\n    float delta = 2.0f * (target - (top + bottom) * .5f) / height;\n    if (!isfinite(delta) || fabsf(delta) > 2) return;\n    framing.centre = delta;\n    framing.stage = 2;\n    VLOG(\"[touch] combat-frame phase=%u zoom=%.2f centre=%.3f hud=%.1f stacks=%.1f..%.1f\",\n         phase, framing.ratio, delta, hud_top, top, bottom);\n}\n\n/* Two fingers moved up together tilt the view toward the horizon, within the\n * adventure camera mode's own pitch limits (0x0058A5E0: the mode's\n * {rod, rod, pitch, pitch, yaw, yaw} hard limits; combat uses its operator's\n * pitch bounds, and town keeps its range). */\nint void_touch_camera_tilt(uint32_t screen, int kind, float dy)\n{\n    if (!isfinite(dy) || dy == 0) return 0;\n    /* The town's pending UI, modal and busy checks gate tilting as they gate pan and zoom. */\n    if (kind == 2 && !camera_town_prepare(screen)) return 0;\n    float pose[10];\n    if (!void_touch_camera_pose(screen, kind, pose, 0, 0)) return 0;\n    int width, height;\n    void_input_screen_size(&width, &height);\n    if (height <= 0) return 0;\n    float low = -1.5f, high = -0.05f;\n    if (kind == 1) {\n        uint32_t hand = MEM32(screen + 0x3B8);\n        if (void_vm_readable(hand + 0x14C, 8)) {\n            float a = MEMF(hand + 0x14C), b = MEMF(hand + 0x150);\n            if (isfinite(a) && isfinite(b) && a < b && a > -1.6f && b < 0) { low = a; high = b; }\n        }\n    }\n    if (kind == 0 && void_dispatch_find(0x0058A5E0u)) {\n        uint32_t limits = void_call_guest_this(0x0058A5E0u, 1000, 0, NULL);\n        if (void_vm_readable(limits, 24)) {\n            float a = MEMF(limits + 8), b = MEMF(limits + 12);\n            if (isfinite(a) && isfinite(b) && a < b && a > -1.6f && b < 1.6f) { low = a; high = b; }\n            static int logged;\n            if (!logged++) VLOG(\"[touch] adventure pitch limits %.3f..%.3f (rod %.1f..%.1f)\", a, b,\n                                MEMF(limits), MEMF(limits + 4));\n        }\n    }\n    float pitch = pose[1] - dy / (float)height * 1.2f * void_port_camera_sensitivity();\n    pitch = fminf(high, fmaxf(low, pitch));\n    if (!isfinite(pitch) || pitch == pose[1]) return 0;\n    pose[1] = pitch;\n    return void_touch_camera_pose(screen, kind, pose, 1, 1);\n}\n\nstatic void touch_edge_scroll(void)\n{\n    if (!void_touch_active_mode()) {\n        original_edge_scroll();\n        return;\n    }\n    uint32_t output = ARG(0);\n    if (!void_vm_writable(output, 8)) void_lift_trap(0x00835E50u, \"touch edge-scroll output\");\n    MEM32(output) = MEM32(output + 4) = 0;\n    g_eax = output;\n    g_esp += 12;\n}\n\nvoid void_touch_camera_init(void)\n{\n    if (original_edge_scroll) return;\n    original_edge_scroll = void_dispatch_find(0x00835E50u);\n    if (original_edge_scroll) void_dispatch_add(0x00835E50u, touch_edge_scroll);\n}\n",
+        "new": "#include \"host.h\"\n#include \"input.h\"\n#include \"touch.h\"\n#include <math.h>\n#include <string.h>\n\n/* CameraPos and projection calls are the original H5 engine's interfaces. */\nstatic uint32_t camera_scratch;\nstatic void_fn original_edge_scroll;\n\nstatic uint32_t camera_method(uint32_t object, uint32_t offset)\n{\n    if (!void_vm_readable(object, 4)) return 0;\n    uint32_t table = MEM32(object);\n    if (!void_vm_readable(table, offset + 4)) return 0;\n    uint32_t method = MEM32(table + offset);\n    return void_dispatch_find(method) ? method : 0;\n}\n\nstatic int camera_town_owner(uint32_t screen, uint32_t root, uint32_t controller)\n{\n    if (!void_vm_readable(screen, 0x46D) || MEM32(screen) != 0x00E2A64Cu ||\n        MEM32(screen + 0x98) != root || MEM32(screen + 0x214) != controller ||\n        MEM8(screen + 0x290) || MEM8(screen + 0x46C)) return 0;\n    uint32_t pending = MEM32(screen + 0x144);\n    if (!void_vm_readable(pending, 4) || MEM32(pending) != pending ||\n        !void_vm_readable(0x00FE719Cu, 4) ||\n        !void_vm_readable(MEM32(0x00FE719Cu), 12) ||\n        !void_dispatch_find(0x008385A0u) || !void_dispatch_find(0x00D119FCu)) return 0;\n    uint32_t top = void_call_guest(0x008385A0u, 0, NULL, 1);\n    if (!void_vm_readable(top, 8)) return 0;\n    uint32_t table = MEM32(top + 4);\n    if (!void_vm_readable(table, 8)) return 0;\n    uint32_t base = top + 4 + MEM32(table + 4);\n    if (!void_vm_readable(base, 4)) return 0;\n    const uint32_t args[] = {base, 0, 0x00F272C0u, 0x00F323A8u, 0};\n    return void_call_guest(0x00D119FCu, 5, args, 0) == screen;\n}\n\nstatic int camera_town_prepare(uint32_t screen)\n{\n    if (!void_vm_writable(screen, 0x46D)) return 0;\n    uint32_t root = MEM32(screen + 0x98), controller = MEM32(screen + 0x214);\n    if (!void_vm_readable(root, 4) || !camera_town_owner(screen, root, controller) ||\n        !void_dispatch_find(0x006146C0u)) return 0;\n    /* Original Town input interrupts the animated flyup before accepting manual motion. */\n    /* Native HoF town input requires a live roster before interrupting the flyup. */\n    uint32_t roster = camera_method(controller, 0x90);\n    if (!roster || !void_call_guest_this(roster, controller, 0, NULL) ||\n        !camera_town_owner(screen, root, controller) ||\n        (void_call_guest_this(0x006146C0u, screen, 0, NULL) & 0xFFu) ||\n        !camera_town_owner(screen, root, controller)) return 0;\n    if (!MEM32(screen + 0x288)) {\n        if (!camera_method(controller, 0x90) || !void_dispatch_find(0x00618170u)) return 0;\n        void_call_guest_this(0x00618170u, screen, 0, NULL);\n        if (!camera_town_owner(screen, root, controller) || !MEM32(screen + 0x288)) return 0;\n    }\n    return 1;\n}\n\nstatic void camera_store(uint32_t address, float value)\n{\n    memcpy(GPTR(address), &value, sizeof value);\n}\n\nstatic int camera_plane_point(uint32_t screen, float x, float y, float height,\n                              float result[2])\n{\n    uint32_t raw = camera_scratch + 0x6E0, point = camera_scratch + 0x6F0;\n    uint32_t direction = camera_scratch + 0x700, origin = camera_scratch + 0x710;\n    camera_store(raw, x); camera_store(raw + 4, y);\n    uint32_t logical = void_call_guest_this(0x00B29220u, raw, 0, NULL);\n    if (!void_vm_readable(logical, 8)) return 0;\n    memcpy(GPTR(point), GPTR(logical), 8);\n    uint32_t args[3] = {camera_scratch, 0, 0};\n    memcpy(&args[1], &height, sizeof height);\n    g_edx = point;\n    void_call_guest_this(0x00671310u, screen, 2, args);\n    args[0] = camera_scratch + 0x14;\n    args[1] = camera_scratch + 0x0C;\n    args[2] = camera_scratch + 0x04;\n    g_edx = origin;\n    void_call_guest_this(0x00CF6B20u, direction, 3, args);\n    float ray[3], eye[3];\n    memcpy(ray, GPTR(direction), sizeof ray);\n    memcpy(eye, GPTR(origin), sizeof eye);\n    for (int i = 0; i < 3; ++i)\n        if (!isfinite(ray[i]) || !isfinite(eye[i])) return 0;\n    if (fabsf(ray[2]) < 0.00001f) return 0;\n    float distance = (height - eye[2]) / ray[2];\n    if (!isfinite(distance) || distance <= 0) return 0;\n    result[0] = eye[0] + distance * ray[0];\n    result[1] = eye[1] + distance * ray[1];\n    return isfinite(result[0]) && isfinite(result[1]);\n}\n\nint void_touch_camera(uint32_t screen, int kind, float x, float y,\n                      float dx, float dy, float scale, float rotation)\n{\n    if (!isfinite(x) || !isfinite(y) || !isfinite(dx) || !isfinite(dy) ||\n        !isfinite(scale) || !isfinite(rotation) || scale <= 0 || kind < 0 || kind > 2) return 0;\n    /* The options' camera sensitivity scales turning and zooming; a pan keeps\n       the ground under the fingers. */\n    float sensitivity = void_port_camera_sensitivity();\n    if (sensitivity != 1.0f) {\n        rotation *= sensitivity;\n        scale = powf(scale, sensitivity);\n        if (!isfinite(rotation) || !isfinite(scale) || scale <= 0) return 0;\n    }\n    int town = kind == 2;\n    uint32_t table = town ? 0x00E2A64Cu : kind == 1 ? 0x00E1DA84u : 0x00E230E4u;\n    uint32_t operator_offset = town ? 0x368u : kind == 1 ? 0x3A4u : 0x568u;\n    if (!void_vm_readable(screen, operator_offset + 4) ||\n        MEM32(screen) != table) return 0;\n    if (town && ((dx == 0 && scale == 1 && rotation == 0) || !camera_town_prepare(screen))) return 0;\n    uint32_t camera = MEM32(screen + 0x9C), hand = MEM32(screen + operator_offset);\n    if (!void_vm_readable(hand, town ? 0x178u : 0x14Cu)) return 0;\n    if (town && (MEM32(hand) != 0x00E449BCu || MEM32(hand + 0x144) != camera)) return 0;\n    uint32_t get = camera_method(camera, 0x54), set = camera_method(hand, 0x50);\n    uint32_t unfollow = town ? 0 : camera_method(hand, 0x5C);\n    if (!get || !set || (!town && !unfollow)) return 0;\n    uint32_t source = void_call_guest_this(get, camera, 0, NULL);\n    if (!void_vm_readable(source, 40)) return 0;\n    float position[10];\n    memcpy(position, GPTR(source), sizeof position);\n    for (int i = 0; i < 10; ++i) if (!isfinite(position[i])) return 0;\n    if (position[0] <= 0) return 0;\n    if (!camera_scratch) camera_scratch = void_galloc(0x800);\n    if (!camera_scratch) return 0;\n    float before[2], after[2], old_rod = position[0], old_yaw = position[2];\n    int anchored = !town && (dx != 0 || dy != 0 || scale != 1 || rotation != 0);\n    if (anchored) {\n        if (!camera_plane_point(screen, x - dx, y - dy, position[9], before) ||\n            !camera_plane_point(screen, x, y, position[9], after)) return 0;\n    }\n    const float turn = 6.2831853071795864769f;\n    if (town && dx != 0) {\n        int width, height;\n        void_input_screen_size(&width, &height);\n        if (width <= 0 || height <= 0) return 0;\n        rotation += turn * (dx / (float)width) * sensitivity;\n        if (!isfinite(rotation)) return 0;\n    }\n    if (rotation != 0)\n        position[2] = remainderf(remainderf(position[2], turn) - remainderf(rotation, turn), turn);\n    float rod_limits[2];\n    /* The town operator stores its camera at +144, and rod bounds in settings. */\n    memcpy(rod_limits, GPTR(hand + (town ? 0x68u : 0x144u)), sizeof rod_limits);\n    if (!isfinite(rod_limits[0]) || !isfinite(rod_limits[1]) ||\n        rod_limits[0] > rod_limits[1] || rod_limits[1] <= 0) return 0;\n    position[0] = fminf(rod_limits[1], fmaxf(fmaxf(0.0001f, rod_limits[0]), position[0] / scale));\n    if (anchored) {\n        /* Native yaw orbits +Z (7CD4F0); dolly scales plane intersections about the anchor. */\n        float yaw = remainderf(position[2] - old_yaw, turn), ratio = position[0] / old_rod;\n        float c = cosf(yaw), s = sinf(yaw), ax = after[0] - position[7], ay = after[1] - position[8];\n        position[7] = before[0] - ratio * (c * ax - s * ay);\n        position[8] = before[1] - ratio * (s * ax + c * ay);\n    }\n    if (!isfinite(position[0]) || position[0] <= 0 ||\n        !isfinite(position[7]) || !isfinite(position[8])) return 0;\n    uint32_t args[2] = {camera_scratch + 0x6B0, 1};\n    memcpy(GPTR(args[0]), position, sizeof position);\n    if (town) {\n        void_call_guest_this(set, hand, 2, args);\n        return 1;\n    }\n    uint32_t bounds[3] = {camera_scratch + 0x720, args[0], hand + 0x144};\n    void_call_guest_this(0x007D4720u, hand, 3, bounds);\n    g_esi = bounds[0]; g_edi = args[0];\n    void_call_guest(0x007D46B0u, 0, NULL, 1);\n    memcpy(position, GPTR(args[0]), sizeof position);\n    for (int i = 0; i < 10; ++i) if (!isfinite(position[i])) return 0;\n    /* Release the engine's follow target, as its existing manual view actions do. */\n    uint32_t none[2] = {0, 0};\n    void_call_guest_this(unfollow, hand, 2, none);\n    void_call_guest_this(set, hand, 2, args);\n    return 1;\n}\n\n/* The operator and camera of a screen: the shared preamble of the setters. */\nstatic int camera_parts(uint32_t screen, int kind, uint32_t *camera_out, uint32_t *hand_out, uint32_t *get_out,\n                        uint32_t *set_out, uint32_t *unfollow_out)\n{\n    int town = kind == 2;\n    uint32_t table = town ? 0x00E2A64Cu : kind == 1 ? 0x00E1DA84u : 0x00E230E4u;\n    uint32_t operator_offset = town ? 0x368u : kind == 1 ? 0x3A4u : 0x568u;\n    if (kind < 0 || kind > 2 || !void_vm_readable(screen, operator_offset + 4) || MEM32(screen) != table) return 0;\n    uint32_t camera = MEM32(screen + 0x9C), hand = MEM32(screen + operator_offset);\n    if (!void_vm_readable(hand, town ? 0x178u : 0x14Cu)) return 0;\n    if (town && (MEM32(hand) != 0x00E449BCu || MEM32(hand + 0x144) != camera)) return 0;\n    uint32_t get = camera_method(camera, 0x54), set = camera_method(hand, 0x50);\n    uint32_t unfollow = town ? 0 : camera_method(hand, 0x5C);\n    if (!get || !set || (!town && !unfollow)) return 0;\n    *camera_out = camera; *hand_out = hand; *get_out = get; *set_out = set; *unfollow_out = unfollow;\n    return 1;\n}\n\nint void_touch_camera_pose(uint32_t screen, int kind, float pose[10], int set_pose, int immediate)\n{\n    uint32_t camera, hand, get, set, unfollow;\n    if (!camera_parts(screen, kind, &camera, &hand, &get, &set, &unfollow)) return 0;\n    if (!set_pose) {\n        uint32_t source = void_call_guest_this(get, camera, 0, NULL);\n        if (!void_vm_readable(source, 40)) return 0;\n        memcpy(pose, GPTR(source), 40);\n        for (int i = 0; i < 10; ++i) if (!isfinite(pose[i])) return 0;\n        return pose[0] > 0;\n    }\n    for (int i = 0; i < 10; ++i) if (!isfinite(pose[i])) return 0;\n    if (!camera_scratch) camera_scratch = void_galloc(0x800);\n    if (!camera_scratch) return 0;\n    uint32_t args[2] = {camera_scratch + 0x6B0, immediate ? 1u : 0u};\n    memcpy(GPTR(args[0]), pose, 40);\n    if (unfollow) {\n        uint32_t none[2] = {0, 0};\n        void_call_guest_this(unfollow, hand, 2, none);\n    }\n    void_call_guest_this(set, hand, 2, args);\n    return 1;\n}\n\nstatic struct {\n    uint32_t camera, screen, phase;\n    float height, previous[10], ratio, centre;\n    unsigned stable, stage;\n} framing;\nstatic void_fn original_projection;\n\nstatic void camera_projection(void)\n{\n    uint32_t camera = g_ecx;\n    if (camera != framing.camera || !framing.stage ||\n        !void_vm_readable(framing.screen, 0xA0) ||\n        MEM32(framing.screen) != (framing.phase == 3 ? 0x00E230E4u : 0x00E1DA84u) ||\n        MEM32(framing.screen + 0x9C) != camera ||\n        MEMF(0x00F74BE4u) != framing.height || framing.height >= 768 ||\n        !void_vm_writable(camera, 0x98)) {\n        original_projection();\n        return;\n    }\n    /* The deployment controller resets its target every frame. Apply the view\n       correction only while building the shared render/picking projection. */\n    float rod = MEMF(camera + 0x70), centre = MEMF(camera + 0x60);\n    MEMF(camera + 0x70) = rod * framing.ratio;\n    MEMF(camera + 0x60) = centre + framing.centre;\n    original_projection();\n    MEMF(camera + 0x70) = rod;\n    MEMF(camera + 0x60) = centre;\n}\n\nvoid void_touch_adventure_frame(uint32_t screen, float height, float top, float bottom)\n{\n    if (!void_vm_readable(screen, 0xA0) || MEM32(screen) != 0x00E230E4u ||\n        !isfinite(height) || height <= 0 || height >= 768 ||\n        !isfinite(top) || !isfinite(bottom) || top < 0 || bottom > height ||\n        bottom - top < height * .2f) return;\n    uint32_t camera = MEM32(screen + 0x9C);\n    if (!void_vm_readable(camera, 0x98) || MEM32(camera) != 0x00E44224u) return;\n    if (!original_projection) {\n        original_projection = void_dispatch_find(0x007CD0C0u);\n        if (!original_projection) return;\n        void_dispatch_add(0x007CD0C0u, camera_projection);\n    }\n    /* Keep native follow/pan targets, but put their centre in the unobscured map. */\n    framing.camera = camera; framing.screen = screen; framing.phase = 3;\n    framing.height = height; framing.ratio = 1;\n    framing.centre = (top + bottom) / height - 1;\n    framing.stage = 2;\n}\n\n/* Deployment fits its army once; battle framing follows only the visible HUD gap. */\nvoid void_touch_combat_frame(uint32_t screen, float width, float height, float hud_top, float top, float bottom)\n{\n    if (!screen) { framing.camera = 0; return; }\n    if (!void_vm_readable(screen, 0x3A8) || MEM32(screen) != 0x00E1DA84u ||\n        !isfinite(width) || !isfinite(height) || height <= 0 ||\n        !isfinite(hud_top) || hud_top < height * .35f || hud_top >= height ||\n        !isfinite(top) || !isfinite(bottom) || bottom < top) return;\n    uint32_t camera = MEM32(screen + 0x9C);\n    if (!void_vm_readable(camera, 0x98) || MEM32(camera) != 0x00E44224u) return;\n    if (!original_projection) {\n        original_projection = void_dispatch_find(0x007CD0C0u);\n        if (!original_projection) return;\n        void_dispatch_add(0x007CD0C0u, camera_projection);\n    }\n    if (MEM32(screen + 0x2F0) != 0x1000) {\n        /* Project the arena anchor into the visible HUD gap; creature labels depend on zoom and turn. */\n        framing.camera = camera; framing.screen = screen; framing.phase = 0;\n        framing.height = height;\n        framing.ratio = fminf(1.6f, fmaxf(1.0f, (1.0f - 165.0f / 768.0f) * height / hud_top));\n        framing.centre = (hud_top + 40.0f) / height - 1.0f;\n        framing.stage = 2;\n        return;\n    }\n    float pose[10];\n    if (!void_touch_camera_pose(screen, 1, pose, 0, 0)) return;\n    uint32_t phase = MEM32(screen + 0x2F0) == 0x1000 ? (pose[2] < 0 ? 1 : 2) : 0;\n    if (framing.camera != camera || framing.screen != screen || framing.phase != phase || framing.height != height) {\n        memset(&framing, 0, sizeof framing);\n        framing.camera = camera; framing.screen = screen;\n        framing.phase = phase; framing.height = height;\n    }\n    if (framing.stage == 2) return;\n    int settled = 1;\n    for (int i = 0; i < 10; ++i) if (fabsf(pose[i] - framing.previous[i]) > .001f) settled = 0;\n    memcpy(framing.previous, pose, sizeof pose);\n    framing.stable = settled ? framing.stable + 1 : 0;\n    if (framing.stable < 12) return;\n    if (!framing.stage) {\n        framing.ratio = fminf(1.6f, fmaxf(1.0f, (1.0f - 165.0f / 768.0f) * height / hud_top));\n        framing.stage = 1; framing.stable = 0;\n        return;\n    }\n    /* Leave room above count rectangles for the creatures' models. */\n    float target = (hud_top + 40.0f) * .5f;\n    float delta = 2.0f * (target - (top + bottom) * .5f) / height;\n    if (!isfinite(delta) || fabsf(delta) > 2) return;\n    framing.centre = delta;\n    framing.stage = 2;\n    VLOG(\"[touch] combat-frame phase=%u zoom=%.2f centre=%.3f hud=%.1f stacks=%.1f..%.1f\",\n         phase, framing.ratio, delta, hud_top, top, bottom);\n}\n\n/* Two fingers moved up together tilt the view toward the horizon, within the\n * adventure camera mode's own pitch limits (0x0058A5E0: the mode's\n * {rod, rod, pitch, pitch, yaw, yaw} hard limits; combat uses its operator's\n * pitch bounds, and town keeps its range). */\nint void_touch_camera_tilt(uint32_t screen, int kind, float dy)\n{\n    if (!isfinite(dy) || dy == 0) return 0;\n    /* The town's pending UI, modal and busy checks gate tilting as they gate pan and zoom. */\n    if (kind == 2 && !camera_town_prepare(screen)) return 0;\n    float pose[10];\n    if (!void_touch_camera_pose(screen, kind, pose, 0, 0)) return 0;\n    int width, height;\n    void_input_screen_size(&width, &height);\n    if (height <= 0) return 0;\n    float low = -1.5f, high = -0.05f;\n    if (kind == 1) {\n        uint32_t hand = MEM32(screen + 0x3A4);\n        if (void_vm_readable(hand + 0x14C, 8)) {\n            float a = MEMF(hand + 0x14C), b = MEMF(hand + 0x150);\n            if (isfinite(a) && isfinite(b) && a < b && a > -1.6f && b < 0) { low = a; high = b; }\n        }\n    }\n    if (kind == 0 && void_dispatch_find(0x0058A5E0u)) {\n        uint32_t limits = void_call_guest_this(0x0058A5E0u, 1000, 0, NULL);\n        if (void_vm_readable(limits, 24)) {\n            float a = MEMF(limits + 8), b = MEMF(limits + 12);\n            if (isfinite(a) && isfinite(b) && a < b && a > -1.6f && b < 1.6f) { low = a; high = b; }\n            static int logged;\n            if (!logged++) VLOG(\"[touch] adventure pitch limits %.3f..%.3f (rod %.1f..%.1f)\", a, b,\n                                MEMF(limits), MEMF(limits + 4));\n        }\n    }\n    float pitch = pose[1] - dy / (float)height * 1.2f * void_port_camera_sensitivity();\n    pitch = fminf(high, fmaxf(low, pitch));\n    if (!isfinite(pitch) || pitch == pose[1]) return 0;\n    pose[1] = pitch;\n    return void_touch_camera_pose(screen, kind, pose, 1, 1);\n}\n\nstatic void touch_edge_scroll(void)\n{\n    if (!void_touch_active_mode()) {\n        original_edge_scroll();\n        return;\n    }\n    uint32_t output = ARG(0);\n    if (!void_vm_writable(output, 8)) void_lift_trap(0x00835E50u, \"touch edge-scroll output\");\n    MEM32(output) = MEM32(output + 4) = 0;\n    g_eax = output;\n    g_esp += 12;\n}\n\nvoid void_touch_camera_init(void)\n{\n    if (original_edge_scroll) return;\n    original_edge_scroll = void_dispatch_find(0x00835E50u);\n    if (original_edge_scroll) void_dispatch_add(0x00835E50u, touch_edge_scroll);\n}\n",
+        "count": 1
+      }
+    ],
+    "android/host/touch_scale.c": [
+      {
+        "old": "(screen, 0x150)",
+        "new": "(screen, 0x148)",
+        "count": 1
+      },
+      {
+        "old": "screen + 0x14C",
+        "new": "screen + 0x144",
+        "count": 2
+      },
+      {
+        "old": "screen + 0xA0",
+        "new": "screen + 0x98",
+        "count": 3
+      }
+    ],
+    "android/host/touch_render.c": [
+      {
+        "old": "(screen, 0x150)",
+        "new": "(screen, 0x148)",
+        "count": 1
+      },
+      {
+        "old": "screen + 0x14C",
+        "new": "screen + 0x144",
+        "count": 1
+      }
+    ],
+    "android/host/cutscene.c": [
+      {
+        "old": "screen + 0x18C",
+        "new": "screen + 0x180",
+        "count": 1
+      }
+    ]
+  },
+  "generated_patches": [
+    {
+      "module": "game",
+      "function": "sub_00B04310",
+      "old": "    _st[0] *= (double)*(float*)ADDR(0xDC6804); _st[0] = fp_pc(_st[0]); /* 0x00B04321: fmul dword ptr [0xdc6804] */",
+      "new": "    _st[0] /= (double)*(float*)ADDR(0xF24178); _st[0] = fp_pc(_st[0]); /* 0x00B04321: fmul dword ptr [0xdc6804] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00B04350",
+      "old": "    _st[0] *= (double)*(float*)ADDR(0xDC6800); _st[0] = fp_pc(_st[0]); /* 0x00B04361: fmul dword ptr [0xdc6800] */",
+      "new": "    _st[0] /= (double)*(float*)ADDR(0xF2417C); _st[0] = fp_pc(_st[0]); /* 0x00B04361: fmul dword ptr [0xdc6800] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00B04390",
+      "old": "    fp_push(*(float*)&MEM32(0xE2B33C)); /* 0x00B04391: fld dword ptr [0xe2b33c] */",
+      "new": "    fp_push(*(float*)&MEM32(0xF24178)); /* 0x00B04391: fld dword ptr [0xe2b33c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00B043D0",
+      "old": "    fp_push(*(float*)&MEM32(0xE2B340)); /* 0x00B043D1: fld dword ptr [0xe2b340] */",
+      "new": "    fp_push(*(float*)&MEM32(0xF2417C)); /* 0x00B043D1: fld dword ptr [0xe2b340] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00B04410",
+      "old": "    fp_push(*(float*)&MEM32(0xE2B340)); /* 0x00B04413: fld dword ptr [0xe2b340] */",
+      "new": "    fp_push(*(float*)&MEM32(0xF2417C)); /* 0x00B04413: fld dword ptr [0xe2b340] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00B04410",
+      "old": "    fp_push(*(float*)&MEM32(0xE2B33C)); /* 0x00B0441F: fld dword ptr [0xe2b33c] */",
+      "new": "    fp_push(*(float*)&MEM32(0xF24178)); /* 0x00B0441F: fld dword ptr [0xe2b33c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00B04480",
+      "old": "    _st[0] *= (double)*(float*)ADDR(0xE2B33C); _st[0] = fp_pc(_st[0]); /* 0x00B044B6: fmul dword ptr [0xe2b33c] */",
+      "new": "    _st[0] *= (double)*(float*)ADDR(0xF24178); _st[0] = fp_pc(_st[0]); /* 0x00B044B6: fmul dword ptr [0xe2b33c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00B04480",
+      "old": "    _st[0] *= (double)*(float*)ADDR(0xE2B340); _st[0] = fp_pc(_st[0]); /* 0x00B044D1: fmul dword ptr [0xe2b340] */",
+      "new": "    _st[0] *= (double)*(float*)ADDR(0xF2417C); _st[0] = fp_pc(_st[0]); /* 0x00B044D1: fmul dword ptr [0xe2b340] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00B044F0",
+      "old": "    fp_push(*(float*)&MEM32(0xE2B340)); /* 0x00B044F0: fld dword ptr [0xe2b340] */",
+      "new": "    fp_push(*(float*)&MEM32(0xF2417C)); /* 0x00B044F0: fld dword ptr [0xe2b340] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00B044F0",
+      "old": "    fp_push(*(float*)&MEM32(0xE2B33C)); /* 0x00B044FC: fld dword ptr [0xe2b33c] */",
+      "new": "    fp_push(*(float*)&MEM32(0xF24178)); /* 0x00B044FC: fld dword ptr [0xe2b33c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00B045A0",
+      "old": "    _st[0] *= (double)*(float*)ADDR(0xDC6804); _st[0] = fp_pc(_st[0]); /* 0x00B045AE: fmul dword ptr [0xdc6804] */",
+      "new": "    _st[0] /= (double)*(float*)ADDR(0xF24178); _st[0] = fp_pc(_st[0]); /* 0x00B045AE: fmul dword ptr [0xdc6804] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00B045A0",
+      "old": "    _st[0] *= (double)*(float*)ADDR(0xDC6804); _st[0] = fp_pc(_st[0]); /* 0x00B045C7: fmul dword ptr [0xdc6804] */",
+      "new": "    _st[0] /= (double)*(float*)ADDR(0xF24178); _st[0] = fp_pc(_st[0]); /* 0x00B045C7: fmul dword ptr [0xdc6804] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00B045A0",
+      "old": "    _st[0] *= (double)*(float*)ADDR(0xDC6800); _st[0] = fp_pc(_st[0]); /* 0x00B045E1: fmul dword ptr [0xdc6800] */",
+      "new": "    _st[0] /= (double)*(float*)ADDR(0xF2417C); _st[0] = fp_pc(_st[0]); /* 0x00B045E1: fmul dword ptr [0xdc6800] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00B045A0",
+      "old": "    _st[0] *= (double)*(float*)ADDR(0xDC6800); _st[0] = fp_pc(_st[0]); /* 0x00B045FB: fmul dword ptr [0xdc6800] */",
+      "new": "    _st[0] /= (double)*(float*)ADDR(0xF2417C); _st[0] = fp_pc(_st[0]); /* 0x00B045FB: fmul dword ptr [0xdc6800] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00B04610",
+      "old": "    _st[0] *= (double)*(float*)ADDR(0xDC6804); _st[0] = fp_pc(_st[0]); /* 0x00B04620: fmul dword ptr [0xdc6804] */",
+      "new": "    _st[0] /= (double)*(float*)ADDR(0xF24178); _st[0] = fp_pc(_st[0]); /* 0x00B04620: fmul dword ptr [0xdc6804] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00B04610",
+      "old": "    _st[0] *= (double)*(float*)ADDR(0xDC6804); _st[0] = fp_pc(_st[0]); /* 0x00B04639: fmul dword ptr [0xdc6804] */",
+      "new": "    _st[0] /= (double)*(float*)ADDR(0xF24178); _st[0] = fp_pc(_st[0]); /* 0x00B04639: fmul dword ptr [0xdc6804] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00B04610",
+      "old": "    _st[0] *= (double)*(float*)ADDR(0xDC6800); _st[0] = fp_pc(_st[0]); /* 0x00B04653: fmul dword ptr [0xdc6800] */",
+      "new": "    _st[0] /= (double)*(float*)ADDR(0xF2417C); _st[0] = fp_pc(_st[0]); /* 0x00B04653: fmul dword ptr [0xdc6800] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00B04610",
+      "old": "    _st[0] *= (double)*(float*)ADDR(0xDC6800); _st[0] = fp_pc(_st[0]); /* 0x00B0466D: fmul dword ptr [0xdc6800] */",
+      "new": "    _st[0] /= (double)*(float*)ADDR(0xF2417C); _st[0] = fp_pc(_st[0]); /* 0x00B0466D: fmul dword ptr [0xdc6800] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00B04680",
+      "old": "    _st[0] *= (double)*(float*)ADDR(0xDC6804); _st[0] = fp_pc(_st[0]); /* 0x00B04690: fmul dword ptr [0xdc6804] */",
+      "new": "    _st[0] /= (double)*(float*)ADDR(0xF24178); _st[0] = fp_pc(_st[0]); /* 0x00B04690: fmul dword ptr [0xdc6804] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00B04680",
+      "old": "    _st[0] *= (double)*(float*)ADDR(0xDC6800); _st[0] = fp_pc(_st[0]); /* 0x00B046A9: fmul dword ptr [0xdc6800] */",
+      "new": "    _st[0] /= (double)*(float*)ADDR(0xF2417C); _st[0] = fp_pc(_st[0]); /* 0x00B046A9: fmul dword ptr [0xdc6800] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00B046C0",
+      "old": "    _st[0] *= (double)*(float*)ADDR(0xDC6804); _st[0] = fp_pc(_st[0]); /* 0x00B046D0: fmul dword ptr [0xdc6804] */",
+      "new": "    _st[0] /= (double)*(float*)ADDR(0xF24178); _st[0] = fp_pc(_st[0]); /* 0x00B046D0: fmul dword ptr [0xdc6804] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00B046C0",
+      "old": "    _st[0] *= (double)*(float*)ADDR(0xDC6800); _st[0] = fp_pc(_st[0]); /* 0x00B046E9: fmul dword ptr [0xdc6800] */",
+      "new": "    _st[0] /= (double)*(float*)ADDR(0xF2417C); _st[0] = fp_pc(_st[0]); /* 0x00B046E9: fmul dword ptr [0xdc6800] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00B04700",
+      "old": "    _st[0] *= (double)*(float*)ADDR(0xDC6804); _st[0] = fp_pc(_st[0]); /* 0x00B0470E: fmul dword ptr [0xdc6804] */",
+      "new": "    _st[0] /= (double)*(float*)ADDR(0xF24178); _st[0] = fp_pc(_st[0]); /* 0x00B0470E: fmul dword ptr [0xdc6804] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00B04700",
+      "old": "    _st[0] *= (double)*(float*)ADDR(0xDC6800); _st[0] = fp_pc(_st[0]); /* 0x00B04727: fmul dword ptr [0xdc6800] */",
+      "new": "    _st[0] /= (double)*(float*)ADDR(0xF2417C); _st[0] = fp_pc(_st[0]); /* 0x00B04727: fmul dword ptr [0xdc6800] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00B04810",
+      "old": "    fp_push(*(float*)&MEM32(0xE2B340)); /* 0x00B04810: fld dword ptr [0xe2b340] */",
+      "new": "    fp_push(*(float*)&MEM32(0xF2417C)); /* 0x00B04810: fld dword ptr [0xe2b340] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00B04810",
+      "old": "    fp_push(*(float*)&MEM32(0xE2B33C)); /* 0x00B0481E: fld dword ptr [0xe2b33c] */",
+      "new": "    fp_push(*(float*)&MEM32(0xF24178)); /* 0x00B0481E: fld dword ptr [0xe2b33c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00B04830",
+      "old": "    _st[0] *= (double)*(float*)ADDR(0xDC6804); _st[0] = fp_pc(_st[0]); /* 0x00B04881: fmul dword ptr [0xdc6804] */",
+      "new": "    _st[0] /= (double)*(float*)ADDR(0xF24178); _st[0] = fp_pc(_st[0]); /* 0x00B04881: fmul dword ptr [0xdc6804] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00B04830",
+      "old": "    _st[0] *= (double)*(float*)ADDR(0xDC6804); _st[0] = fp_pc(_st[0]); /* 0x00B0489D: fmul dword ptr [0xdc6804] */",
+      "new": "    _st[0] /= (double)*(float*)ADDR(0xF24178); _st[0] = fp_pc(_st[0]); /* 0x00B0489D: fmul dword ptr [0xdc6804] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00B04830",
+      "old": "    _st[0] *= (double)*(float*)ADDR(0xDC6800); _st[0] = fp_pc(_st[0]); /* 0x00B048C5: fmul dword ptr [0xdc6800] */",
+      "new": "    _st[0] /= (double)*(float*)ADDR(0xF2417C); _st[0] = fp_pc(_st[0]); /* 0x00B048C5: fmul dword ptr [0xdc6800] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00B04830",
+      "old": "    _st[0] *= (double)*(float*)ADDR(0xDC6800); _st[0] = fp_pc(_st[0]); /* 0x00B048DD: fmul dword ptr [0xdc6800] */",
+      "new": "    _st[0] /= (double)*(float*)ADDR(0xF2417C); _st[0] = fp_pc(_st[0]); /* 0x00B048DD: fmul dword ptr [0xdc6800] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00A367C0",
+      "old": "    MEM32(esp + 0x18) = 0x44400000u; /* 0x00A36865: mov dword ptr [esp + 0x18], 0x44400000 */",
+      "new": "    MEM32(esp + 0x18) = 0x44400000u; /* 0x00A36865: mov dword ptr [esp + 0x18], 0x44400000 */\n    { void void_touch_legacy_root_rect(uint32_t, uint32_t); void_touch_legacy_root_rect(esi, esp + 0xC); }"
+    },
+    {
+      "module": "game",
+      "function": "sub_00760930",
+      "old": "    edx = MEM32(esi + 0x14); /* 0x0076095A: mov edx, dword ptr [esi + 0x14] */",
+      "new": "    { uint32_t void_cutscene_fov(uint32_t, uint32_t, uint32_t, uint32_t); edx = void_cutscene_fov(esi, MEM32(esp + 0x4C), MEM32(esi + 0x14), esp); } /* 0x0076095A: mov edx, dword ptr [esi + 0x14] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00448B80",
+      "old": "    RECOMP_ICALL(MEM32(edx + 0xA4)); /* 0x00448CEE: call dword ptr [edx + 0xa4] */",
+      "new": "    g_cur_func = 0x00448B80u; RECOMP_ICALL(MEM32(edx + 0xA4)); g_cur_func = 0; /* 0x00448CEE: call dword ptr [edx + 0xa4] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00593600",
+      "old": "    _st[0] -= (double)*(float*)ADDR(eax + 0x88); _st[0] = fp_pc(_st[0]); /* 0x0059362E: fsub dword ptr [eax + 0x88] */",
+      "new": "    _st[0] -= (double)*(float*)ADDR(esi + (-0x14C)); _st[0] = fp_pc(_st[0]); /* 0x0059362E: fsub dword ptr [eax + 0x88] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00593600",
+      "old": "    _st[0] -= (double)*(float*)ADDR(eax + 0x4); _st[0] = fp_pc(_st[0]); /* 0x00593644: fsub dword ptr [eax + 4] */",
+      "new": "    _st[0] -= (double)*(float*)ADDR(esi + (-0x148)); _st[0] = fp_pc(_st[0]); /* 0x00593644: fsub dword ptr [eax + 4] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00593613",
+      "old": "    _st[0] -= (double)*(float*)ADDR(eax + 0x88); _st[0] = fp_pc(_st[0]); /* 0x0059362E: fsub dword ptr [eax + 0x88] */",
+      "new": "    _st[0] -= (double)*(float*)ADDR(esi + (-0x14C)); _st[0] = fp_pc(_st[0]); /* 0x0059362E: fsub dword ptr [eax + 0x88] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00593613",
+      "old": "    _st[0] -= (double)*(float*)ADDR(eax + 0x4); _st[0] = fp_pc(_st[0]); /* 0x00593644: fsub dword ptr [eax + 4] */",
+      "new": "    _st[0] -= (double)*(float*)ADDR(esi + (-0x148)); _st[0] = fp_pc(_st[0]); /* 0x00593644: fsub dword ptr [eax + 4] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_005936F0",
+      "old": "    _st[0] -= (double)*(float*)ADDR(eax + 0x88); _st[0] = fp_pc(_st[0]); /* 0x0059373B: fsub dword ptr [eax + 0x88] */",
+      "new": "    _st[0] -= (double)*(float*)ADDR(esi + (-0x14C)); _st[0] = fp_pc(_st[0]); /* 0x0059373B: fsub dword ptr [eax + 0x88] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_005936F0",
+      "old": "    _st[0] -= (double)*(float*)ADDR(eax + 0x4); _st[0] = fp_pc(_st[0]); /* 0x00593751: fsub dword ptr [eax + 4] */",
+      "new": "    _st[0] -= (double)*(float*)ADDR(esi + (-0x148)); _st[0] = fp_pc(_st[0]); /* 0x00593751: fsub dword ptr [eax + 4] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00594040",
+      "old": "    fp_push(*(float*)&MEM32(eax + 0x88)); /* 0x005940BF: fld dword ptr [eax + 0x88] */",
+      "new": "    fp_push(*(float*)&MEM32(esi + (-0x14C))); /* 0x005940BF: fld dword ptr [eax + 0x88] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00594040",
+      "old": "    fp_push(*(float*)&MEM32(eax + 0x8C)); /* 0x005940E7: fld dword ptr [eax + 0x8c] */",
+      "new": "    fp_push(*(float*)&MEM32(esi + (-0x148))); /* 0x005940E7: fld dword ptr [eax + 0x8c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00594040",
+      "old": "    fp_push(*(float*)&MEM32(eax + 0x88)); /* 0x0059411E: fld dword ptr [eax + 0x88] */",
+      "new": "    fp_push(*(float*)&MEM32(esi + (-0x14C))); /* 0x0059411E: fld dword ptr [eax + 0x88] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00594040",
+      "old": "    fp_push(*(float*)&MEM32(eax + 0x8C)); /* 0x00594146: fld dword ptr [eax + 0x8c] */",
+      "new": "    fp_push(*(float*)&MEM32(esi + (-0x148))); /* 0x00594146: fld dword ptr [eax + 0x8c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00594040",
+      "old": "    fp_push(*(float*)&MEM32(eax + 0x88)); /* 0x00594192: fld dword ptr [eax + 0x88] */",
+      "new": "    fp_push(*(float*)&MEM32(esi + (-0x14C))); /* 0x00594192: fld dword ptr [eax + 0x88] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00594040",
+      "old": "    fp_push(*(float*)&MEM32(eax + 0x8C)); /* 0x005941B7: fld dword ptr [eax + 0x8c] */",
+      "new": "    fp_push(*(float*)&MEM32(esi + (-0x148))); /* 0x005941B7: fld dword ptr [eax + 0x8c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00594152",
+      "old": "    fp_push(*(float*)&MEM32(eax + 0x8C)); /* 0x005940E7: fld dword ptr [eax + 0x8c] */",
+      "new": "    fp_push(*(float*)&MEM32(esi + (-0x148))); /* 0x005940E7: fld dword ptr [eax + 0x8c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00594152",
+      "old": "    fp_push(*(float*)&MEM32(eax + 0x88)); /* 0x0059411E: fld dword ptr [eax + 0x88] */",
+      "new": "    fp_push(*(float*)&MEM32(esi + (-0x14C))); /* 0x0059411E: fld dword ptr [eax + 0x88] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00594152",
+      "old": "    fp_push(*(float*)&MEM32(eax + 0x8C)); /* 0x00594146: fld dword ptr [eax + 0x8c] */",
+      "new": "    fp_push(*(float*)&MEM32(esi + (-0x148))); /* 0x00594146: fld dword ptr [eax + 0x8c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00594152",
+      "old": "    fp_push(*(float*)&MEM32(eax + 0x88)); /* 0x00594192: fld dword ptr [eax + 0x88] */",
+      "new": "    fp_push(*(float*)&MEM32(esi + (-0x14C))); /* 0x00594192: fld dword ptr [eax + 0x88] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00594152",
+      "old": "    fp_push(*(float*)&MEM32(eax + 0x8C)); /* 0x005941B7: fld dword ptr [eax + 0x8c] */",
+      "new": "    fp_push(*(float*)&MEM32(esi + (-0x148))); /* 0x005941B7: fld dword ptr [eax + 0x8c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_005954B0",
+      "old": "    _st[0] -= (double)*(float*)ADDR(eax + 0x88); _st[0] = fp_pc(_st[0]); /* 0x0059362E: fsub dword ptr [eax + 0x88] */",
+      "new": "    _st[0] -= (double)*(float*)ADDR(esi + (-0x14C)); _st[0] = fp_pc(_st[0]); /* 0x0059362E: fsub dword ptr [eax + 0x88] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_005954B0",
+      "old": "    _st[0] -= (double)*(float*)ADDR(eax + 0x4); _st[0] = fp_pc(_st[0]); /* 0x00593644: fsub dword ptr [eax + 4] */",
+      "new": "    _st[0] -= (double)*(float*)ADDR(esi + (-0x148)); _st[0] = fp_pc(_st[0]); /* 0x00593644: fsub dword ptr [eax + 4] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_005954C0",
+      "old": "    _st[0] -= (double)*(float*)ADDR(eax + 0x88); _st[0] = fp_pc(_st[0]); /* 0x0059373B: fsub dword ptr [eax + 0x88] */",
+      "new": "    _st[0] -= (double)*(float*)ADDR(esi + (-0x14C)); _st[0] = fp_pc(_st[0]); /* 0x0059373B: fsub dword ptr [eax + 0x88] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_005954C0",
+      "old": "    _st[0] -= (double)*(float*)ADDR(eax + 0x4); _st[0] = fp_pc(_st[0]); /* 0x00593751: fsub dword ptr [eax + 4] */",
+      "new": "    _st[0] -= (double)*(float*)ADDR(esi + (-0x148)); _st[0] = fp_pc(_st[0]); /* 0x00593751: fsub dword ptr [eax + 4] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_005954F0",
+      "old": "    fp_push(*(float*)&MEM32(eax + 0x88)); /* 0x005940BF: fld dword ptr [eax + 0x88] */",
+      "new": "    fp_push(*(float*)&MEM32(esi + (-0x14C))); /* 0x005940BF: fld dword ptr [eax + 0x88] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_005954F0",
+      "old": "    fp_push(*(float*)&MEM32(eax + 0x8C)); /* 0x005940E7: fld dword ptr [eax + 0x8c] */",
+      "new": "    fp_push(*(float*)&MEM32(esi + (-0x148))); /* 0x005940E7: fld dword ptr [eax + 0x8c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_005954F0",
+      "old": "    fp_push(*(float*)&MEM32(eax + 0x88)); /* 0x0059411E: fld dword ptr [eax + 0x88] */",
+      "new": "    fp_push(*(float*)&MEM32(esi + (-0x14C))); /* 0x0059411E: fld dword ptr [eax + 0x88] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_005954F0",
+      "old": "    fp_push(*(float*)&MEM32(eax + 0x8C)); /* 0x00594146: fld dword ptr [eax + 0x8c] */",
+      "new": "    fp_push(*(float*)&MEM32(esi + (-0x148))); /* 0x00594146: fld dword ptr [eax + 0x8c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_005954F0",
+      "old": "    fp_push(*(float*)&MEM32(eax + 0x88)); /* 0x00594192: fld dword ptr [eax + 0x88] */",
+      "new": "    fp_push(*(float*)&MEM32(esi + (-0x14C))); /* 0x00594192: fld dword ptr [eax + 0x88] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_005954F0",
+      "old": "    fp_push(*(float*)&MEM32(eax + 0x8C)); /* 0x005941B7: fld dword ptr [eax + 0x8c] */",
+      "new": "    fp_push(*(float*)&MEM32(esi + (-0x148))); /* 0x005941B7: fld dword ptr [eax + 0x8c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_008C1570",
+      "old": "    _st[0] = (double)*(float*)ADDR(0xDFA050) / _st[0]; _st[0] = fp_pc(_st[0]); /* 0x008C1717: fdivr dword ptr [0xdfa050] */",
+      "new": "    _st[0] = 1.0; /* 0x008C1717: fdivr dword ptr [0xdfa050] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_007B09B0",
+      "old": "    /* cmp MEM32(esp + 0x134), 2 */ /* 0x007B100F: cmp dword ptr [esp + 0x134], 2 */",
+      "new": "    /* The optional converted bank carries original per-entry metadata. */\n    if (MEM32(edi) != MEM32(edi + 4)) {\n        uint32_t texture_record = esp - 48u;\n        esp = texture_record;\n        memcpy(GPTR(texture_record + 16u), \"/zz_port_textures_v2.pak\", sizeof \"/zz_port_textures_v2.pak\");\n        PUSH32(esp, texture_record + 16u);\n        edx = edi;\n        ecx = texture_record;\n        RECOMP_CALL(sub_004229B0);\n        MEM32(texture_record + 12u) = 0x80000000u;\n        PUSH32(esp, texture_record);\n        ecx = texture_record + 48u + 0x30u;\n        RECOMP_CALL(sub_007B1A40);\n        PUSH32(esp, MEM32(texture_record));\n        RECOMP_CALL(sub_00A99C10);\n        esp += 4u + 48u;\n    }\n    /* cmp MEM32(esp + 0x134), 2 */ /* 0x007B100F: cmp dword ptr [esp + 0x134], 2 */"
+    },
+    {
+      "module": "game",
+      "function": "sub_0092A010",
+      "old": "    MEM32(eax + 0xC) = edx; /* 0x0092A021: mov dword ptr [eax + 0xc], edx */",
+      "new": "    MEM32(eax + 0xC) = ((((edx) & 0xFFFFFF00u) == 0x40000000u && ((edx) & 255u) <= 5u) ? ((edx) & 255u) - 1u : (edx)); /* 0x0092A021: mov dword ptr [eax + 0xc], edx */"
+    },
+    {
+      "module": "game",
+      "function": "sub_0092A070",
+      "old": "    ecx = MEM32(esp + 0xC); /* 0x0092A080: mov ecx, dword ptr [esp + 0xc] */",
+      "new": "    ecx = ((((MEM32(esp + 0xCu)) & 0xFFFFFF00u) == 0x40000000u && ((MEM32(esp + 0xCu)) & 255u) <= 5u) ? ((MEM32(esp + 0xCu)) & 255u) - 1u : (MEM32(esp + 0xCu))); /* 0x0092A080: mov ecx, dword ptr [esp + 0xc] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_0092A070",
+      "old": "    SET_LO8(eax, (CMP_B(_flag_a, _flag_b)) ? 1 : 0); /* 0x0092A0A1: setb al */",
+      "new": "    SET_LO8(eax, ((((MEM32(esp + 0xCu)) & 0xFFFFFF00u) == 0x40000000u && ((MEM32(esp + 0xCu)) & 255u) <= 5u) ? (uint32_t)_flag_a <= (uint32_t)_flag_b : CMP_B(_flag_a, _flag_b)) ? 1 : 0); /* 0x0092A0A1: setb al */"
+    },
+    {
+      "module": "game",
+      "function": "sub_0092A8B0",
+      "old": "    PUSH32(esp, 8); /* 0x0092A99E: push 8 */",
+      "new": "    if (MEM32(esp + 0x3Cu) == 0x80000000u) {\n        uint32_t texture_attributes = MEM32(MEM32(MEM32(MEM32(esi + 0xCu) + 0xCu) + edi * 4u) + 0x26u);\n        if ((texture_attributes & 0xFFFF00FFu) != 0x48540000u || ((texture_attributes >> 8) & 255u) > 5u)\n            goto L_0092AAAB;\n    }\n    PUSH32(esp, 8); /* 0x0092A99E: push 8 */"
+    },
+    {
+      "module": "game",
+      "function": "sub_0092A8B0",
+      "old": "    ecx = MEM32(esp + 0x3C); /* 0x0092AA16: mov ecx, dword ptr [esp + 0x3c] */",
+      "new": "    ecx = (MEM32(esp + 0x3Cu) == 0x80000000u ? 0x40000000u | ((MEM32(MEM32(MEM32(MEM32(esi + 0xCu) + 0xCu) + edi * 4u) + 0x26u) >> 8) & 255u) : MEM32(esp + 0x3Cu)); /* 0x0092AA16: mov ecx, dword ptr [esp + 0x3c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_0092A8B0",
+      "old": "    eax = MEM32(esp + 0x3C); /* 0x0092AA4C: mov eax, dword ptr [esp + 0x3c] */",
+      "new": "    eax = (MEM32(esp + 0x3Cu) == 0x80000000u ? 0x40000000u | ((MEM32(MEM32(MEM32(MEM32(esi + 0xCu) + 0xCu) + edi * 4u) + 0x26u) >> 8) & 255u) : MEM32(esp + 0x3Cu)); /* 0x0092AA4C: mov eax, dword ptr [esp + 0x3c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_0092A8B0",
+      "old": "    ecx = MEM32(esp + 0x3C); /* 0x0092AA7B: mov ecx, dword ptr [esp + 0x3c] */",
+      "new": "    ecx = (MEM32(esp + 0x3Cu) == 0x80000000u ? 0x40000000u | ((MEM32(MEM32(MEM32(MEM32(esi + 0xCu) + 0xCu) + edi * 4u) + 0x26u) >> 8) & 255u) : MEM32(esp + 0x3Cu)); /* 0x0092AA7B: mov ecx, dword ptr [esp + 0x3c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_0092A900",
+      "old": "    PUSH32(esp, 8); /* 0x0092A99E: push 8 */",
+      "new": "    if (MEM32(esp + 0x3Cu) == 0x80000000u) {\n        uint32_t texture_attributes = MEM32(MEM32(MEM32(MEM32(esi + 0xCu) + 0xCu) + edi * 4u) + 0x26u);\n        if ((texture_attributes & 0xFFFF00FFu) != 0x48540000u || ((texture_attributes >> 8) & 255u) > 5u)\n            goto L_0092AAAB;\n    }\n    PUSH32(esp, 8); /* 0x0092A99E: push 8 */"
+    },
+    {
+      "module": "game",
+      "function": "sub_0092A900",
+      "old": "    ecx = MEM32(esp + 0x3C); /* 0x0092AA16: mov ecx, dword ptr [esp + 0x3c] */",
+      "new": "    ecx = (MEM32(esp + 0x3Cu) == 0x80000000u ? 0x40000000u | ((MEM32(MEM32(MEM32(MEM32(esi + 0xCu) + 0xCu) + edi * 4u) + 0x26u) >> 8) & 255u) : MEM32(esp + 0x3Cu)); /* 0x0092AA16: mov ecx, dword ptr [esp + 0x3c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_0092A900",
+      "old": "    eax = MEM32(esp + 0x3C); /* 0x0092AA4C: mov eax, dword ptr [esp + 0x3c] */",
+      "new": "    eax = (MEM32(esp + 0x3Cu) == 0x80000000u ? 0x40000000u | ((MEM32(MEM32(MEM32(MEM32(esi + 0xCu) + 0xCu) + edi * 4u) + 0x26u) >> 8) & 255u) : MEM32(esp + 0x3Cu)); /* 0x0092AA4C: mov eax, dword ptr [esp + 0x3c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_0092A900",
+      "old": "    ecx = MEM32(esp + 0x3C); /* 0x0092AA7B: mov ecx, dword ptr [esp + 0x3c] */",
+      "new": "    ecx = (MEM32(esp + 0x3Cu) == 0x80000000u ? 0x40000000u | ((MEM32(MEM32(MEM32(MEM32(esi + 0xCu) + 0xCu) + edi * 4u) + 0x26u) >> 8) & 255u) : MEM32(esp + 0x3Cu)); /* 0x0092AA7B: mov ecx, dword ptr [esp + 0x3c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_0092A976",
+      "old": "    PUSH32(esp, 8); /* 0x0092A99E: push 8 */",
+      "new": "    if (MEM32(esp + 0x3Cu) == 0x80000000u) {\n        uint32_t texture_attributes = MEM32(MEM32(MEM32(MEM32(esi + 0xCu) + 0xCu) + edi * 4u) + 0x26u);\n        if ((texture_attributes & 0xFFFF00FFu) != 0x48540000u || ((texture_attributes >> 8) & 255u) > 5u)\n            goto L_0092AAAB;\n    }\n    PUSH32(esp, 8); /* 0x0092A99E: push 8 */"
+    },
+    {
+      "module": "game",
+      "function": "sub_0092A976",
+      "old": "    ecx = MEM32(esp + 0x3C); /* 0x0092AA16: mov ecx, dword ptr [esp + 0x3c] */",
+      "new": "    ecx = (MEM32(esp + 0x3Cu) == 0x80000000u ? 0x40000000u | ((MEM32(MEM32(MEM32(MEM32(esi + 0xCu) + 0xCu) + edi * 4u) + 0x26u) >> 8) & 255u) : MEM32(esp + 0x3Cu)); /* 0x0092AA16: mov ecx, dword ptr [esp + 0x3c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_0092A976",
+      "old": "    eax = MEM32(esp + 0x3C); /* 0x0092AA4C: mov eax, dword ptr [esp + 0x3c] */",
+      "new": "    eax = (MEM32(esp + 0x3Cu) == 0x80000000u ? 0x40000000u | ((MEM32(MEM32(MEM32(MEM32(esi + 0xCu) + 0xCu) + edi * 4u) + 0x26u) >> 8) & 255u) : MEM32(esp + 0x3Cu)); /* 0x0092AA4C: mov eax, dword ptr [esp + 0x3c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_0092A976",
+      "old": "    ecx = MEM32(esp + 0x3C); /* 0x0092AA7B: mov ecx, dword ptr [esp + 0x3c] */",
+      "new": "    ecx = (MEM32(esp + 0x3Cu) == 0x80000000u ? 0x40000000u | ((MEM32(MEM32(MEM32(MEM32(esi + 0xCu) + 0xCu) + edi * 4u) + 0x26u) >> 8) & 255u) : MEM32(esp + 0x3Cu)); /* 0x0092AA7B: mov ecx, dword ptr [esp + 0x3c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_0092AA8E",
+      "old": "    PUSH32(esp, 8); /* 0x0092A99E: push 8 */",
+      "new": "    if (MEM32(esp + 0x3Cu) == 0x80000000u) {\n        uint32_t texture_attributes = MEM32(MEM32(MEM32(MEM32(esi + 0xCu) + 0xCu) + edi * 4u) + 0x26u);\n        if ((texture_attributes & 0xFFFF00FFu) != 0x48540000u || ((texture_attributes >> 8) & 255u) > 5u)\n            goto L_0092AAAB;\n    }\n    PUSH32(esp, 8); /* 0x0092A99E: push 8 */"
+    },
+    {
+      "module": "game",
+      "function": "sub_0092AA8E",
+      "old": "    ecx = MEM32(esp + 0x3C); /* 0x0092AA16: mov ecx, dword ptr [esp + 0x3c] */",
+      "new": "    ecx = (MEM32(esp + 0x3Cu) == 0x80000000u ? 0x40000000u | ((MEM32(MEM32(MEM32(MEM32(esi + 0xCu) + 0xCu) + edi * 4u) + 0x26u) >> 8) & 255u) : MEM32(esp + 0x3Cu)); /* 0x0092AA16: mov ecx, dword ptr [esp + 0x3c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_0092AA8E",
+      "old": "    eax = MEM32(esp + 0x3C); /* 0x0092AA4C: mov eax, dword ptr [esp + 0x3c] */",
+      "new": "    eax = (MEM32(esp + 0x3Cu) == 0x80000000u ? 0x40000000u | ((MEM32(MEM32(MEM32(MEM32(esi + 0xCu) + 0xCu) + edi * 4u) + 0x26u) >> 8) & 255u) : MEM32(esp + 0x3Cu)); /* 0x0092AA4C: mov eax, dword ptr [esp + 0x3c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_0092AA8E",
+      "old": "    ecx = MEM32(esp + 0x3C); /* 0x0092AA7B: mov ecx, dword ptr [esp + 0x3c] */",
+      "new": "    ecx = (MEM32(esp + 0x3Cu) == 0x80000000u ? 0x40000000u | ((MEM32(MEM32(MEM32(MEM32(esi + 0xCu) + 0xCu) + edi * 4u) + 0x26u) >> 8) & 255u) : MEM32(esp + 0x3Cu)); /* 0x0092AA7B: mov ecx, dword ptr [esp + 0x3c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_0092AA95",
+      "old": "    PUSH32(esp, 8); /* 0x0092A99E: push 8 */",
+      "new": "    if (MEM32(esp + 0x3Cu) == 0x80000000u) {\n        uint32_t texture_attributes = MEM32(MEM32(MEM32(MEM32(esi + 0xCu) + 0xCu) + edi * 4u) + 0x26u);\n        if ((texture_attributes & 0xFFFF00FFu) != 0x48540000u || ((texture_attributes >> 8) & 255u) > 5u)\n            goto L_0092AAAB;\n    }\n    PUSH32(esp, 8); /* 0x0092A99E: push 8 */"
+    },
+    {
+      "module": "game",
+      "function": "sub_0092AA95",
+      "old": "    ecx = MEM32(esp + 0x3C); /* 0x0092AA16: mov ecx, dword ptr [esp + 0x3c] */",
+      "new": "    ecx = (MEM32(esp + 0x3Cu) == 0x80000000u ? 0x40000000u | ((MEM32(MEM32(MEM32(MEM32(esi + 0xCu) + 0xCu) + edi * 4u) + 0x26u) >> 8) & 255u) : MEM32(esp + 0x3Cu)); /* 0x0092AA16: mov ecx, dword ptr [esp + 0x3c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_0092AA95",
+      "old": "    eax = MEM32(esp + 0x3C); /* 0x0092AA4C: mov eax, dword ptr [esp + 0x3c] */",
+      "new": "    eax = (MEM32(esp + 0x3Cu) == 0x80000000u ? 0x40000000u | ((MEM32(MEM32(MEM32(MEM32(esi + 0xCu) + 0xCu) + edi * 4u) + 0x26u) >> 8) & 255u) : MEM32(esp + 0x3Cu)); /* 0x0092AA4C: mov eax, dword ptr [esp + 0x3c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_0092AA95",
+      "old": "    ecx = MEM32(esp + 0x3C); /* 0x0092AA7B: mov ecx, dword ptr [esp + 0x3c] */",
+      "new": "    ecx = (MEM32(esp + 0x3Cu) == 0x80000000u ? 0x40000000u | ((MEM32(MEM32(MEM32(MEM32(esi + 0xCu) + 0xCu) + edi * 4u) + 0x26u) >> 8) & 255u) : MEM32(esp + 0x3Cu)); /* 0x0092AA7B: mov ecx, dword ptr [esp + 0x3c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_0092AAAB",
+      "old": "    PUSH32(esp, 8); /* 0x0092A99E: push 8 */",
+      "new": "    if (MEM32(esp + 0x3Cu) == 0x80000000u) {\n        uint32_t texture_attributes = MEM32(MEM32(MEM32(MEM32(esi + 0xCu) + 0xCu) + edi * 4u) + 0x26u);\n        if ((texture_attributes & 0xFFFF00FFu) != 0x48540000u || ((texture_attributes >> 8) & 255u) > 5u)\n            goto L_0092AAAB;\n    }\n    PUSH32(esp, 8); /* 0x0092A99E: push 8 */"
+    },
+    {
+      "module": "game",
+      "function": "sub_0092AAAB",
+      "old": "    ecx = MEM32(esp + 0x3C); /* 0x0092AA16: mov ecx, dword ptr [esp + 0x3c] */",
+      "new": "    ecx = (MEM32(esp + 0x3Cu) == 0x80000000u ? 0x40000000u | ((MEM32(MEM32(MEM32(MEM32(esi + 0xCu) + 0xCu) + edi * 4u) + 0x26u) >> 8) & 255u) : MEM32(esp + 0x3Cu)); /* 0x0092AA16: mov ecx, dword ptr [esp + 0x3c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_0092AAAB",
+      "old": "    eax = MEM32(esp + 0x3C); /* 0x0092AA4C: mov eax, dword ptr [esp + 0x3c] */",
+      "new": "    eax = (MEM32(esp + 0x3Cu) == 0x80000000u ? 0x40000000u | ((MEM32(MEM32(MEM32(MEM32(esi + 0xCu) + 0xCu) + edi * 4u) + 0x26u) >> 8) & 255u) : MEM32(esp + 0x3Cu)); /* 0x0092AA4C: mov eax, dword ptr [esp + 0x3c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_0092AAAB",
+      "old": "    ecx = MEM32(esp + 0x3C); /* 0x0092AA7B: mov ecx, dword ptr [esp + 0x3c] */",
+      "new": "    ecx = (MEM32(esp + 0x3Cu) == 0x80000000u ? 0x40000000u | ((MEM32(MEM32(MEM32(MEM32(esi + 0xCu) + 0xCu) + edi * 4u) + 0x26u) >> 8) & 255u) : MEM32(esp + 0x3Cu)); /* 0x0092AA7B: mov ecx, dword ptr [esp + 0x3c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_0092B3C0",
+      "old": "    PUSH32(esp, 8); /* 0x0092A99E: push 8 */",
+      "new": "    if (MEM32(esp + 0x3Cu) == 0x80000000u) {\n        uint32_t texture_attributes = MEM32(MEM32(MEM32(MEM32(esi + 0xCu) + 0xCu) + edi * 4u) + 0x26u);\n        if ((texture_attributes & 0xFFFF00FFu) != 0x48540000u || ((texture_attributes >> 8) & 255u) > 5u)\n            goto L_0092AAAB;\n    }\n    PUSH32(esp, 8); /* 0x0092A99E: push 8 */"
+    },
+    {
+      "module": "game",
+      "function": "sub_0092B3C0",
+      "old": "    ecx = MEM32(esp + 0x3C); /* 0x0092AA16: mov ecx, dword ptr [esp + 0x3c] */",
+      "new": "    ecx = (MEM32(esp + 0x3Cu) == 0x80000000u ? 0x40000000u | ((MEM32(MEM32(MEM32(MEM32(esi + 0xCu) + 0xCu) + edi * 4u) + 0x26u) >> 8) & 255u) : MEM32(esp + 0x3Cu)); /* 0x0092AA16: mov ecx, dword ptr [esp + 0x3c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_0092B3C0",
+      "old": "    eax = MEM32(esp + 0x3C); /* 0x0092AA4C: mov eax, dword ptr [esp + 0x3c] */",
+      "new": "    eax = (MEM32(esp + 0x3Cu) == 0x80000000u ? 0x40000000u | ((MEM32(MEM32(MEM32(MEM32(esi + 0xCu) + 0xCu) + edi * 4u) + 0x26u) >> 8) & 255u) : MEM32(esp + 0x3Cu)); /* 0x0092AA4C: mov eax, dword ptr [esp + 0x3c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_0092B3C0",
+      "old": "    ecx = MEM32(esp + 0x3C); /* 0x0092AA7B: mov ecx, dword ptr [esp + 0x3c] */",
+      "new": "    ecx = (MEM32(esp + 0x3Cu) == 0x80000000u ? 0x40000000u | ((MEM32(MEM32(MEM32(MEM32(esi + 0xCu) + 0xCu) + edi * 4u) + 0x26u) >> 8) & 255u) : MEM32(esp + 0x3Cu)); /* 0x0092AA7B: mov ecx, dword ptr [esp + 0x3c] */"
+    }
+  ],
+  "pending_features": [],
+  "notes": [
+    "In progress: unresolved native gameplay/layout work is explicitly fail-closed.",
+    "No source engine aliasing or dummy success receipt. Complete only after all original-engine hooks and fields are verified."
+  ]
+}

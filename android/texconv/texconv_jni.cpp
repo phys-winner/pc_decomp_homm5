@@ -51,6 +51,37 @@ JNIEXPORT jint JNICALL Java_org_homm5_port_Textures_nativeRemoveConverted(JNIEnv
     return dir.chars ? texconv_remove_converted(dir.chars) : -1;
 }
 
+JNIEXPORT jlongArray JNICALL Java_org_homm5_port_Textures_nativeScanBank(JNIEnv *env, jclass, jstring game, jstring bank)
+{
+    Utf dir(env, game), name(env, bank);
+    if (!dir.chars || !name.chars) return nullptr;
+    texconv_status s;
+    if (texconv_scan_bank(dir.chars, name.chars, &s)) return nullptr;
+    jlong values[] = {s.textures, s.bytes, s.estimate_etc2, s.estimate_astc, s.converted_format, s.converted_textures,
+                      s.converted_bytes, s.originals_removed, s.removable_bytes};
+    jlongArray out = env->NewLongArray(9);
+    if (out) env->SetLongArrayRegion(out, 0, 9, values);
+    return out;
+}
+
+JNIEXPORT jint JNICALL Java_org_homm5_port_Textures_nativeConvertBank(JNIEnv *env, jclass, jstring game, jstring bank, jint format, jint threads)
+{
+    Utf dir(env, game), name(env, bank);
+    return dir.chars && name.chars ? texconv_convert_bank(dir.chars, name.chars, format, threads) : -1;
+}
+
+JNIEXPORT jint JNICALL Java_org_homm5_port_Textures_nativeRemoveOriginalsBank(JNIEnv *env, jclass, jstring game, jstring bank)
+{
+    Utf dir(env, game), name(env, bank);
+    return dir.chars && name.chars ? texconv_remove_originals_bank(dir.chars, name.chars) : -1;
+}
+
+JNIEXPORT jint JNICALL Java_org_homm5_port_Textures_nativeRemoveConvertedBank(JNIEnv *env, jclass, jstring game, jstring bank)
+{
+    Utf dir(env, game), name(env, bank);
+    return dir.chars && name.chars ? texconv_remove_converted_bank(dir.chars, name.chars) : -1;
+}
+
 JNIEXPORT void JNICALL Java_org_homm5_port_Textures_nativeCancel(JNIEnv *, jclass) { texconv_cancel(); }
 
 /* {state, done, total, bytesDone, bytesTotal} */

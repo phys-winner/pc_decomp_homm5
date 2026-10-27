@@ -855,6 +855,7 @@ COM_METHOD(buf, Lock, 5)
     if (offset > b->size) return D3DERR_INVALIDCALL;
     if (!size || size > b->size - offset) size = b->size - offset;
     if (!(flags & D3DLOCK_READONLY)) {
+        b->bounds_count = 0;
         if (!b->dirty_pages && !offset && size == b->size && (flags & D3DLOCK_NOOVERWRITE)) {
             uint32_t pages = b->size / BUFFER_PAGE_SIZE + (b->size % BUFFER_PAGE_SIZE != 0);
             b->dirty_pages = (uint8_t *)calloc(pages, 1);

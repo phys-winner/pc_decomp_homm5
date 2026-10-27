@@ -52,7 +52,7 @@ typedef void (*PFNGLBUFFERSTORAGEEXTPROC)(GLenum,GLsizeiptr,const void*,GLbitfie
 typedef void (*egl_proc)(void);
 static uint8_t memory[16*1024*1024];
 #define GPTR(p) (memory+(uint32_t)(p))
-typedef struct {uint32_t size,format,shadow;GLuint gl;uint8_t *dirty_pages;int locks;} d3d_buffer;
+typedef struct {uint32_t size,format,shadow;GLuint gl;uint8_t *dirty_pages;int locks;uint32_t bounds_start,bounds_count,bounds_format,bounds_lo,bounds_hi;} d3d_buffer;
 typedef struct {uint16_t stream,offset;uint8_t type,method,usage,usage_index;} d3d_vertex_element;
 typedef struct {struct {void *indices,*streams[16];uint32_t stream_freq[16],stream_stride[16],stream_offset[16];} st;} d3d_device;
 typedef struct {GLuint buffer;GLint size;GLenum type;GLboolean norm;GLsizei stride;uintptr_t offset;GLuint divisor;} attr_state;
@@ -302,6 +302,31 @@ def probe(name, source=None, ring=1):
 
 
 class BufferSparseTests(unittest.TestCase):
+    def test_packed_map_matches_previous_map(self):
+        source = (ROOT / "android/host/d3d9_gl.c").read_text(encoding="utf8")
+        direct_map = source[source.index("/* Sparse pooled meshes"):source.index("static int draw_sparse_indices(")]
+        fixture = (ROOT / "tests/fixtures/sparse_map_probe.c").read_text(encoding="utf8")
+        compile_probe("buffer_sparse_map", fixture, {"sparse_map.h": direct_map})
+
+    def test_packed_map_wrap_and_dense_bits_are_observed(self):
+        source = (ROOT / "android/host/d3d9_gl.c").read_text(encoding="utf8")
+        direct_map = source[source.index("/* Sparse pooled meshes"):source.index("static int draw_sparse_indices(")]
+        fixture = (ROOT / "tests/fixtures/sparse_map_probe.c").read_text(encoding="utf8")
+        for name, old, new in (
+            ("wrap", "++sparse_map_generation > SPARSE_GENERATION_MAX", "!++sparse_map_generation"),
+            ("dense", "uint32_t dense = *e - generation", "uint32_t dense = *e"),
+        ):
+            with self.subTest(name=name), self.assertRaisesRegex(AssertionError, "Assertion failed"):
+                self.assertIn(old, direct_map)
+                compile_probe("buffer_sparse_map_negative_" + name, fixture, {"sparse_map.h": direct_map.replace(old, new, 1)})
+
+    def test_larger_dense_limit_cannot_silently_overflow_packing(self):
+        source = (ROOT / "android/host/d3d9_gl.c").read_text(encoding="utf8")
+        direct_map = source[source.index("/* Sparse pooled meshes"):source.index("static int draw_sparse_indices(")]
+        with self.assertRaisesRegex(AssertionError, "sparse dense index must fit its packed entry"):
+            compile_probe("buffer_sparse_map_bad_limit", "#include <stdint.h>\n#include <stdlib.h>\n#include <string.h>\n#include \"sparse_map.h\"\nint main(void){return 0;}\n",
+                          {"sparse_map.h": direct_map.replace("SPARSE_MAX_INDICES 262144u", "SPARSE_MAX_INDICES 262145u", 1)})
+
     def test_actual_sparse_helpers_and_draw_routing(self):
         for ring in (0, 1):
             with self.subTest(ring=ring):

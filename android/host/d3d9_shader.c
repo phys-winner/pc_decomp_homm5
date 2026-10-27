@@ -2,7 +2,7 @@
  * cf2661bcb55d9a8732e86f79922592d7efdf5383, with marked local PS1.x extensions; built with
  * MOJOSHADER_FLIP_RENDERTARGET and MOJOSHADER_DEPTH_CLIPPING).
  *
- * The generated GLSL ES 3.00 is post-processed here:
+ * The generated GLSL ES is upgraded to 3.10 and post-processed here:
  *   - vertex: D3D9's half-pixel rasterization offset (vpHalfPixel), applied
  *     after MojoShader's render-target flip;
  *   - pixel: the fixed-function alpha test (GLES has none) as a uniform test
@@ -148,6 +148,88 @@ static char *fix_pixel_varyings(const char *src)
 
 static char *patch_shader(const char *src, int pixel);
 
+static int alpha_test_mode(const uint32_t *rs)
+{
+    uint32_t func = rs[25], ref = rs[24] & 255u;
+    /* Our clamped 8-bit alpha makes GEQUAL/0 and LEQUAL/255 pass for every finite output. */
+    if (!rs[15] || func == 8 || (func == 7 && ref == 0) || (func == 4 && ref == 255)) return 0;
+    return func >= 1 && func <= 7 ? (int)func : 9;
+}
+
+static char *alpha_test_source(const char *src, int mode)
+{
+    if (mode < 0 || mode > 7) return strdup(src);
+    const char *begin = strstr(src, "uniform int vpAlphaFunc;\nuniform float vpAlphaRef;\nvoid void_alpha_test() {\n");
+    const char *end_text = "\tif (!pass) discard;\n}\n";
+    const char *end = begin ? strstr(begin, end_text) : NULL;
+    if (!end) return strdup(src);
+    end += strlen(end_text);
+    char helper[512] = "";
+    if (mode) {
+        static const char *const compare[] = { "", "false", "a < vpAlphaRef", "a == vpAlphaRef",
+            "a <= vpAlphaRef", "a > vpAlphaRef", "a != vpAlphaRef", "a >= vpAlphaRef" };
+        snprintf(helper, sizeof helper, "uniform float vpAlphaRef;\nvoid void_alpha_test() {\n"
+            "\tfloat a = floor(clamp(ps_oC0.a, 0.0, 1.0) * 255.0 + 0.5);\n"
+            "\tbool pass = %s;\n\tif (!pass) discard;\n}\n", compare[mode]);
+    }
+    char *out = (char *)malloc(strlen(src) + strlen(helper) + 1), *w = out;
+    memcpy(w, src, (size_t)(begin - src)); w += begin - src;
+    if (mode) {
+        strcpy(w, helper);
+        strcpy(w + strlen(helper), end);
+        return out;
+    }
+    const char *call = "void_alpha_test();";
+    for (const char *p = end; *p;) {
+        if (!strncmp(p, call, strlen(call))) p += strlen(call);
+        else *w++ = *p++;
+    }
+    *w = 0;
+    return out;
+}
+
+static char *fix_pixel_precision(const char *src)
+{
+    const char *old = "precision mediump float;", *at = strstr(src, old);
+    if (!at) return strdup(src);
+    /* Depth comparisons need D3D's float precision, including the texture read. */
+    const char *precision = "precision highp float;\nprecision highp sampler2D;\n"
+                            "precision highp samplerCube;\nprecision highp sampler3D;";
+    size_t head = (size_t)(at - src);
+    char *out = (char *)malloc(strlen(src) + strlen(precision) + 1);
+    memcpy(out, src, head);
+    strcpy(out + head, precision);
+    strcpy(out + head + strlen(precision), at + strlen(old));
+    return out;
+}
+
+static char *fix_color_shadow(const char *src)
+{
+    const char *compare = "\tps_r0.xyz = ((ps_r0.w > 0.5) ? ps_r0.xyz : ps_r1.xyz);";
+    /* The verified H5 terrain shadow shader stores depth in an RGBA8 atlas's alpha. */
+    if (!strstr(src, "uniform sampler2D ps_s1;") ||
+        !strstr(src, "ps_r0.w = clamp((ps_t1.w + -ps_t2.z) * 4.0, 0.0, 1.0);") ||
+        !strstr(src, "ps_r0.w = ps_c4.w + ps_r0.w;") || !strstr(src, compare)) return strdup(src);
+    const char *helper =
+        "float vpShadowCoverage(vec2 uv, float reference, float bias) {\n"
+        " vec2 size = vec2(textureSize(ps_s1, 0)), p = uv * size - 0.5;\n"
+        " vec2 f = fract(p);\n"
+        " vec4 depths = textureGather(ps_s1, uv, 3).wzxy;\n"
+        " vec4 lit = vec4(greaterThan(vec4(bias) + clamp((depths - reference) * 4.0, 0.0, 1.0), vec4(0.5)));\n"
+        " return mix(mix(lit.x, lit.y, f.x), mix(lit.z, lit.w, f.x), f.y);\n}\n";
+    char *with_helper = insert_before(src, "void main()", helper);
+    const char *at = strstr(with_helper, compare);
+    const char *filtered = "\tps_r0.xyz = mix(ps_r1.xyz, ps_r0.xyz, vpShadowCoverage(io_5_1.xy, ps_t2.z, ps_c4.w));";
+    size_t head = (size_t)(at - with_helper);
+    char *out = (char *)malloc(strlen(with_helper) + strlen(filtered) + 1);
+    memcpy(out, with_helper, head);
+    strcpy(out + head, filtered);
+    strcpy(out + head + strlen(filtered), at + strlen(compare));
+    free(with_helper);
+    return out;
+}
+
+
 /* vs_1_x writes the address register with mov, which MojoShader emits as a
  * plain float-to-int assignment (`vs_a0.x = vs_r0.x;`) that GLSL rejects.
  * D3D floors the value there (Wine does the same); mova keeps its own
@@ -185,15 +267,22 @@ static char *fix_address_moves(const char *src)
 
 static char *patch_source(const char *original, int pixel)
 {
+    char *out;
     if (!pixel) {
         char *fixed = fix_address_moves(original);
-        char *out = patch_shader(fixed, 0);
+        out = patch_shader(fixed, 0);
         free(fixed);
-        return out;
+    } else {
+        char *precise = fix_pixel_precision(original);
+        char *fixed = fix_pixel_varyings(precise);
+        free(precise);
+        char *shadow = fix_color_shadow(fixed);
+        free(fixed);
+        out = patch_shader(shadow, 1);
+        free(shadow);
     }
-    char *fixed = fix_pixel_varyings(original);
-    char *out = patch_shader(fixed, 1);
-    free(fixed);
+    /* Gather needs 3.10, and linked stages (including fixed-function halves) must agree. */
+    if (!strncmp(out, "#version 300 es", 15)) memcpy(out, "#version 310 es", 15);
     return out;
 }
 
@@ -393,6 +482,7 @@ typedef struct program {
     d3d_shader *vs, *ps;          /* either may be NULL: a generated fixed-function half stands in */
     uint32_t bgra_mask;
     uint32_t ff_id;               /* the generated half (d3d9_ff.c), 0 for none */
+    int alpha_mode;
     GLuint gl, vs_gl, ps_gl;
     int owns_vs, owns_ps;
     GLint loc_vs_f, loc_vs_i, loc_vs_b, loc_ps_f, loc_ps_i, loc_ps_b;
@@ -690,10 +780,10 @@ static void binary_store(GLuint gl, const uint64_t key[2])
 /* Link vs and ps; a missing one is replaced by the generated shader object
  * ff_gl (named by ff_id), whose samplers are the stages in ff_samplers. */
 static program_t *link_program(d3d_shader *vs, d3d_shader *ps, uint32_t bgra_mask, GLuint ff_gl, uint32_t ff_id,
-    uint32_t ff_samplers)
+    uint32_t ff_samplers, int alpha_mode)
 {
     program_t *p = (program_t *)calloc(1, sizeof *p);
-    p->vs = vs; p->ps = ps; p->bgra_mask = bgra_mask; p->ff_id = ff_id;
+    p->vs = vs; p->ps = ps; p->bgra_mask = bgra_mask; p->ff_id = ff_id; p->alpha_mode = alpha_mode;
     if (vs) {
         const MOJOSHADER_parseData *vpd = vs->parse;
         p->attr_count = vpd->attribute_count < 16 ? vpd->attribute_count : 16;
@@ -719,6 +809,11 @@ static program_t *link_program(d3d_shader *vs, d3d_shader *ps, uint32_t bgra_mas
         vs_ok = vs_text != NULL;
     }
     if (!vs_ok) { free(ps_fixed); destroy_program(p); return NULL; }
+    if (ps && alpha_mode != 9) {
+        char *variant = alpha_test_source(ps_fixed ? ps_fixed : ps->source, alpha_mode);
+        free(ps_fixed);
+        ps_fixed = variant;
+    }
     if (!vs || !ps) {
         GLint length = 0;
         glGetShaderiv(ff_gl, GL_SHADER_SOURCE_LENGTH, &length);
@@ -866,6 +961,7 @@ static void upload_ints(GLint loc, int32_t *held, const int32_t *fresh, int coun
     else glUniform1iv(loc, count, held);
 }
 
+
 void d3d_shader_upload(d3d_device *dev, float half_x, float half_y, int alpha_func, float alpha_ref)
 {
     program_t *p = current_program;
@@ -894,10 +990,13 @@ void d3d_shader_upload(d3d_device *dev, float half_x, float half_y, int alpha_fu
         glUniform2f(p->loc_half, half_x, half_y);
         p->last_half[0] = half_x; p->last_half[1] = half_y;
     }
-    if (p->loc_alpha_func >= 0 && (p->last_alpha_func != alpha_func || p->last_alpha_ref != alpha_ref)) {
+    if (p->loc_alpha_func >= 0 && p->last_alpha_func != alpha_func) {
         glUniform1i(p->loc_alpha_func, alpha_func);
+        p->last_alpha_func = alpha_func;
+    }
+    if (p->loc_alpha_ref >= 0 && p->last_alpha_ref != alpha_ref) {
         glUniform1f(p->loc_alpha_ref, alpha_ref);
-        p->last_alpha_func = alpha_func; p->last_alpha_ref = alpha_ref;
+        p->last_alpha_ref = alpha_ref;
     }
 }
 
@@ -916,11 +1015,12 @@ int d3d_shader_bind2(d3d_device *dev, d3d_shader *vs, d3d_shader *ps, int (*bgra
     if (!vs) ff_gl = d3d_ff_vertex_stage(dev, ps->source, &ff_id);
     else if (!ps) ff_gl = d3d_ff_pixel_stage(dev, vs->source, &ff_id, &ff_samplers);
     if ((!vs || !ps) && !ff_gl) return 0;
-    uintptr_t h = ((uintptr_t)vs * 31u + (uintptr_t)ps * 17u + mask + ff_id * 7u) % 1024u;
+    int alpha_mode = ps ? alpha_test_mode(dev->st.rs) : 9;
+    uintptr_t h = ((uintptr_t)vs * 31u + (uintptr_t)ps * 17u + mask + ff_id * 7u + (uint32_t)alpha_mode * 13u) % 1024u;
     program_t *p = programs[h];
-    while (p && !(p->vs == vs && p->ps == ps && p->bgra_mask == mask && p->ff_id == ff_id)) p = p->next;
+    while (p && !(p->vs == vs && p->ps == ps && p->bgra_mask == mask && p->ff_id == ff_id && p->alpha_mode == alpha_mode)) p = p->next;
     if (!p) {
-        p = link_program(vs, ps, mask, ff_gl, ff_id, ff_samplers);
+        p = link_program(vs, ps, mask, ff_gl, ff_id, ff_samplers, alpha_mode);
         if (!p) return 0;
         p->next = programs[h];
         programs[h] = p;
@@ -954,12 +1054,22 @@ void d3d_shader_trace(void)
 {
     program_t *p = current_program;
     if (!p) return;
+    d3d_device *dev = g_d3d_device;
+    for (unsigned slot = 0; dev && slot < 16; ++slot) if (p->ps_sampler_mask & (1u << slot)) {
+        d3d_texture *t = (d3d_texture *)dev->st.textures[slot];
+        const uint32_t *ss = dev->st.ss[slot];
+        void_log("[trace]   sampler p%u texture=%u target=%X format=%u depth=%u levels=%u lod=%u mag=%u min=%u mip=%u maxMip=%u",
+            slot, t ? t->gl : 0, t ? t->target : 0, t && t->fmt ? t->fmt->d3d : 0,
+            t && t->fmt ? t->fmt->depth : 0, t ? t->levels : 0, t ? t->lod : 0,
+            ss[5], ss[6], ss[7], ss[9]);
+    }
     static program_t *shown[256];
     static int shown_count;
     int seen = 0;
     for (int i = 0; i < shown_count; ++i) if (shown[i] == p) seen = 1;
     if (!seen && shown_count < 256) {
         shown[shown_count++] = p;
+        void_log("[trace]   program %u injected alpha mode %d", p->gl, p->alpha_mode);
         if (p->vs) void_log("[trace]   vertex GLSL of program %u:\n%s", p->gl, p->vs->source);
         if (p->ps) void_log("[trace]   pixel GLSL of program %u:\n%s", p->gl, p->ps->source);
     }

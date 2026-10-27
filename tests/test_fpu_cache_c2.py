@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 from android_tools import TOOLCHAIN
 
 COMPILER = (TOOLCHAIN / 'bin/clang-cl.exe')
-BLOCK_COUNTS = {"search127c1": (1, 1), "projectc866f7": (9, 9), "edgec867e9": (3, 3)}
+BLOCK_COUNTS = {"search127c1": (1, 1), "search127ea": (1, 1), "projectc866f7": (9, 9), "edgec867e9": (3, 3)}
 BLOCK_INITIALIZE = r'''static uint32_t output_address;
 static unsigned computed_count;
 static void initialize(unsigned test,unsigned rounding) {
@@ -45,6 +45,9 @@ BLOCK_INPUTS = {
     "search127c1": r'''ecx=2u+test%127u;esi=(test%3==0)?esp-0x100:0x14000;
     MEM32(esp+0x14)=float_bits(test);
     MEM32(esi+((ecx-((int32_t)ecx<0?UINT32_MAX:0u))>>1)*4)=float_bits(test+2);''',
+    "search127ea": r'''ecx=test%127u;esi=(test%3==0)?esp-0x100:0x14000;
+    MEM32(esp+0x14)=float_bits(test);
+    MEM32(esi+ecx*4+4)=float_bits(test+2);''',
     "projectc866f7": r'''ecx=12u*(test%4);edi=test%4;
     const uint32_t targets[]={0x12000,0x14000,0x14004,0x14008,0x1801C,0x18020,0x18024,0x18028,0x18040,0x18044,0x18048,0x18050};
     output_address=targets[test%12];computed_count=2;
@@ -100,7 +103,7 @@ def c2_block_fixture(name, source):
     constants = "".join("MEM32(0x%X)=0x%08Xu;" % (a, int.from_bytes(pe.get_data(a-pe.OPTIONAL_HEADER.ImageBase,4), "little"))
                         for a in (0xE652E0, 0xE652E4, 0xE0BE10))
     fixture = fixture.replace("/* CONSTANTS */", constants)
-    layout = "3 input layouts" if name == "search127c1" else "12 alias layouts"
+    layout = "3 input layouts" if name.startswith("search") else "12 alias layouts"
     return fixture.replace("particle comparisons", name + " production comparisons (" + layout + ")")
 
 

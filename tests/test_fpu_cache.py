@@ -403,7 +403,7 @@ class GrannyFPUCacheTest(unittest.TestCase):
     def test_actual_lift_finalizer_reapplies_all_modules(self):
         import fpu_cache as cache
         text=(ROOT/"tools/lift_homm5.py").read_text(encoding="utf-8")
-        namespace={"re":re,"json":json,"cache_particle_math_source":cache_particle_math_source}
+        namespace={"re":re,"json":json,"cache_particle_math_source":cache_particle_math_source,"EDITION":"toe"}
         function=next(node for node in ast.parse(text).body if isinstance(node,ast.FunctionDef) and node.name=="finalize_sources")
         exec(ast.get_source_segment(text,function),namespace)
         cases=[("granny2-x86/granny2_0003.c",[(granny_baseline_region,granny_cached_region)]),

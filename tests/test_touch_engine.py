@@ -23,7 +23,7 @@ static int inspections,inspection_changes_screen;
 static int previews, placement_begins, placement_moves, placement_ends, placement_cancels;
 static int double_object, same_selection, owned, town_visible, town_views, town_selections, ghost_views;
 static int announcement_visible, announcement_probes, announcement_actions, announcement_changes_screen;
-static int picked_active, cast_available, combat_shortcuts, shortcut_effect, clear_target_during_prepare;
+static int picked_active, cast_available, combat_shortcuts, shortcut_effect, clear_target_during_prepare, combat_pick_changes_screen;
 static int context_ctors, context_dtors, cast_changes_screen;
 static int book_type, book_picks, book_actions, book_wm_consumed, book_pick_changes_screen, book_pick_closes;
 static int book_missing_picker, book_missing_action;
@@ -50,13 +50,18 @@ int void_input_pointer(uint32_t *x,uint32_t *y,uint64_t *moved) {
     *x=physical_x;*y=physical_y;*moved=physical_moved_ns;return physical_seen;
 }
 void void_input_screen_size(int *w,int *h) {*w=1280;*h=800;}
+static float cursor_offset_x,cursor_offset_y;
+static int show_touch_cursor;
+float void_port_cursor_offset(int vertical) {return vertical?cursor_offset_y:cursor_offset_x;}
+int void_port_touch_cursor(void) {return show_touch_cursor;}
 enum { VOID_PERF_FILE_OPEN, VOID_PERF_FILE_MAP, VOID_PERF_FIND, VOID_PERF_FILE_READ, VOID_PERF_SHADER_COMPILE,
        VOID_PERF_PROGRAM_LINK, VOID_PERF_PROGRAM_CACHE, VOID_PERF_TEXTURE, VOID_PERF_COUNT };
 static uint64_t void_perf_now_ns(void) { return mock_now_ns; }
 static uint64_t void_perf_calls(int kind) { (void)kind; return 0; }
 static void void_log(const char *format, ...) { (void)format; }
 static int lifted_tracker_calls, lifted_timeout_calls, camera_pose_gets, camera_pose_sets, tilts;
-static float last_pose_pitch;
+static float last_pose_pitch, last_pose[10];
+static int last_pose_kind;
 void sub_008863A0_lifted(void) { ++lifted_tracker_calls; g_esp += 16; }
 void sub_006B92E0_lifted(void) { ++lifted_timeout_calls; g_eax = 250; g_esp += 4; }
 static int cursor_draws;
@@ -89,6 +94,7 @@ static uint32_t void_call_guest(uint32_t va, int n, const uint32_t *args, int po
     if(va==0xAC3590) {assert(!n && pops && loading_stage==2);loading_stage=3;return loading_no_command ? 0 : 0x73000;}
     assert(va == 0xD119FC && n == 5 && !pops);
     if (args[2] == 0xF2DAF4) {
+        if(args[3]==0xF786F0) return MEM32(args[0])==0xE85E94 ? args[0]-0x17C : 0;
         if(args[3]==0xF2DA88) {assert(args[0]==0x6044);return 0x6000;}
         if(args[0]==0x6810 || args[0]==0x6820 || args[0]==0x6900)return 0;
         assert(args[0] == 0x6800);
@@ -239,7 +245,9 @@ static uint32_t void_call_guest_this(uint32_t va, uint32_t self, int n, const ui
         assert(self==0x4000 && n==2);
         assert((args[0]==0x42F4 && args[1]==0x42EC) || (args[0]==0x10008 && args[1]==0x10000));
         MEM32(args[0])=picked_active ? 0x8200 : 0;
-        MEM32(args[0]+0x10)=17; MEM32(args[0]+0x14)=23; ++picks; return 0;
+        MEM32(args[0]+0x10)=17; MEM32(args[0]+0x14)=23;
+        if(combat_pick_changes_screen)mock_screen=0x5000;
+        ++picks; return 0;
     }
     if (va == 0x53E3D0) { assert(self==0x4000 && n==1 && args[0]==0x8200); return !busy; }
     if (va == 0x53FBE0) { assert(self==0x4000 && n==1 && args[0]==0x8200); return 0; }
@@ -336,13 +344,13 @@ static uint32_t void_call_guest_this(uint32_t va, uint32_t self, int n, const ui
 }
 #include "touch.h"
 int void_touch_camera_pose(uint32_t screen, int kind, float pose[10], int set, int immediate) {
-    assert(screen == 0x4000 && kind == 1 && !immediate);
-    if (set) { ++camera_pose_sets; last_pose_pitch = pose[1]; return 1; }
+    assert(screen == 0x4000 && (kind == 0 || kind == 1) && immediate == (set && kind == 0));
+    if (set) { for(int i=0;i<10;++i)if(!isfinite(pose[i]))return 0; ++camera_pose_sets; last_pose_pitch = pose[1]; memcpy(last_pose,pose,sizeof last_pose);last_pose_kind=kind;return 1; }
     for (int i = 0; i < 10; ++i) pose[i] = (float)(i + 1);
     ++camera_pose_gets; return 1;
 }
 int void_touch_camera_tilt(uint32_t screen, int kind, float dy) {
-    assert(screen == 0x4000 && (kind == 0 || kind == 2) && isfinite(dy)); ++tilts; return 1;
+    assert(screen == 0x4000 && (kind == 0 || kind == 1 || kind == 2) && isfinite(dy)); ++tilts; return 1;
 }
 int void_touch_camera(uint32_t screen, int combat, float x, float y, float dx, float dy, float scale, float rotation) {
     assert(screen == 0x4000 && (combat==0 || combat==1 || combat==2)); assert(isfinite(x+y+dx+dy+scale+rotation)); last_camera_kind=combat; ++cameras; return 1;
@@ -350,6 +358,7 @@ int void_touch_camera(uint32_t screen, int combat, float x, float y, float dx, f
 #include "touch_engine_actual.h"
 static void settle(void) { mock_now_ns += 1000000000ull; void_touch_ui_pump(); }
 static void reset(int kind) {
+    cursor_offset_x=cursor_offset_y=0;show_touch_cursor=0;
     void_touch_engine_init(); mock_screen=0x4000; mock_now_ns+=10000000000ull;
     lifted_tracker_calls=lifted_timeout_calls=camera_pose_gets=camera_pose_sets=tilts=0;
     downs=ups=doubles=hovers=picks=commands=evaluations=releases=cancels=cameras=0;
@@ -360,7 +369,7 @@ static void reset(int kind) {
     previews=placement_begins=placement_moves=placement_ends=placement_cancels=0;
     double_object=town_views=town_selections=ghost_views=0; same_selection=owned=town_visible=1;
     announcement_visible=announcement_probes=announcement_actions=announcement_changes_screen=0;
-    picked_active=cast_available=combat_shortcuts=shortcut_effect=clear_target_during_prepare=0;
+    picked_active=cast_available=combat_shortcuts=shortcut_effect=clear_target_during_prepare=combat_pick_changes_screen=0;
     context_ctors=context_dtors=cast_changes_screen=0;
     book_type=book_picks=book_actions=book_wm_consumed=book_pick_changes_screen=book_pick_closes=0;
     book_missing_picker=book_missing_action=0;book_descriptor=0x40000;
@@ -448,6 +457,11 @@ static void reset_loading(void) {
 }
 int main(void) {
     uint32_t text_field,text_epoch;int text_kind;
+    for(int world=1;world<=2;++world) {
+        reset(world);event(TOUCH_BEGIN,900,400);event(TOUCH_TAP,900,400);
+        assert(commands==1); /* No frame pump, timer or subsequent touch required. */
+        event(TOUCH_END,900,400);event(TOUCH_ABORT,0,0);settle();assert(!gesture.active && commands==1);
+    }
     reset_town_portrait();event(TOUCH_BEGIN,900,400);event(TOUCH_DOUBLE_TAP,900,400);event(TOUCH_DOUBLE_TAP,900,400);event(TOUCH_END,900,400);
     assert(town_portrait_opens==1 && !doubles && !downs && !ups && !dnd_doubles && !dnd_downs && !dnd_ups);
     reset_town_portrait();town_portrait_hits=2;town_portrait_pick=0x6820;
@@ -667,7 +681,10 @@ int main(void) {
     reset(0); change_on_down=1; event(TOUCH_BEGIN,100,200); event(TOUCH_TAP,100,200);
     assert(downs==1 && !ups); event(TOUCH_END,100,200); assert(!ups && !commands);
     reset(1); event(TOUCH_BEGIN,900,400); assert(!picks); event(TOUCH_TAP,900,400); event(TOUCH_END,900,400);
+    assert(picks==1 && commands==1);settle();
     assert(picks==1 && commands==1 && releases==1 && !downs && !cameras);
+    event(TOUCH_BEGIN,900,400); event(TOUCH_DOUBLE_TAP,900,400); event(TOUCH_END,900,400);
+    assert(commands==2);settle();assert(commands==2); /* Fast second map tap commits movement once. */
     reset(1); event(TOUCH_BEGIN,100,200); event(TOUCH_TAP,100,200); event(TOUCH_END,100,200);
     assert(downs==1 && ups==1 && !picks && !commands); /* UI gets first refusal. */
     reset(1); event(TOUCH_BEGIN,900,400); force_ui=1; event(TOUCH_TAP,900,400); assert(!commands && !downs);
@@ -687,23 +704,25 @@ int main(void) {
     assert(cancels==1 && !commands && !cameras);
     reset(1); event(TOUCH_BEGIN,900,400); mock_screen=0x5000; event(TOUCH_TAP,900,400); assert(!commands && !picks);
     reset(1); busy=1; event(TOUCH_BEGIN,900,400); event(TOUCH_TAP,900,400); assert(!picks && !commands);
-    reset(1); pick_available=0; event(TOUCH_BEGIN,900,400); event(TOUCH_TAP,900,400); assert(picks==1 && releases==1 && !commands);
+    reset(1); pick_available=0; event(TOUCH_BEGIN,900,400); event(TOUCH_TAP,900,400);settle(); assert(picks==1 && releases==1 && !commands);
     reset(1); MEM32(0x40A0)=0; event(TOUCH_BEGIN,900,400); event(TOUCH_TAP,900,400); assert(!commands && !picks);
     reset(1); event(TOUCH_BEGIN,NAN,400); event(TOUCH_TAP,900,400); assert(!commands && !picks);
     reset(1); double_object=1; event(TOUCH_BEGIN,900,400); event(TOUCH_DOUBLE_TAP,900,400); event(TOUCH_END,900,400);
-    assert(MEM8(0x455C)==1 && picks==1 && releases==1 && !commands);
-    reset(1); double_object=2; event(TOUCH_BEGIN,900,400); event(TOUCH_DOUBLE_TAP,900,400); assert(MEM8(0x455C)==1 && releases==1);
-    reset(1); double_object=1; same_selection=0; event(TOUCH_BEGIN,900,400); event(TOUCH_DOUBLE_TAP,900,400); assert(!MEM8(0x455C) && !commands);
-    reset(1); double_object=1; owned=0; event(TOUCH_BEGIN,900,400); event(TOUCH_DOUBLE_TAP,900,400); assert(!MEM8(0x455C));
-    reset(1); double_object=1; busy=1; event(TOUCH_BEGIN,900,400); event(TOUCH_DOUBLE_TAP,900,400); assert(!MEM8(0x455C));
-    reset(1); double_object=4; event(TOUCH_BEGIN,900,400); event(TOUCH_DOUBLE_TAP,900,400); assert(ghost_views==1 && !MEM8(0x455C) && releases==1);
+    settle();
+    assert(MEM8(0x455C)==1 && picks==2 && releases==2 && commands==1);
+    reset(1); double_object=2; event(TOUCH_BEGIN,900,400); event(TOUCH_DOUBLE_TAP,900,400);settle(); assert(MEM8(0x455C)==1 && releases==2 && commands==1);
+    reset(1); double_object=1; same_selection=0; event(TOUCH_BEGIN,900,400); event(TOUCH_DOUBLE_TAP,900,400);settle(); assert(!MEM8(0x455C) && commands==1);
+    reset(1); double_object=1; owned=0; event(TOUCH_BEGIN,900,400); event(TOUCH_DOUBLE_TAP,900,400);settle(); assert(!MEM8(0x455C));
+    reset(1); double_object=1; busy=1; event(TOUCH_BEGIN,900,400); event(TOUCH_DOUBLE_TAP,900,400);settle(); assert(!MEM8(0x455C));
+    reset(1); double_object=4; event(TOUCH_BEGIN,900,400); event(TOUCH_DOUBLE_TAP,900,400);settle(); assert(ghost_views==1 && !MEM8(0x455C) && releases==2 && commands==1);
     reset(1); double_object=3; event(TOUCH_BEGIN,900,400); event(TOUCH_DOUBLE_TAP,900,400);
-    assert(town_views==1 && town_selections==1 && releases==1 && !commands);
-    reset(1); double_object=3; owned=0; event(TOUCH_BEGIN,900,400); event(TOUCH_DOUBLE_TAP,900,400); assert(town_views==1 && !town_selections);
-    reset(1); double_object=3; MEM8(0x29011)=0; event(TOUCH_BEGIN,900,400); event(TOUCH_DOUBLE_TAP,900,400); assert(!town_views);
+    settle();
+    assert(town_views==1 && town_selections==1 && releases==2 && commands==1);
+    reset(1); double_object=3; owned=0; event(TOUCH_BEGIN,900,400); event(TOUCH_DOUBLE_TAP,900,400);settle(); assert(town_views==1 && !town_selections);
+    reset(1); double_object=3; MEM8(0x29011)=0; event(TOUCH_BEGIN,900,400); event(TOUCH_DOUBLE_TAP,900,400);settle(); assert(!town_views);
     reset(2); MEM32(0x42D4)=3; event(TOUCH_BEGIN,900,400); event(TOUCH_TAP,900,400); event(TOUCH_END,900,400);
-    assert(picks==1 && !commands && evaluations==1 && MEM32(0x42D4)==0);
-    mock_now_ns+=100000000ull; void_touch_ui_pump(); assert(!commands);
+    assert(picks==2 && commands==1 && evaluations==2 && MEM32(0x42D4)==0);
+    mock_now_ns+=100000000ull; void_touch_ui_pump(); assert(commands==1);
     mock_now_ns+=300000000ull; void_touch_ui_pump(); assert(picks==2 && commands==1 && evaluations==2);
     void_touch_ui_pump(); assert(commands==1);
     g_esp=1000; touch_cursor_query(); assert(g_eax==0x101E0 && g_esp==1004 && MEMF(g_eax)==-1 && void_touch_active_mode());
@@ -721,24 +740,31 @@ int main(void) {
     reset(2); event(TOUCH_BEGIN,900,400); event(TOUCH_TWO_FINGER_BEGIN,900,400); event(TOUCH_TRANSFORM,920,410);
     event(TOUCH_END,920,410); assert(cameras==1 && last_camera_kind==1 && !commands && !cancels);
     reset(2); event(TOUCH_BEGIN,900,400); event(TOUCH_TWO_FINGER_BEGIN,900,400); event(TOUCH_TILT,920,410);
-    event(TOUCH_END,920,410); assert(cameras==1 && !tilts && !commands);
+    event(TOUCH_END,920,410); assert(!cameras && tilts==1 && !commands);
     reset(1); event(TOUCH_BEGIN,900,400); event(TOUCH_TWO_FINGER_BEGIN,900,400); event(TOUCH_TILT,920,410);
     event(TOUCH_END,920,410); assert(tilts==1 && !cameras && !commands);
-    /* A triple tap returns the battle camera to the pose its first touch found; no order. */
+    /* A three-finger chord restores the battle home without any preceding taps/order. */
     reset(2); event(TOUCH_BEGIN,900,400); assert(camera_pose_gets==1);
-    event(TOUCH_TAP,900,400); event(TOUCH_END,900,400); mock_now_ns+=150000000ull;
-    event(TOUCH_BEGIN,900,400); event(TOUCH_DOUBLE_TAP,900,400); event(TOUCH_END,900,400); mock_now_ns+=150000000ull;
-    void_touch_ui_pump(); assert(!commands && !combat_shortcuts);
-    event(TOUCH_BEGIN,900,400); event(TOUCH_TRIPLE_TAP,900,400); event(TOUCH_END,900,400);
+    event(TOUCH_TWO_FINGER_BEGIN,900,400); event(TOUCH_THREE_FINGER_TAP,900,400); event(TOUCH_END,900,400);
     mock_now_ns+=1000000000ull; void_touch_ui_pump();
     assert(camera_pose_sets==1 && last_pose_pitch==2 && !commands && !combat_shortcuts && camera_pose_gets==1);
-    /* A pending tap goes as an order when the next gesture is something else. */
+    /* A later camera gesture never replays an already dispatched tap. */
     reset(2); event(TOUCH_BEGIN,900,400); event(TOUCH_TAP,900,400); event(TOUCH_END,900,400);
-    event(TOUCH_BEGIN,900,400); assert(!commands); event(TOUCH_PAN,950,410); assert(commands==1);
+    event(TOUCH_BEGIN,900,400); assert(commands==1); event(TOUCH_PAN,950,410); assert(commands==1);
     MEM32(0x42E0)=0x188; event(TOUCH_END,950,410); assert(commands==2);
-    /* Elsewhere a third tap is an ordinary tap. */
-    reset(1); event(TOUCH_BEGIN,900,400); event(TOUCH_TRIPLE_TAP,900,400); event(TOUCH_END,900,400);
-    assert(commands==1 && !camera_pose_sets);
+    /* Adventure reset restores native default angles, keeping zoom and position. */
+    reset(1); MEMF(0xF339F4)=-.8f; MEMF(0xF339F8)=.7f;
+    event(TOUCH_BEGIN,900,400); event(TOUCH_TWO_FINGER_BEGIN,900,400);
+    event(TOUCH_THREE_FINGER_TAP,900,400); event(TOUCH_END,900,400);settle();
+    assert(!commands && camera_pose_sets==1 && last_pose_kind==0 && last_pose[1]==-.8f && last_pose[2]==.7f);
+    for(int i=0;i<10;++i)if(i!=1&&i!=2)assert(last_pose[i]==(float)(i+1));
+    /* A chord on UI or in targeting mode is consumed without clicking/casting. */
+    reset(1);event(TOUCH_BEGIN,100,200);event(TOUCH_TWO_FINGER_BEGIN,100,200);
+    event(TOUCH_THREE_FINGER_TAP,100,200);event(TOUCH_END,100,200);
+    assert(!downs && !ups && !camera_pose_sets && !commands);
+    reset(2);MEM32(0x4394)=42;event(TOUCH_BEGIN,900,400);event(TOUCH_TWO_FINGER_BEGIN,900,400);
+    event(TOUCH_THREE_FINGER_TAP,900,400);event(TOUCH_END,900,400);
+    assert(cancels==1 && !camera_pose_sets && !commands);
     reset(2); MEM32(0x42E0)=0x1000; event(TOUCH_BEGIN,900,400); event(TOUCH_PAN,950,410); event(TOUCH_END,950,410);
     assert(placement_begins==1 && placement_moves==1 && placement_ends==1 && releases==3 && !commands && !evaluations);
     reset(2); MEM32(0x42E0)=0x1000; event(TOUCH_BEGIN,900,400); event(TOUCH_TAP,900,400); event(TOUCH_END,900,400);
@@ -749,9 +775,9 @@ int main(void) {
     assert(placement_cancels==1 && !placement_ends && !commands);
     reset(2); busy=1; event(TOUCH_BEGIN,900,400); event(TOUCH_TAP,900,400); assert(!commands && !evaluations);
     reset(1); double_object=1; MEM32(0x4760)=1; MEM32(0x4750)=0xE739C; MEM32(0x4754)=0x18000; MEM32(0x4758)=0; MEM8(0x475C)=MEM8(0x475D)=0;
-    event(TOUCH_BEGIN,900,400); event(TOUCH_DOUBLE_TAP,900,400); assert(MEM32(0x4760)==2 && MEM8(0x45E8)==1);
+    event(TOUCH_BEGIN,900,400); event(TOUCH_DOUBLE_TAP,900,400);settle(); assert(MEM32(0x4760)==2 && MEM8(0x45E8)==1);
     reset(1); double_object=1; MEM32(0x4760)=1; MEM32(0x4754)=0x18100;
-    event(TOUCH_BEGIN,900,400); event(TOUCH_DOUBLE_TAP,900,400); assert(MEM32(0x4760)==1);
+    event(TOUCH_BEGIN,900,400); event(TOUCH_DOUBLE_TAP,900,400);settle(); assert(MEM32(0x4760)==1);
     reset(1); MEM32(0x8044)=5; event(TOUCH_BEGIN,900,400); event(TOUCH_HOLD_BEGIN,900,400); event(TOUCH_ABORT,900,400); assert(cancels==1 && !commands);
     reset(2); MEM32(0x42E0)=0x1000; event(TOUCH_BEGIN,900,400); event(TOUCH_TWO_FINGER_BEGIN,900,400); event(TOUCH_ABORT,900,400);
     assert(placement_cancels==1 && cancels==1 && !commands);
@@ -765,6 +791,7 @@ int main(void) {
     assert(announcement_actions==1 && !downs && !ups && !picks && !commands);
     reset(1);MEM32(0x40EC)=0x8600;
     event(TOUCH_BEGIN,900,400);event(TOUCH_TAP,900,400);event(TOUCH_END,900,400);
+    settle();
     assert(!gesture.announcement && !announcement_actions && commands==1 && releases==1); /* AL zero, dirty EAX. */
     reset(1);MEM32(0x40EC)=0x8600;announcement_visible=1;
     event(TOUCH_BEGIN,900,400);event(TOUCH_HOLD_BEGIN,900,400);void_touch_ui_pump();event(TOUCH_END,900,400);
@@ -807,11 +834,14 @@ int main(void) {
     event(TOUCH_TWO_FINGER_BEGIN,900,400);event(TOUCH_ABORT,900,400);assert(cancels==1 && !commands);
     reset(2);MEM32(0x4394)=42;event(TOUCH_BEGIN,900,400);clear_target_during_prepare=1;
     event(TOUCH_END,900,400);assert(!commands && gesture.cancelled && context_ctors==context_dtors);
+    reset(2);combat_pick_changes_screen=1;event(TOUCH_BEGIN,900,400);
+    assert(picks==1 && !evaluations && !commands && !previews && context_ctors==context_dtors);
+    event(TOUCH_END,900,400);settle();assert(!evaluations && !commands && !combat_shortcuts);
 
-    /* Only an unarmed double-tap of the freshly picked active stack enters native
-       Combat_Cast, once the multi-tap window has passed without a third tap. */
+    /* An unarmed double-tap of the freshly picked active stack enters native
+       Combat_Cast immediately; a later pump must never repeat it. */
     reset(2);picked_active=cast_available=1;event(TOUCH_BEGIN,900,400);event(TOUCH_DOUBLE_TAP,900,400);event(TOUCH_END,900,400);
-    assert(!combat_shortcuts && !commands);settle();
+    assert(combat_shortcuts==1 && !commands);settle();
     assert(combat_shortcuts==1 && !commands && evaluations==2 && context_ctors==2 && context_dtors==2);
     reset(2);picked_active=cast_available=1;shortcut_effect=1;
     event(TOUCH_BEGIN,900,400);event(TOUCH_DOUBLE_TAP,900,400);event(TOUCH_END,900,400);settle();
@@ -881,7 +911,7 @@ int main(void) {
     void_touch_engine_event(&invalid_rotation);assert(!gesture.active && !cameras);
     /* A physical pointer cancels a pending touch, restores native picking and expires at exactly 30s. */
     reset(0);event(TOUCH_BEGIN,100,200);assert(touch_mode);
-    event(TOUCH_POINTER,0,0);assert(!touch_mode&&!gesture.active&&!combat_taps.count);
+    event(TOUCH_POINTER,0,0);assert(!touch_mode&&!gesture.active);
     physical_seen=1;physical_moved_ns=mock_now_ns;
     g_esp=1000;touch_cursor_query();assert(g_eax==0x1234&&g_esp==1004);
     assert(MEMF(0xFE6DA0)==500&&MEMF(0xFE6DA4)==250);
@@ -899,7 +929,7 @@ int main(void) {
     assert(!text_arms&&!touch_mode);focused_field=0x30000;void_touch_frame_presented();void_touch_ui_pump();
     assert(text_arms==1&&!touch_mode&&void_touch_text_focus(&text_field,&text_kind,&text_epoch));
     assert(text_field==0x30000&&text_kind==1);
-    puts("PASS native touch: UI ownership, book/town/mentor/ghost native actions, persistent inventory pickup/drop/cancel, hold-only tooltips and world information, battlefield cursor orders, deferred multi-taps and camera home, direct world context and lifecycle guards");
+    puts("PASS native touch: UI ownership, book/town/mentor/ghost native actions, persistent inventory pickup/drop/cancel, hold-only tooltips and world information, immediate battlefield orders, three-finger camera home, direct world context and lifecycle guards");
     return 0;
 }
 '''

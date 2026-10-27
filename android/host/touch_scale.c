@@ -52,9 +52,65 @@ static uint32_t scale_screen_root(uint32_t screen)
     /* This is the original CWindowScreen parent-rectangle ABI, not an arbitrary window. */
     return root >= 0xF8 && head && scale_read32(head) == head &&
            void_vm_readable(root - 0xF8, 0x200) &&
-           scale_read32(table + 0x48) == 0x00487990u &&
-           scale_read32(table + 0x4C) == 0x00488330u ? root : 0;
+           scale_read32(table + 0x48) == 0x00487990u
+#ifndef HOMM5_LEGACY_UI
+           && scale_read32(table + 0x4C) == 0x00488330u
+#endif
+           ? root : 0;
 }
+
+#ifdef HOMM5_LEGACY_UI
+/* 1.6/2.1 keep a mutable canvas getter, but their coordinate conversions
+   still load fixed constants. Checked generated patches use that same canvas.
+   Their IScreen has no ToE Reposition virtual method: reproduce its geometry
+   through the original parent-rectangle layout and invalidation calls. */
+void void_touch_legacy_root_rect(uint32_t root, uint32_t destination)
+{
+    if (!void_vm_writable(destination, 16)) return;
+    (void)root;
+    float rect[4] = {0, 0, MEMF(0x00F74BE0u), MEMF(0x00F74BE4u)};
+    if (!isfinite(rect[2]) || !isfinite(rect[3]) || rect[2] <= 0 || rect[3] <= 0) return;
+    /* The old WindowScreen schema has no ToE HorAlign/VerAlign tail.
+       Give its original CWindow::Layout the canvas as parent; the existing
+       Placement alignment/margins still decide the root's own geometry. */
+    memcpy(GPTR(destination), rect, sizeof rect);
+}
+
+void void_touch_legacy_relayout(void)
+{
+    uint32_t interface = void_call_guest(0x008385A0u, 0, NULL, 1), seen[64];
+    unsigned count = 0;
+    if (!viewport_scratch) viewport_scratch = void_galloc(16);
+    while (interface && viewport_scratch && count < 64) {
+        for (unsigned i = 0; i < count; ++i) if (seen[i] == interface) return;
+        seen[count++] = interface;
+        uint32_t base = scale_virtual_base(interface, 4);
+        if (base) {
+            const uint32_t args[] = {base, 0, 0x00F272C0u, 0x00F323A8u, 0};
+            uint32_t screen = void_call_guest(0x00D119FCu, 5, args, 0);
+            uint32_t root = screen ? scale_screen_root(screen) : 0;
+            if (root) {
+                void_touch_legacy_root_rect(root, viewport_scratch);
+                void_call_guest_this(0x00487990u, root, 1, &viewport_scratch);
+                void_call_guest_this(0x00A504B0u, root + 0x14, 0, NULL);
+                void_call_guest_this(0x00488220u, root - 0xF8, 0, NULL);
+            }
+        }
+        interface = void_call_guest_this(0x008384D0u, interface, 0, NULL);
+    }
+}
+
+void void_touch_legacy_resize(uint32_t width, uint32_t height)
+{
+    if (!width || !height || width > 16384 || height > 16384) return;
+    MEMF(0x00F74BF0u) = (float)width;
+    MEMF(0x00F74BF4u) = (float)height;
+    double aspect = (double)width / height;
+    MEMF(0x00F74BE0u) = aspect > (double)1.3333334f ? (float)floor(768.0 * aspect + (double).99f) : 1024;
+    MEMF(0x00F74BE4u) = aspect > (double)1.3333334f ? 768 : (float)floor(1024.0 / aspect + (double).99f);
+    void_touch_legacy_relayout();
+}
+#endif
 
 static int scale_viewport_apply(void)
 {
@@ -93,10 +149,14 @@ static int scale_viewport_ready(float width, float height)
             MEMF(root - 0xF8 + 0x68) != viewport.actual_y) return scale_viewport_apply();
         return 1;
     }
+#ifdef HOMM5_LEGACY_UI
+    uint32_t horizontal = 3, vertical = 3;
+#else
     uint32_t resource = scale_read32(root + 0xC8);
     if (!resource || !void_vm_readable(resource, 0x104)) return 0;
     uint32_t horizontal = MEM32(resource + 0xFC), vertical = MEM32(resource + 0x100);
     if (horizontal > 3 || vertical > 3) return 0;
+#endif
     float canvas_w = fmaxf(width, 1024), canvas_h = fmaxf(height, 768);
     float span_w = horizontal == 3 ? canvas_w : 1024;
     float span_h = vertical == 3 ? canvas_h : 768;
@@ -172,9 +232,9 @@ static float scale_anchor_shift(uint32_t mode, float lo, float size, float frame
     else shift = -frame_lo;
     /* Far-edge resources may intentionally overdraw (JogDialBase: +6,+16).
        Clamping that background alone separates it from sibling buttons. */
-    if (size <= view && mode != 2) {
+    if (size <= view) {
         if (lo + shift < 0) shift = -lo;
-        if (lo + shift + size > view) shift = view - size - lo;
+        if (mode != 2 && lo + shift + size > view) shift = view - size - lo;
     } else if (size > view) {
         shift = -lo;
     }
@@ -196,7 +256,11 @@ static int scale_rect(uint32_t window, float rect[4])
 static int scale_is_root(uint32_t window)
 {
     uint32_t table = window ? scale_read32(window + 0xF8) : 0;
-    return table && scale_read32(table + 0x48) == 0x00487990u && scale_read32(table + 0x4C) == 0x00488330u;
+    return table && scale_read32(table + 0x48) == 0x00487990u
+#ifndef HOMM5_LEGACY_UI
+           && scale_read32(table + 0x4C) == 0x00488330u
+#endif
+           ;
 }
 
 /* The size an element gets laid out at: margins decide it on a stretched axis. */
@@ -262,6 +326,10 @@ static void scale_place(uint32_t placement, const float parent[4], const float f
         shift[axis] = scale_anchor_shift(mode, position[axis], size[axis], frame[axis], frame[axis + 2],
                                          axis ? view_h : view_w);
     }
+    /* Its border is part of the left-anchored ATB texture, not this text panel. */
+    if (scale_read32(viewport.screen) == 0x00E1DA84u && scale_named(placement, "PredictionBox") &&
+        frame[2] - frame[0] > view_w + 0.5f)
+        shift[0] = -frame[0];
     /* Deployment text must not cover the army after the camera frames it. */
     if (scale_read32(viewport.screen) == 0x00E1DA84u && scale_named(placement, "WindowFadedText"))
         shift[1] = roundf(fminf(50.0f, view_h * .1f) - position[1]);
@@ -318,7 +386,8 @@ static void scale_layout_override(void)
 typedef struct {
     float view_w, view_h;
     float need_w, need_h;          /* the largest elements: sizes do not change with the scale */
-    int anchor;                    /* move them; else only measure (the original 100% layout) */
+    float combat_left, combat_right;
+    int anchor, modal;             /* move them; else only measure (the original 100% layout) */
     unsigned remaining, moved;
     unsigned stacks, map_army;
     float stack_top, stack_bottom, hud_top, map_top, map_bottom;
@@ -352,6 +421,12 @@ static void scale_anchor(uint32_t parent, unsigned depth, scale_pass *pass)
             continue;
         }
         scale_place(placement, rect, frame, pass->view_w, pass->view_h, position, size, shift);
+        if (scale_read32(viewport.screen) == 0x00E1DA84u && MEM32(placement + 0x94) == 2) {
+            if (scale_named(placement, "ATBBar") && MEM32(placement + 0x9C) == 0)
+                pass->combat_left = fmaxf(pass->combat_left, MEMF(placement + 0x88) + size[0]);
+            if (scale_named(placement, "Jogdial") && MEM32(placement + 0x9C) == 2)
+                pass->combat_right = fmaxf(pass->combat_right, size[0] - MEMF(placement + 0x88));
+        }
         if (scale_named(placement, "TownHeroPanel")) pass->map_army = 1;
         if (size[0] > 100 && size[1] > 40 && MEM32(placement + 0x94) == 2)
             pass->map_bottom = fminf(pass->map_bottom, position[1] + shift[1]);
@@ -362,11 +437,16 @@ static void scale_anchor(uint32_t parent, unsigned depth, scale_pass *pass)
         float x = MEMF(child + 0x64), y = MEMF(child + 0x68);
         int native = scale_near(x, position[0]) && scale_near(y, position[1]);
         int placed = scale_near(x, position[0] + shift[0]) && scale_near(y, position[1] + shift[1]);
+        /* A modal keeps its size even after its own code repositions it; otherwise
+           fitting alternates between scales and aborts every pending click. */
+        if ((native || placed || pass->modal) && size[0] >= 1 && size[1] >= 1) {
+            /* Keep a far-edge inset too, so moving one panel cannot cover its siblings. */
+            float inset_x = MEM32(placement + 0x9C) == 2 ? fmaxf(0, -MEMF(placement + 0x88)) : 0;
+            float inset_y = MEM32(placement + 0x94) == 2 ? fmaxf(0, -MEMF(placement + 0x8C)) : 0;
+            pass->need_w = fmaxf(pass->need_w, size[0] + inset_x);
+            pass->need_h = fmaxf(pass->need_h, size[1] + inset_y);
+        }
         if (native || placed) {
-            if (size[0] >= 1 && size[1] >= 1) {
-                pass->need_w = fmaxf(pass->need_w, size[0]);
-                pass->need_h = fmaxf(pass->need_h, size[1]);
-            }
             if (placed) continue;
         } else {
             /* Windows their own code places (dialogs it centres on 1024x768, tooltips,
@@ -394,8 +474,13 @@ static void scale_anchor(uint32_t parent, unsigned depth, scale_pass *pass)
 static int scale_fits(uint32_t root, int anchor, float width, float height, float base_w, float base_h, int percent)
 {
     scale_pass pass = {.view_w = width, .view_h = height, .anchor = anchor, .remaining = 4096, .hud_top = height, .map_bottom = height};
+    uint32_t modal = scale_read32(fit.screen + 0x14C);
+    pass.modal = modal && void_vm_readable(modal, 4) && scale_read32(modal) != modal;
     if (!scale_is_root(root)) return 0;
     scale_anchor(root, 0, &pass);
+    /* Both ends of the combat HUD must fit together, not merely on their own. */
+    if (pass.combat_left > 0 && pass.combat_right > 0)
+        pass.need_w = fmaxf(pass.need_w, pass.combat_left + pass.combat_right);
     if (anchor && pass.stacks && scale_read32(viewport.screen) == 0x00E1DA84u)
         void_touch_combat_frame(viewport.screen, width, height, pass.hud_top, pass.stack_top, pass.stack_bottom);
     if (anchor && scale_read32(viewport.screen) == 0x00E230E4u)
@@ -491,7 +576,10 @@ void void_touch_scale_pump(void)
         !void_vm_writable(0x00F74BE0u, 8) ||
         !void_vm_readable(0x00F74BE8u, 16) ||
         !void_vm_readable(0x00FE719Cu, 4) ||
-        !void_dispatch_find(0x0066A4D0u) || !void_dispatch_find(0x008385A0u)) return;
+#ifndef HOMM5_LEGACY_UI
+        !void_dispatch_find(0x0066A4D0u) ||
+#endif
+        !void_dispatch_find(0x008385A0u)) return;
     if (MEMF(0x00F74BE8u) != 1024.0f || MEMF(0x00F74BECu) != 768.0f) return;
     static int layout_hooked;
     if (!layout_hooked && void_dispatch_find(0x00A50560u) == (void_fn)sub_00A50560) {
@@ -551,8 +639,12 @@ void void_touch_scale_pump(void)
             viewport.root = 0;
             MEMF(0x00F74BE0u) = current_w = wanted_w;
             MEMF(0x00F74BE4u) = current_h = wanted_h;
+#ifdef HOMM5_LEGACY_UI
+            void_touch_legacy_relayout();
+#else
             const uint32_t unused = 0;
             void_call_guest(0x0066A4D0u, 1, &unused, 1);
+#endif
             /* Fixed-width buttons cache physical glyph geometry across virtual-only resizes. */
             scale_refresh_text();
             VLOG("[touch] ui-scale=%d%% (requested %d%%) virtual=%.2fx%.2f backbuffer=%dx%d",

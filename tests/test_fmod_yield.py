@@ -206,17 +206,25 @@ def production_fixture(harness=HARNESS):
 
 class FMODYieldTest(unittest.TestCase):
     def test_only_fmod_receives_candidate_flag(self):
-        self.assertEqual(builder.module_compile_flags("fmod-x86"),["-DRECOMP_YIELD_EVERY=4096u"])
-        for module in builder.MODULES:
-            if module!="fmod": self.assertEqual(builder.module_compile_flags(module+"-x86"),[])
-        sources=builder.generated_sources()
-        self.assertEqual(sum(bool(builder.module_compile_flags(p.parent.name)) for p in sources),21)
-        self.assertFalse(builder.module_compile_flags(sources[-1].parent.name)) # Combined dispatch unchanged.
+        previous=builder.EDITION
+        try:
+            for edition in builder.EDITION_IDS:
+                builder.configure_edition(edition)
+                with self.subTest(edition=edition):
+                    edges=32768 if edition=="hof" else 16384
+                    self.assertEqual(builder.module_compile_flags("fmod-x86"),[f"-DRECOMP_YIELD_EVERY={edges}u"])
+                    for module in builder.MODULES:
+                        if module!="fmod": self.assertEqual(builder.module_compile_flags(module+"-x86"),[])
+                    sources=builder.generated_sources()
+                    self.assertEqual(sum(bool(builder.module_compile_flags(p.parent.name)) for p in sources),21)
+                    self.assertFalse(builder.module_compile_flags(sources[-1].parent.name)) # Combined dispatch unchanged.
+        finally:
+            builder.configure_edition(previous)
 
     def test_production_handoff_and_full_context(self):
         fixture=production_fixture(HARNESS)
         ndk=builder.TOOLCHAIN/"bin/clang-cl.exe"
-        for threshold,sleep in ((4096,False),(65536,False),(4096,True)):
+        for threshold,sleep in ((16384,False),(32768,False),(65536,False),(16384,True),(32768,True)):
             flags=("/O2","/DRECOMP_GENERATED_CODE","/DRECOMP_LOCAL_REGS","/DRECOMP_YIELD_EVERY="+str(threshold)+"u")
             if sleep: flags+=("/DTEST_SLEEP_HANDOFF",)
             compile_probe("fmod_yield_"+str(threshold)+("_sleep" if sleep else ""),fixture,{},extra_flags=flags,compiler_override=ndk)

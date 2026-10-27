@@ -26,6 +26,7 @@ static unsigned char *memory;
 static void compare(d3d_buffer *ib,const void *up,int wide,uint32_t start,uint32_t count,
     int indexed,uint32_t base,uint32_t index,unsigned testcase) {
     uint32_t lo1=0x12345678,hi1=0x9ABCDEF0,lo2=lo1,hi2=hi1;
+    if(ib)ib->bounds_count=0; /* The fixture rewrites its CPU shadow between oracle cases. */
     int a=bounds_baseline(ib,up,wide,start,count,indexed,base,index,&lo1,&hi1);
     int b=bounds_candidate(ib,up,wide,start,count,indexed,base,index,&lo2,&hi2);
     if(a!=b||lo1!=lo2||hi1!=hi2){

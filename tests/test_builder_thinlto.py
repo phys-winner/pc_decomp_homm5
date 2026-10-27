@@ -34,6 +34,7 @@ class ThinLTOBuilderTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="homm5-thinlto-") as directory:
             root = Path(directory).resolve()
             files = {
+                "config/editions.json": (PROJECT / "config/editions.json").read_text(encoding="utf-8"),
                 "config/modules.json": json.dumps([{"name": "fmod", "file": "fmod.dll", "base": 0}]),
                 "generated/fmod-x86/report.json": json.dumps({"status": "GENERATED", "sources": ["fmod_0000.c"]}),
                 "generated/fmod-x86/fmod_0000.c": "void sub_30000000(void) {}\n",
@@ -47,6 +48,11 @@ class ThinLTOBuilderTest(unittest.TestCase):
                 "reference/mojoshader/mini.c": "void mini(void) {}\n",
                 "fake-clang.exe": "NDK clang 18 fixture\n",
             }
+            for edition in ("vanilla", "hof"):
+                files["config/" + edition + ".modules.json"] = files["config/modules.json"]
+                for relative, content in list(files.items()):
+                    if relative.startswith("generated/fmod-x86/"):
+                        files[relative.replace("generated/", "generated/" + edition + "/", 1)] = content
             for relative, content in files.items():
                 path = root / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -70,13 +76,26 @@ class ThinLTOBuilderTest(unittest.TestCase):
                     output.write_bytes(b"fake-linked-ELF")
                 return subprocess.CompletedProcess(argv, 0, "", "")
 
-            def invoke(options):
+            def invoke(options, generated_patch=None):
                 module = load_proposal()
+                def transformed(source, **unused):
+                    if generated_patch is None:
+                        return source, []
+                    patched = module.OUT / "patched" / source.parent.name / source.name
+                    patched.parent.mkdir(parents=True, exist_ok=True)
+                    patched.write_bytes(source.read_bytes() + generated_patch)
+                    return patched, []
                 with ExitStack() as stack:
                     stack.enter_context(patch.multiple(module, ROOT=root, OUT=root / "build/arm64",
                         MODULES=("fmod",), MANIFEST=[{"name": "fmod", "file": "fmod.dll", "base": 0}],
                         CLANG=root / "fake-clang.exe", MOJO_SOURCES=["mini.c"]))
-                    stack.enter_context(patch.object(module, "override_source", side_effect=lambda s, **_: (s, [])))
+                    stack.enter_context(patch.object(module, "override_source", side_effect=transformed))
+                    # The tiny fixture exercises compiler/cache behavior. The
+                    # mandatory real-engine patch contract has separate tests.
+                    stack.enter_context(patch("port_patches.validate_native_inputs", return_value={}))
+                    stack.enter_context(patch("port_patches.finalize_native_receipt", return_value={}))
+                    stack.enter_context(patch("port_patches.native_overrides", return_value=()))
+                    stack.enter_context(patch("port_patches.adapt_host_source", side_effect=lambda source, *_: (source, [])))
                     stack.enter_context(patch.object(module.subprocess, "run", side_effect=fake_run))
                     stack.enter_context(patch.object(sys, "argv", ["build_android.py", "--jobs", "2", *options]))
                     stack.enter_context(redirect_stdout(io.StringIO()))
@@ -105,7 +124,7 @@ class ThinLTOBuilderTest(unittest.TestCase):
             generated = [c for c in records["compiles"] if "generated" in c[c.index("-c") + 1]]
             self.assertEqual(len(generated), 2)
             for command in generated:
-                for flag in ("-DRECOMP_LOCAL_REGS", "-DRECOMP_PLAIN_MEMORY", "-DRECOMP_YIELD_EVERY=4096u",
+                for flag in ("-DRECOMP_LOCAL_REGS", "-DRECOMP_PLAIN_MEMORY", "-DRECOMP_YIELD_EVERY=16384u",
                              "-DRECOMP_GUEST_STATE_SEPARATE", "-basic-aa-separate-storage", "-DRECOMP_GUEST_PROVENANCE"):
                     self.assertIn(flag, command)
                 # Production generated code carries no per-entry trace (g_cur_func) stores.
@@ -198,6 +217,51 @@ class ThinLTOBuilderTest(unittest.TestCase):
             self.assertIn("obj/fmod-x86/fmod_0000.o", response)
             self.assertIn("obj/host-app/host.o", response)
 
+    def test_host_only_rejects_stale_generated_inputs_or_objects_before_compiling_or_linking(self):
+        for change in ("source", "module-header", "runtime-header", "compiler", "object", "cache", "dispatch", "profile"):
+            with self.subTest(change=change), self.fixture() as (root, records, invoke):
+                profile = root / "profile.profdata"
+                profile.write_bytes(b"profile-v1")
+                options = ["--shared", "--thinlto", "--pgo-use", str(profile)]
+                out = invoke(options)
+                library = out / "libhomm5.so"
+                previous = library.read_bytes()
+                files = {
+                    "source": root / "generated/fmod-x86/fmod_0000.c",
+                    "module-header": root / "generated/fmod-x86/recomp.h",
+                    "runtime-header": root / "android/runtime/recomp_types.h",
+                    "compiler": root / "fake-clang.exe",
+                    "object": out / "obj/fmod-x86/fmod_0000.o",
+                    "profile": profile,
+                }
+                if change in files:
+                    path = files[change]
+                    path.write_bytes(path.read_bytes() + b"\nchanged\n")
+                elif change == "cache":
+                    (out / "objects.json").unlink()
+                else:
+                    (out / "obj/fmod-x86/recomp_dispatch.o").unlink()
+                with self.assertRaisesRegex(SystemExit, "run a full build without --host-only"):
+                    invoke([*options, "--host-only"])
+                self.assertEqual(len(records["compiles"]), 4)
+                self.assertEqual(len(records["links"]), 1)
+                self.assertEqual(library.read_bytes(), previous)
+
+    def test_host_only_checks_current_generated_patch_output_and_excludes_orphan_objects(self):
+        with self.fixture() as (_, records, invoke):
+            options = ["--shared", "--thinlto", "--no-pgo"]
+            out = invoke(options, generated_patch=b"\n/* native patch v1 */\n")
+            orphan = out / "obj/fmod-x86/deleted_generated_function.o"
+            orphan.write_bytes(b"old generated unit")
+            invoke([*options, "--host-only"], generated_patch=b"\n/* native patch v1 */\n")
+            self.assertNotIn(str(orphan).replace("\\", "/"), (out / "link.rsp").read_text())
+            self.assertEqual(len(records["compiles"]), 4)
+            self.assertEqual(len(records["links"]), 2)
+            with self.assertRaisesRegex(SystemExit, "run a full build without --host-only"):
+                invoke([*options, "--host-only"], generated_patch=b"\n/* native patch v2 */\n")
+            self.assertEqual(len(records["compiles"]), 4)
+            self.assertEqual(len(records["links"]), 2)
+
     def test_invalid_or_unenabled_backend_limits_fail_before_outputs(self):
         for options in (["--thinlto-jobs", "2"], ["--thinlto", "--thinlto-jobs", "0"],
                         ["--thinlto", "--thinlto-jobs", "-1"]):
@@ -207,6 +271,35 @@ class ThinLTOBuilderTest(unittest.TestCase):
                 self.assertEqual(error.exception.code, 2)
                 self.assertFalse((root / "build").exists())
                 self.assertEqual(records, {"compiles": [], "links": []})
+
+    def test_engines_have_private_descriptors_objects_and_libraries(self):
+        with self.fixture() as (root, records, invoke):
+            for edition, library, bin_dir, suffix in (("toe", "homm5", "bin", "_a2"),
+                    ("vanilla", "homm5_vanilla", "bin", ""), ("hof", "homm5_hof", "bina1", "_a1")):
+                with self.subTest(edition=edition):
+                    out = invoke(["--shared", "--thinlto", "--no-pgo", "--edition", edition])
+                    expected = "build/arm64" + ("-" + edition if edition != "toe" else "") + "-thinlto"
+                    self.assertEqual(out, root / expected)
+                    self.assertTrue((out / ("lib" + library + ".so")).is_file())
+                    header = (out / "edition.h").read_text()
+                    for name, value in (("HOMM5_EDITION", edition), ("HOMM5_BIN", bin_dir),
+                            ("HOMM5_PROFILE_SUFFIX", suffix), ("HOMM5_MODULES_INCLUDE", (out / "modules.inc").as_posix())):
+                        self.assertIn("#define " + name + " " + json.dumps(value), header)
+                    # Source-size ordering can put host anywhere in the batch.
+                    host = next(c for c in records["compiles"] if str(out / "obj/host-app/host.o") in c)
+                    self.assertEqual(host[host.index("-include") + 1], str(out / "edition.h"))
+            self.assertEqual(len(records["compiles"]), 12, "identical VAs must not reuse another engine's objects")
+            self.assertFalse((root / "android/host/modules.inc").exists())
+
+    def test_new_engine_rejects_toe_pgo_before_compiling(self):
+        with self.fixture() as (root, records, invoke):
+            profile = root / "build/pgo/homm5.profdata"
+            profile.parent.mkdir(parents=True)
+            profile.write_bytes(b"ToE training")
+            for edition in ("vanilla", "hof"):
+                with self.subTest(edition=edition), self.assertRaises(SystemExit):
+                    invoke(["--edition", edition, "--pgo-use", str(profile)])
+            self.assertEqual(records, {"compiles": [], "links": []})
 
 
 if __name__ == "__main__":

@@ -11,21 +11,31 @@ FIXTURE = r'''
 import java.io.File;
 class Context { File files; File getFilesDir() { return files; } }
 public class AutoLaunchCheck extends Context {
+    static final String EXTRA_GAME="game";
     File base, game;
     File selected;
+    String edition="toe";
     boolean permission=true, exited;
     int launches;
     static class Intent {
-        boolean exited;
-        boolean getBooleanExtra(String key, boolean fallback) { assert key.equals("game_exited"); return exited; }
+        boolean exited, show;
+        String requested, source;
+        String getStringExtra(String key) { return key.equals("launch_edition") ? requested : source; }
+        boolean getBooleanExtra(String key, boolean fallback) { return key.equals("game_exited") ? exited : show; }
     }
     Intent intent=new Intent();
     Intent getIntent() { return intent; }
     boolean storage() { return permission; }
     static class Unpacker { static Object current; }
     static class Textures { static Object current; }
-    static class Assets { static boolean images=true; static boolean carriesImages(Context c) { return images; } }
-    static File chosenGame(Context c, Intent i) { return ((AutoLaunchCheck)c).selected; }
+    static class Games {
+        static boolean complete=true;
+        static String marker(String id) { return "game-started"+(id.equals("toe") ? "" : "-"+id); }
+        static boolean valid(String id) { return "toe".equals(id)||"vanilla".equals(id)||"hof".equals(id); }
+        static boolean installed(File root,String id) { return complete; }
+    }
+    static class Assets { static boolean images=true; static boolean runtimeAvailable(Context c, File base, String id) { return images; } }
+    static File chosenGame(Context c, Intent i, String id) { return ((AutoLaunchCheck)c).selected; }
     void play() { assert game!=null && permission; ++launches; }
     /* ACTUAL */
     public static void main(String[] args) throws Exception {
@@ -36,6 +46,8 @@ public class AutoLaunchCheck extends Context {
         assert marker.createNewFile();
         assert c.autoLaunch() && c.launches==1;
         c.intent.exited=true; assert !c.autoLaunch(); c.intent.exited=false;
+        c.intent.show=true; assert !c.autoLaunch(); c.intent.show=false;
+        c.edition="hof"; assert !c.autoLaunch(); c.edition="toe";
         c.permission=false; assert !c.autoLaunch(); c.permission=true;
         c.selected=null; assert !c.autoLaunch(); c.selected=new File(c.base,"game");
         Assets.images=false; assert !c.autoLaunch(); Assets.images=true;
@@ -46,6 +58,20 @@ public class AutoLaunchCheck extends Context {
         AutoLaunchCheck next=new AutoLaunchCheck();next.files=c.files;next.base=c.base;next.selected=c.selected;
         assert next.autoLaunch() && next.launches==1;
         assert marker.delete(); assert !next.autoLaunch();
+        // A switch is explicit and may start an installed game before its first successful boot.
+        c.intent.exited=true; c.intent.requested="hof";c.intent.source=c.selected.getAbsolutePath();
+        assert c.launchRequestedGame() && c.edition.equals("hof") && c.launches==2;
+        c.intent.requested="unknown"; assert !c.launchRequestedGame();
+        c.intent.requested="vanilla";c.intent.source=null;assert !c.launchRequestedGame();c.intent.source=c.selected.getAbsolutePath();
+        Games.complete=false;assert !c.launchRequestedGame();Games.complete=true;
+        Assets.images=false;assert !c.launchRequestedGame();Assets.images=true;
+        c.permission=false;assert !c.launchRequestedGame();c.permission=true;
+        Unpacker.current=new Object();assert !c.launchRequestedGame();Unpacker.current=null;
+        Textures.current=new Object();assert !c.launchRequestedGame();Textures.current=null;
+        assert c.launches==2;
+        // A rejected explicit request must not silently fall back to the previous autolaunch.
+        c.intent.requested="unknown";c.intent.exited=false;c.edition="toe";
+        assert marker.createNewFile();assert !c.autoLaunch();assert marker.delete();
         System.out.println("PASS actual autolaunch: first start, persistent success, explicit launcher return, permissions, files and active jobs");
     }
 }
@@ -55,7 +81,7 @@ public class AutoLaunchCheck extends Context {
 class AutoLaunchTest(unittest.TestCase):
     def test_actual_launcher_routing(self):
         source = (ROOT / "android/app/src/org/homm5/port/Launcher.java").read_text(encoding="utf8")
-        methods = function(source, "static File startupMarker(") + function(source, "private boolean autoLaunch(")
+        methods = function(source, "static File startupMarker(") + function(source, "static File startupMarker(Context context, String edition)") + function(source, "private boolean autoLaunch(") + function(source, "private boolean launchRequestedGame(")
         out = ROOT / "build/tests/autolaunch"
         out.mkdir(parents=True, exist_ok=True)
         java = out / "AutoLaunchCheck.java"
@@ -66,7 +92,7 @@ class AutoLaunchTest(unittest.TestCase):
         self.assertLess(create.index("if (autoLaunch()) return;"), create.index("build();"))
         activity = (ROOT / "android/app/src/org/homm5/port/GameActivity.java").read_text(encoding="utf8")
         ready = activity[activity.index("            if (ready) {"):activity.index("                View done = loading;")]
-        self.assertIn("Launcher.startupMarker(GameActivity.this).createNewFile();", ready)
+        self.assertIn("Launcher.startupMarker(GameActivity.this, gameEdition()).createNewFile();", ready)
         self.assertIn("catch (java.io.IOException", ready)
 
 

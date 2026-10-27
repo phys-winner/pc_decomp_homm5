@@ -1,0 +1,38 @@
+{
+  "toe": {
+    "label": "Heroes V: Tribes of the East",
+    "version": "3.1",
+    "library": "homm5",
+    "modules": "config/modules.json",
+    "generated": "generated",
+    "bin": "bin",
+    "data": ["data"],
+    "profile_suffix": "_a2",
+    "userdata": "userdata",
+    "assets_suffix": ""
+  },
+  "vanilla": {
+    "label": "Heroes of Might and Magic V",
+    "version": "1.6",
+    "library": "homm5_vanilla",
+    "modules": "config/vanilla.modules.json",
+    "generated": "generated/vanilla",
+    "bin": "bin",
+    "data": ["data", "DataLS"],
+    "profile_suffix": "",
+    "userdata": "userdata-vanilla",
+    "assets_suffix": "-vanilla"
+  },
+  "hof": {
+    "label": "Heroes V: Hammers of Fate",
+    "version": "2.1",
+    "library": "homm5_hof",
+    "modules": "config/hof.modules.json",
+    "generated": "generated/hof",
+    "bin": "bina1",
+    "data": ["data", "dataa1"],
+    "profile_suffix": "_a1",
+    "userdata": "userdata-hof",
+    "assets_suffix": "-hof"
+  }
+}

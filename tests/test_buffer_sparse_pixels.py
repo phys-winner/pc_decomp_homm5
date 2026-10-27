@@ -99,7 +99,7 @@ typedef void (*egl_proc)(void);
 #define GL_CONDITION_SATISFIED 0x911Cu
 #define GL_WAIT_FAILED 0x911Du
 #define FB_UNKNOWN UINT32_MAX
-typedef struct {uint32_t size,shadow,format;GLuint gl;uint8_t *dirty_pages;int locks;} d3d_buffer;
+typedef struct {uint32_t size,shadow,format;GLuint gl;uint8_t *dirty_pages;int locks;uint32_t bounds_start,bounds_count,bounds_format,bounds_lo,bounds_hi;} d3d_buffer;
 typedef struct {uint16_t stream,offset;uint8_t type,method,usage,usage_index;} d3d_vertex_element;
 typedef struct {int count;d3d_vertex_element elements[8];} d3d_decl;
 typedef struct {int unused;} d3d_shader;

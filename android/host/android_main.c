@@ -27,21 +27,36 @@ static char game_dir[512], data_dir[512], images_dir[512];
 static JavaVM *jvm;
 static jobject activity;
 static int return_to_launcher;
+static int game_switch_requested;
 
 void void_android_return_to_launcher(void) { return_to_launcher = 1; }
 
-void void_android_gamepad_help(void)
+static void android_ui_callback(const char *name)
 {
     if (!jvm || !activity) return;
     JNIEnv *env = NULL;
     int attached = (*jvm)->GetEnv(jvm, (void **)&env, JNI_VERSION_1_6) == JNI_EDETACHED;
     if (attached && (*jvm)->AttachCurrentThread(jvm, &env, NULL) != JNI_OK) return;
     if (env) {
-        jmethodID method = (*env)->GetStaticMethodID(env, (jclass)activity, "onGamepadHelp", "()V");
+        jmethodID method = (*env)->GetStaticMethodID(env, (jclass)activity, name, "()V");
         if (method) (*env)->CallStaticVoidMethod(env, (jclass)activity, method);
-        if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); void_log("[input] gamepad help callback failed"); }
+        if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); void_log("[input] Java callback %s failed", name); }
     }
     if (attached) (*jvm)->DetachCurrentThread(jvm);
+}
+
+void void_android_gamepad_help(void) { android_ui_callback("onGamepadHelp"); }
+void void_android_switch_game(void) { android_ui_callback("onSwitchGame"); }
+
+JNIEXPORT void JNICALL Java_org_homm5_port_GameActivity_nativeRequestGameSwitch(JNIEnv *env, jclass type)
+{
+    (void)env; (void)type;
+    __atomic_store_n(&game_switch_requested, 1, __ATOMIC_RELEASE);
+}
+
+int void_android_take_game_switch(void)
+{
+    return __atomic_exchange_n(&game_switch_requested, 0, __ATOMIC_ACQUIRE);
 }
 
 void void_android_process_exit(void)
@@ -494,6 +509,8 @@ static pthread_mutex_t audio_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t stream_pause_state;
 static uint64_t audio_short_writes, audio_dropped_frames, audio_errors;
 static unsigned audio_zero_chunks;
+static int32_t audio_last_xruns;
+static unsigned audio_bad_chunks;
 /* shortcut: retry low latency only after process restart; revisit for route-aware retries. */
 static int audio_normal_output;
 
@@ -505,6 +522,8 @@ static void audio_close_stream(void)
     }
     stream = NULL;
     audio_zero_chunks = 0;
+    audio_last_xruns = 0;
+    audio_bad_chunks = 0;
 }
 
 static void audio_close_failed(aaudio_result_t error)
@@ -559,11 +578,20 @@ void void_audio_output(const int16_t *frames, uint32_t count)
             AAudioStreamBuilder_setFormat(b, AAUDIO_FORMAT_PCM_I16);
             AAudioStreamBuilder_setChannelCount(b, 2);
             AAudioStreamBuilder_setSampleRate(b, 48000);
+            AAudioStreamBuilder_setBufferCapacityInFrames(b, 1920);
             AAudioStreamBuilder_setPerformanceMode(b, audio_normal_output ?
                 AAUDIO_PERFORMANCE_MODE_NONE : AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
             aaudio_result_t result = AAudioStreamBuilder_openStream(b, &stream);
             if (result == AAUDIO_OK) {
                 stream_pause_state = pause;
+                /* The producer wakes every 10 ms; two tiny MMAP bursts cannot cover it. */
+                int32_t burst = AAudioStream_getFramesPerBurst(stream);
+                int32_t target = burst > 0 ? (int32_t)(((int64_t)960 + burst - 1) / burst * burst) : 960;
+                int32_t before = AAudioStream_getBufferSizeInFrames(stream);
+                if (before < target) AAudioStream_setBufferSizeInFrames(stream, target);
+                void_log("[audio] output: burst %d, capacity %d, buffer %d -> %d frames, normal %d", (int)burst,
+                    (int)AAudioStream_getBufferCapacityInFrames(stream), (int)before,
+                    (int)AAudioStream_getBufferSizeInFrames(stream), audio_normal_output);
                 /* MMAP can erase pre-start PCM: prime silence, then send the whole chunk. */
                 static const int16_t silence[2 * 480] = {0};
                 result = AAudioStream_write(stream, silence, (int32_t)(count < 480 ? count : 480), 0);
@@ -588,6 +616,30 @@ void void_audio_output(const int16_t *frames, uint32_t count)
         ++audio_errors;
         void_log("[audio] low latency stream stalled for 3 chunks; using normal output until process exit");
         audio_close_stream();
+    }
+    if (stream && !audio_normal_output) {
+        int32_t xruns = AAudioStream_getXRunCount(stream);
+        if (xruns > audio_last_xruns) {
+            int32_t size = AAudioStream_getBufferSizeInFrames(stream);
+            int32_t capacity = AAudioStream_getBufferCapacityInFrames(stream);
+            int32_t burst = AAudioStream_getFramesPerBurst(stream);
+            int32_t grown = size;
+            if (size > 0 && capacity > size) {
+                int64_t target = (int64_t)size + (burst > 480 ? burst : 480);
+                if (burst > 0) target = (target + burst - 1) / burst * burst;
+                grown = AAudioStream_setBufferSizeInFrames(stream, (int32_t)(target < capacity ? target : capacity));
+            }
+            if (grown > size) {
+                audio_bad_chunks = 0;
+                void_log("[audio] underruns %d: buffer %d -> %d frames", (int)xruns, (int)size, (int)grown);
+            } else if (++audio_bad_chunks == 3) {
+                audio_normal_output = 1;
+                ++audio_errors;
+                void_log("[audio] low latency underruns persist at buffer limit; using normal output until process exit");
+                audio_close_stream();
+            }
+        } else audio_bad_chunks = 0;
+        if (stream && xruns >= 0) audio_last_xruns = xruns;
     }
     /* Level of what reached the device, every 10 s of audio: silence or
      * underruns show up in the log rather than only by ear. */

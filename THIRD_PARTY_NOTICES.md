@@ -15,6 +15,7 @@ does not grant rights to original game code or data.
 | etcpak | `3d716e1550023dc5ff8b602636af8b76584e0b66` subset | BSD-3-Clause | [Upstream](https://github.com/wolfpld/etcpak), [LICENSE.txt](reference/etcpak/LICENSE.txt) |
 | bcdec | 0.96, bundled with etcpak | MIT OR Unlicense; MIT used here | [Upstream](https://github.com/iOrange/bcdec), both licenses in [bcdec.h](reference/etcpak/bcdec.h) |
 | zlib | 1.3.1 inflate/CRC subset for desktop tests | Zlib | [Upstream](https://github.com/madler/zlib), [LICENSE](reference/zlib/LICENSE) |
+| XZ Embedded | `ae63ae3a36ed01724674e8f3d750dc47bf125410` decoder subset | 0BSD | [Upstream](https://github.com/tukaani-project/xz-embedded), [COPYING](reference/xz-embedded/COPYING) |
 
 The pcrecomp MIT notice also applies to portions of the project's lifter,
 register model and runtime derived from it. Project adaptations are in `tools/`

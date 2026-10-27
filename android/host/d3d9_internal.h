@@ -176,6 +176,7 @@ typedef struct d3d_buffer {
     int overwrite_pending;        /* a lock without D3DLOCK_NOOVERWRITE since the last flush */
     uint8_t *dirty_pages;         /* whole NOOVERWRITE locks: defer uploads until a draw reads them */
     uint32_t page_count, dirty_page_count;
+    uint32_t bounds_start, bounds_count, bounds_format, bounds_lo, bounds_hi; /* count 0: invalid */
 } d3d_buffer;
 
 typedef struct d3d_vertex_element {

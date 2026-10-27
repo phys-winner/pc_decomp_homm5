@@ -4,13 +4,14 @@
 #include <stdint.h>
 
 /* Shared with GameActivity: positions and deltas here are backbuffer pixels.
- * TOUCH_TILT carries a two-finger vertical "shove" in dy. */
+ * TOUCH_TILT carries a two-finger vertical "shove" in dy.
+ * TOUCH_THREE_FINGER_TAP is one simultaneous, stationary three-contact chord. */
 enum {
     TOUCH_BEGIN, TOUCH_TAP, TOUCH_DOUBLE_TAP, TOUCH_PAN, TOUCH_TRANSFORM,
     TOUCH_HOLD_BEGIN, TOUCH_HOLD_DRAG, TOUCH_END, TOUCH_TWO_FINGER_BEGIN,
     TOUCH_TWO_FINGER_CANCEL, TOUCH_ABORT,
     TOUCH_SECOND_BEGIN, TOUCH_SECOND_TAP, TOUCH_SECOND_HOLD,
-    TOUCH_TRIPLE_TAP, TOUCH_TILT, TOUCH_POINTER, TOUCH_PAD_CAMERA, TOUCH_POINTER_CLICK
+    TOUCH_THREE_FINGER_TAP, TOUCH_TILT, TOUCH_POINTER, TOUCH_PAD_CAMERA, TOUCH_POINTER_CLICK
 };
 #define TOUCH_KIND_LAST TOUCH_POINTER_CLICK
 typedef struct {
@@ -59,6 +60,9 @@ void void_touch_adventure_frame(uint32_t screen, float height, float top, float 
 
 /* port_settings.c: the port's console variables (game options pages). */
 float void_port_camera_sensitivity(void);
+/* Cursor offsets are fractions of the shorter backbuffer side. */
+float void_port_cursor_offset(int vertical);
+int void_port_touch_cursor(void);
 void void_port_settings_pump(void);
 
 #endif

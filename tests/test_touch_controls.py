@@ -114,16 +114,16 @@ public class TouchControlsCheck {
         t.onTouchEvent(one(1,17,640,400)); kinds(0,1,7);
         assert queue.isEmpty() && clicks==1;
 
-        // Taps nearby within 300 ms count up: tap, double tap, triple tap, then a tap again.
+        // Ordinary taps are immediate; three sequential taps never reset the camera.
         events.clear(); advance(100);
         t.onTouchEvent(one(0,23,645,405));
         t.onTouchEvent(one(1,23,645,405)); kinds(0,2,7);
         events.clear(); advance(100);
         t.onTouchEvent(one(0,25,645,405));
-        t.onTouchEvent(one(1,25,645,405)); kinds(0,14,7);
+        t.onTouchEvent(one(1,25,645,405)); kinds(0,1,7);
         events.clear(); advance(100);
         t.onTouchEvent(one(0,26,645,405));
-        t.onTouchEvent(one(1,26,645,405)); kinds(0,1,7);
+        t.onTouchEvent(one(1,26,645,405)); kinds(0,2,7);
         // A late or distant tap starts over.
         events.clear(); advance(301);
         t.onTouchEvent(one(0,27,645,405));
@@ -132,6 +132,55 @@ public class TouchControlsCheck {
         t.onTouchEvent(one(0,28,745,405));
         t.onTouchEvent(one(1,28,745,405)); kinds(0,1,7);
         t.cancelGesture(); clear();
+
+        // A stationary three-finger chord joins within 120 ms and resets once,
+        // only after all contacts lift; IDs, array order and lift order may differ.
+        t.onTouchEvent(one(0,17,200,200)); advance(50);
+        t.onTouchEvent(two(5,0,31,400,200,17,202,199)); advance(70);
+        t.onTouchEvent(three(5,1,17,202,199,55,600,200,31,400,200)); kinds(0,8);
+        t.onTouchEvent(three(2,0,55,603,202,31,402,201,17,204,200)); kinds(0,8);
+        advance(80);
+        t.onTouchEvent(three(6,2,55,603,202,31,402,201,17,204,200));
+        t.onTouchEvent(two(6,0,31,402,201,55,603,202)); kinds(0,8);
+        t.onTouchEvent(one(1,55,603,202)); kinds(0,8,14,7);
+        assert clicks==0; advance(500); clear();
+
+        // A third contact outside the simultaneity window stays a normal
+        // multi-finger set; a camera transform cannot turn into a reset.
+        t.onTouchEvent(one(0,1,200,200)); advance(60);
+        t.onTouchEvent(two(5,1,1,200,200,2,400,200)); advance(61);
+        t.onTouchEvent(three(5,2,1,200,200,2,400,200,3,600,200));
+        t.onTouchEvent(three(6,2,1,200,200,2,400,200,3,600,200));
+        t.onTouchEvent(two(6,1,1,200,200,2,400,200));
+        t.onTouchEvent(one(1,1,200,200)); kinds(0,8,9,7); clear();
+
+        // A recognized chord consumes movement, excess contacts and timeout.
+        // None may become a pan, order, two-finger cancel or reset on release.
+        for (int invalid=0; invalid<4; ++invalid) {
+            t.onTouchEvent(one(0,1,200,200)); advance(20);
+            t.onTouchEvent(two(5,1,1,200,200,2,400,200)); advance(20);
+            t.onTouchEvent(three(5,2,1,200,200,2,400,200,3,600,200));
+            if (invalid==0) t.onTouchEvent(three(2,0,1,217,200,2,400,200,3,600,200));
+            if (invalid==1) advance(261);
+            if (invalid==2) {
+                t.onTouchEvent(new MotionEvent(5,3,new int[]{1,2,3,4},new float[]{200,400,600,800},new float[]{200,200,200,200}));
+                t.onTouchEvent(new MotionEvent(6,3,new int[]{1,2,3,4},new float[]{200,400,600,800},new float[]{200,200,200,200}));
+            }
+            // Movement present only in the final release is still checked.
+            t.onTouchEvent(three(6,1,1,200,200,2,400,200,3,600,200));
+            t.onTouchEvent(two(6,0,1,200,200,3,600,200));
+            t.onTouchEvent(one(1,3,invalid==3?617:600,200)); kinds(0,8,10);
+            advance(500); clear();
+        }
+
+        t.onTouchEvent(one(0,1,200,200));
+        t.onTouchEvent(two(5,1,1,200,200,2,400,200));
+        t.onTouchEvent(three(5,2,1,200,200,2,400,200,3,600,200));
+        t.cancelGesture(); kinds(0,8,10); advance(500); clear();
+        t.onTouchEvent(one(0,1,200,200));
+        t.onTouchEvent(two(5,1,1,200,200,2,400,200));
+        t.onTouchEvent(three(5,2,1,200,200,2,400,200,3,Float.NaN,200));
+        kinds(0,8,10); advance(500); clear();
 
         // UP may leave a native UI click awaiting a frame; lifecycle cancellation still aborts it.
         t.onTouchEvent(one(0,26,645,405));
@@ -357,7 +406,7 @@ public class TouchControlsCheck {
         clear(); t.onTouchEvent(one(0,1,300,300));
         t.onSizeChanged(1600,900,1280,800); kinds(0,10);
         advance(700); assert queue.isEmpty();
-        System.out.println("PASS actual touch classifier: tap/double/triple/hold/drag, re-based multi-finger "
+        System.out.println("PASS actual touch classifier: immediate tap/double, three-finger chord, hold/drag, re-based multi-finger "
             + "transform and tilt, pointer IDs, abort, full Surface");
     }
     public static void main(String[] args) { new TouchControlsCheck().check(); }

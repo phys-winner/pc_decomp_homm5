@@ -167,6 +167,9 @@ int main(void) {
     viewport.screen=0;
     near(scale_anchor_shift(2,774,256,0,1024,985),-39);
     near(scale_anchor_shift(2,528,256,0,768,439),-329);
+    /* HoF ChangeProfile: its -220 bottom inset must not push a fitting dialog above the screen. */
+    near(768-464-220+scale_anchor_shift(2,768-464-220,464,0,768,76800.0f/165),0);
+    near(768-464-220+scale_anchor_shift(2,768-464-220,464,0,768,384),0);
     near((528+scale_anchor_shift(2,528,256,0,768,439))+33,
          561+scale_anchor_shift(2,561,57,0,768,439));
     MEMF(0xF74BE8)=1024;MEMF(0xF74BEC)=768;
@@ -334,6 +337,22 @@ int main(void) {
     assert(MEMF(0x24000-0xF8+0x64)==0&&MEMF(0x24000-0xF8+0x68)==0);
     AT(0,1366-110,768-70);AT(1,0,0); /* At 100% every element is where the original puts it. */
     assert(MEM32(0xD0FC)==3&&MEM32(0xD100)==3); /* Resource layout was never mutated. */
+    /* HoF JoinFleeBox keeps its own position when the larger canvas now fits it.
+       Both sides of the old 200 -> 165 -> 200 feedback must choose 165. */
+    MEMF(root+0x64)=MEMF(root+0x68)=0;
+    MEMF(0x720A4)=1024;MEMF(0x720A8)=768;
+    for(int i=0;i<5;++i)MEM8(0x63000+0x200*i+0x70)=0;
+    uint32_t modal_window=elements[4],modal_placement=0x63800;
+    MEM8(modal_placement+0x70)=1;MEMF(modal_placement+0xA4)=526;MEMF(modal_placement+0xA8)=465;
+    MEM32(modal_placement+0x94)=MEM32(modal_placement+0x9C)=1;
+    MEMF(modal_placement+0x88)=MEMF(modal_placement+0x8C)=0;
+    MEMF(modal_window+0x64)=168;MEMF(modal_window+0x68)=0;
+    fit.screen=0x22000;MEM32(0x52000)=0x52010;
+    assert(scale_fits(root,0,862,384,1724,768,200)==165);
+    assert(scale_fits(root,0,172400.0f/165,76800.0f/165,1724,768,200)==165);
+    MEM32(0x52000)=0x52000; /* Non-modal custom tooltips retain their existing policy. */
+    assert(scale_fits(root,0,172400.0f/165,76800.0f/165,1724,768,200)==200);
+    MEM8(modal_placement+0x70)=0;
     /* Rounded render resolution cannot change the logical UI size. */
     void_android_display_size=native_size;
     backbuffer_w=1319;backbuffer_h=826;dimensions(1319,826,1227,768);pump();
@@ -343,6 +362,33 @@ int main(void) {
     /* A different-aspect game mode remains letterboxed and uses its own canvas. */
     backbuffer_w=1280;backbuffer_h=720;dimensions(1280,720,1366,768);
     pump();near(MEMF(0xF74BE0),1366);near(MEMF(0xF74BE4),768);
+    /* The initiative strip and right combat dial share one bottom row. Their
+       individual widths fit at 200%, but their combined occupied width does not. */
+    {
+    viewport.screen=0x9000;MEM32(viewport.screen)=0xE1DA84;
+    for(int i=0;i<5;i++)MEM8(MEM32(elements[i]+0x140)+0x70)=0;
+    MEMF(root+0x64)=MEMF(root+0x68)=0;
+    uint32_t root_place=MEM32(root+0x140);
+    MEMF(root_place+0xA4)=1024;MEMF(root_place+0xA8)=768;
+    const char *names[2]={"ATBBar","Jogdial"};
+    for(int i=0;i<2;i++){
+        uint32_t p=MEM32(elements[i]+0x140),name=0x7B000+32*i;
+        memcpy(GPTR(name),names[i],strlen(names[i]));MEM32(p+0x58)=name;MEM32(p+0x5C)=name+(uint32_t)strlen(names[i]);
+        MEM8(p+0x70)=1;MEM32(p+0x94)=2;MEM32(p+0x9C)=i?2:0;
+        MEMF(p+0x88)=i?-22.f:21.f;MEMF(p+0x8C)=i?-4.f:-9.f;
+        MEMF(p+0xA4)=i?203.f:766.f;MEMF(p+0xA8)=i?215.f:162.f;
+        native_layout(elements[i],unshifted);
+    }
+    int combat_fit=scale_fits(root,0,967.4418f,446.5116f,1664,768,200);
+    assert(combat_fit==164);
+    float combat_view=1664.0f*100/(float)combat_fit,row_pos[2],row_size[2],row_shift[2];
+    scale_place(MEM32(elements[1]+0x140),unshifted,unshifted,combat_view,768.0f*100/(float)combat_fit,row_pos,row_size,row_shift);
+    assert(row_pos[0]+row_shift[0]>=21+766); /* no initiative/dial overlap */
+    MEM8(MEM32(elements[1]+0x140)+0x70)=0;
+    assert(scale_fits(root,0,832,384,1664,768,200)==200); /* no hidden dial reservation */
+    MEM8(MEM32(elements[1]+0x140)+0x70)=1;MEM32(viewport.screen)=0;
+    assert(scale_fits(root,0,832,384,1664,768,200)==200); /* unrelated screens unchanged */
+    }
     puts("PASS native UI scale: record-only setter, readiness, coherent inverse/ray, native relayout, abort-before-change, idempotence, resize recovery, top anchoring and fit");
     return 0;
 }

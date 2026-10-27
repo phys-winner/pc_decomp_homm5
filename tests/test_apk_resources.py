@@ -23,7 +23,7 @@ class ApkResourcesTest(unittest.TestCase):
         self.assertEqual(application.get(ANDROID + "icon"), "@mipmap/ic_launcher")
         self.assertEqual(application.get(ANDROID + "roundIcon"), "@mipmap/ic_launcher")
         activities = {activity.get(ANDROID + "name"): activity for activity in application.findall("activity")}
-        self.assertEqual(set(activities), {".Launcher", ".GameActivity"})
+        self.assertEqual(set(activities), {".Launcher", ".GameActivity", ".VanillaGameActivity", ".HofGameActivity"})
         game = activities[".GameActivity"]
         self.assertEqual(game.get(ANDROID + "windowSoftInputMode"), "adjustNothing")
         self.assertEqual(game.get(ANDROID + "exported"), "true")      # tools start it with am start -n
@@ -43,7 +43,7 @@ class ApkResourcesTest(unittest.TestCase):
         permissions = {permission.get(ANDROID + "name") for permission in manifest.findall("uses-permission")}
         self.assertLessEqual({"android.permission.FOREGROUND_SERVICE", "android.permission.WAKE_LOCK"}, permissions)
         package = manifest.get("package").replace(".", "/")
-        for component in (".Launcher", ".GameActivity", ".UnpackService", ".TextureService"):
+        for component in (".Launcher", ".GameActivity", ".VanillaGameActivity", ".HofGameActivity", ".UnpackService", ".TextureService"):
             self.assertTrue((app / "src" / package / (component[1:] + ".java")).is_file(), component)
         for version in (26, 33):
             icon = ET.parse(app / f"res/mipmap-anydpi-v{version}/ic_launcher.xml").getroot()
