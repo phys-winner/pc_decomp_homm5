@@ -3,7 +3,7 @@
 Heroes of Might and Magic V, Hammers of Fate and Tribes of the East on Android ARM64 through static
 x86 recompilation, with native touch controls and a Direct3D 9 to OpenGL ES bridge.
 
-**Development version: 0.1-dev.** The release build uses ThinLTO and PGO.
+**Development version: 0.2-dev.** The release build uses ThinLTO and PGO.
 This is an experimental port for sideloading.
 The original game's menus, adventure maps, towns, battles, sound and saves run
 through a local Win32 compatibility host. The game and eight DLLs are translated
@@ -287,10 +287,10 @@ the camera.
 
 Development versions advance as `0.1-dev`, `0.2-dev`, `0.3-dev`, and so on.
 The version is stored in `android/app/AndroidManifest.xml`; increase
-`android:versionCode` for every subsequent published build. Version `0.1-dev`
-uses code `2`.
+`android:versionCode` for every subsequent published build. Version `0.2-dev`
+uses code `3`.
 
-Local release copies use `heroes-v-0.1-dev-<sha256-prefix>.apk`, where the suffix
+Local release copies use `heroes-v-0.2-dev-<sha256-prefix>.apk`, where the suffix
 is the first eight characters of the APK's SHA-256, with a companion `.sha256`
 file. The `pub/` directory is ignored. Building and naming an APK does not
 automatically publish it or create a Git tag.

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.homm5.port"
-    android:versionCode="2" android:versionName="0.1-dev">
+    android:versionCode="3" android:versionName="0.2-dev">
   <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="28" />
   <uses-feature android:glEsVersion="0x00030002" android:required="true" />
   <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
