@@ -3,7 +3,7 @@
 Heroes of Might and Magic V, Hammers of Fate and Tribes of the East on Android ARM64 through static
 x86 recompilation, with native touch controls and a Direct3D 9 to OpenGL ES bridge.
 
-**Development version: 0.2-dev.** The release build uses ThinLTO and PGO.
+**Development version: 0.3-dev.** The release build uses ThinLTO and PGO.
 This is an experimental port for sideloading.
 The original game's menus, adventure maps, towns, battles, sound and saves run
 through a local Win32 compatibility host. The game and eight DLLs are translated
@@ -65,12 +65,35 @@ against its manifest in `config/music/`, and patched in a separate Android overl
   discovery depends on the local Wi-Fi network.
 - The launcher accepts an installed game folder or a ZIP containing its files.
   It can convert DXT textures to ASTC/ETC2 and skip the intro videos.
+- An optional launcher switch, off by default, applies the MMH5.5 New Creature
+  Framework patches to ToE 3.1 (1000 creature records, IDs up to 999; random maps skip creatures
+  without map objects): the `Original` group of
+  [NewCreatureFramework.yml](https://github.com/Might-Magic-Heroes-5-5/MMH55/blob/master/Frameworks/NewCreatureFramework/NewCreatureFramework.yml).
+  Enable it only for a mod that provides those creatures: without their files the
+  game does not start. Vanilla and HoF are unaffected.
+- Every edition renders with OpenGL ES. The experimental DXVK (Vulkan/Turnip)
+  renderer for ToE 3.1 is disabled in this build; see [Renderers](#renderers-tribes-of-the-east).
 - ARM64 Android 8.0 or later and OpenGL ES 3.2 are required. The manifest targets
   API 28; this development package uses legacy external storage access.
 - Native libraries and APK packaging support 16 KiB alignment. This does not
   establish testing on a device with 16 KiB memory pages.
 - Campaign completion, every map, every GPU and every Android version have not
   been verified. Development test results are not a complete compatibility claim.
+
+## Renderers (Tribes of the East)
+
+Every edition, ToE 3.1 included, renders with the port's own Direct3D 9 to
+OpenGL ES 3.2 renderer.
+
+An experimental DXVK renderer for ToE (DXVK 2.4.1 on the system Vulkan driver, or
+on a bundled Mesa Turnip driver on Adreno 6xx/7xx GPUs) is disabled for now: on
+the tested Adreno 650 with Turnip the game started, but the screen stayed black
+after the startup device reset. Its sources remain in the repository
+(`android/dxvk`, `android/host/d3d9_dxvk.c`, `RendererPolicy`/`Renderers` in the
+app), but the launcher shows no renderer choice, runs no graphics driver check
+and the APK carries no DXVK libraries. Re-enabling it for development takes
+`RendererPolicy.ENABLED = true`, `HOMM5_DXVK` in `android/host/d3d9_dxvk.c` and
+`tools/build_game_apk.py --dxvk`.
 
 ## Build requirements
 
@@ -139,6 +162,18 @@ python -X utf8 tools/build_game_apk.py --thinlto --no-pgo
 ```
 
 Output: **`build/android-game/heroes-v.apk`**.
+
+`tools/build_dxvk.py` stages the ToE DXVK renderer in `build/dxvk`. It downloads
+nothing and rebuilds no DXVK source. It reuses the DXVK, adrenotools and Turnip
+binaries built by the sibling `ut3` port, checks each one against its hash in
+[`dependencies.json`](dependencies.json), imports the needed DXVK Native headers
+into `reference/dxvk`, and compiles `android/dxvk` into `libh5dxvk.so`. `--ut3`,
+`--dxvk-library`, `--turnip-runtime` and `--dxvk-headers` select other locations.
+Run it again after changing `android/dxvk` or `android/host/dxvk_methods.h`;
+`tools/generate_dxvk_bridge.py` regenerates those tables from the pinned header.
+The APK builder packages the stage only with `--dxvk` (the renderer is disabled
+by default, see [Renderers](#renderers-tribes-of-the-east)) and then refuses a
+stale stage. The DXVK libraries add about 6 MB to the APK and 24 MB when installed.
 
 Packaging requires XZ Utils 5.4+ for its ARM64 branch filter (`XZ`, `PATH`, or
 Git for Windows' `mingw64/bin/xz.exe`). All three engines are stored as XZ
@@ -266,11 +301,25 @@ receipts are `build/deploy-receipt[-vanilla|-hof].json`.
 | Two nearby fingers moving vertically together | Tilt the camera, including in battle |
 | Brief simultaneous tap with three fingers on the field | Restore camera tilt and rotation; in battle, also restore its position |
 | Hold an interface element | Show its tooltip |
-| Hold a dropdown, drag to an item and release | Select that item; a second finger cancels |
+| While aiming in battle, rest a second finger | Show the details card of the creature under the first finger at once; lift the second finger to hide it and keep aiming. Lifting the first finger while the second rests gives no order |
+| While aiming in battle, tap with a second finger | Show the details card until the first finger lifts (no order is given); each further second-finger tap switches once between the card and the creature's effects (ToE) |
+| Tap a portrait on the battle initiative bar, then tap it again | The first tap selects the portrait (it stays highlighted); the second shows the creature's details card, which stays open without holding; each further tap on the portrait switches between the card and the effects; a touch elsewhere closes it (ToE) |
+| Hold a map or town object, or the battle initiative bar | Show its tooltip and details card; in ToE each second-finger tap on a held initiative bar portrait switches its card once |
+| Drag your active shooter onto an enemy in battle | Melee attack instead of a shot, like Ctrl+click on the PC (ToE) |
+| Brief simultaneous tap with two fingers on the adventure map | Stop the moving hero or cancel an aim (ToE) |
+| Double tap the minimap, or tap it with two fingers | Toggle the highlighting of objects, like holding Alt on the PC; the camera stays. A single tap on the minimap moves the camera after a short pause (0.4 s) (ToE) |
+| Swipe left or right across the spellbook | Next or previous page (ToE) |
+| Swipe up or down across the spellbook | Previous or next bookmark (school); the orcish book switches its page. A tap that misses a bookmark by a little takes the nearest one (ToE) |
+| Drag a stack during troop deployment | Move it between the field and the reserve slots; the dragged portrait stays centred under the finger (ToE) |
+| Swipe from a dropdown, move to an item and release | Select that item; a second finger cancels (Vanilla/HoF: hold the dropdown first) |
+| Swipe on a slider | Move its value from where it is; a tap or hold does not move it (ToE) |
 | Swipe a list | Scroll |
 | Drag troops or artifacts | Transfer between slots |
 | Aim a selected ability, then release | Confirm the target |
-| Second finger while aiming | Cancel targeting |
+| Second finger while aiming | Cancel targeting (in battles: a quick two-finger touch or moving the second finger) |
+
+While a creature card is shown, the battle camera stays still: a moving second
+finger does not turn it.
 
 The main menu's **Управление** guide explains troop splitting, redistribution,
 collection and transfers, along with touch and gamepad controls. Cursor offset
@@ -283,17 +332,139 @@ For the camera reset, place all three fingers within 120 ms and release within
 300 ms, moving each finger no more than 16 dp. Three sequential taps do not reset
 the camera.
 
+## In-game Android settings
+
+**Настройки → Дополнительные** holds the port's options. In ToE, render scale,
+interface scale and the frame rate limit are dropdowns; the frame rate list is
+built from the display's own refresh rates (30 FPS and every supported rate from
+45 to 240 Hz). The touch cursor and **LAN через Tailscale/VPN** are checkboxes.
+Vanilla and HoF keep sliders for these options.
+
+## LAN over Tailscale or another VPN (ToE, experimental)
+
+The game finds LAN games by broadcast, which a VPN such as
+[Tailscale](https://tailscale.com) does not carry, and the game has no direct-IP
+connection. To play across a tailnet:
+
+1. Install Tailscale on every device and join the same tailnet.
+2. In the launcher, under **LAN через Tailscale/VPN: игроки**, enter the other
+   players' Tailscale addresses (100.x.y.z) or MagicDNS names, separated by spaces,
+   commas or lines.
+3. In the game, enable **Настройки → Дополнительные → LAN через Tailscale/VPN** on
+   every device, then use **Сетевая игра → Локальная сеть** as usual.
+
+With the option on, the LAN search also goes to the listed addresses, names are
+resolved once a minute in the background, and the game advertises its Tailscale
+address. Keep the option off for ordinary Wi-Fi play: a player who is not on the
+tailnet cannot reach that address. This mode has not been tested with live
+Tailscale devices.
+
+## Sound
+
+The DirectSound mixer converts FMOD's 44.1 kHz output to 48 kHz with a 32-tap
+windowed-sinc filter instead of repeating samples, which removes the harsh
+aliasing heard on music and effects. The Android output uses the normal
+(server-mixed) path, and the mixer refills the device queue after a late wake, so
+slow frames no longer cause crackling. Every edition shares these changes.
+
 ## Versions and local release files
 
 Development versions advance as `0.1-dev`, `0.2-dev`, `0.3-dev`, and so on.
 The version is stored in `android/app/AndroidManifest.xml`; increase
-`android:versionCode` for every subsequent published build. Version `0.2-dev`
-uses code `3`.
+`android:versionCode` for every subsequent published build. Version `0.3-dev`
+uses code `5` (the replacement build supersedes the earlier code `4` APK).
 
-Local release copies use `heroes-v-0.2-dev-<sha256-prefix>.apk`, where the suffix
+Local release copies use `heroes-v-0.3-dev-<sha256-prefix>.apk`, where the suffix
 is the first eight characters of the APK's SHA-256, with a companion `.sha256`
 file. The `pub/` directory is ignored. Building and naming an APK does not
 automatically publish it or create a Git tag.
+
+## Changes in 0.3-dev
+
+Changes since 0.2-dev:
+
+- Troop deployment supports dragging stacks from the battlefield to reserve slots
+  and back in ToE 3.1, Heroes V 1.6 and Hammers of Fate 2.1.
+- While aiming in battle, a resting second finger shows the creature's details
+  card without losing the attack preview. Lifting the second finger closes the
+  card and resumes aiming; lifting the aiming finger first issues no order and
+  keeps the card until the second finger lifts. ToE keeps the camera still while
+  a card is open and supports a second-finger tap to keep it until the first lifts.
+- Holding a map or town object, or a combat control such as the initiative bar,
+  requests its details card after its tooltip appears. The original right-click
+  tooltip setting is respected. These controls work in all three editions.
+- The in-game control guide and the controls table document the new gestures.
+- All editions use a 32-tap windowed-sinc resampler for non-48 kHz sound buffers,
+  replacing sample repetition. Normal AAudio output and queue refill after late
+  mixer wakes improve audio continuity; mixer threads use the revised priorities
+  and can run on all CPU cores.
+- ToE's additional settings use dropdowns for render/UI scale and refresh-rate
+  limits from the display's supported rates, plus touch-cursor and VPN LAN checkboxes.
+- ToE sliders move relative to their current value on a swipe; dropdowns open on
+  swipe start and select on release. Deployment portraits stay under the finger.
+- ToE initiative-bar portraits can be selected with one tap and opened with the
+  next, without holding. Each subsequent tap switches once between the card and
+  effects; tapping elsewhere closes the card without issuing a battlefield order.
+  Second-finger taps over a held portrait also switch once between these views.
+- ToE supports forcing an active shooter's melee attack by dragging to the enemy,
+  and a two-finger map tap to stop the hero or cancel targeting.
+- Double-tapping the ToE minimap, or tapping it with two fingers, toggles object
+  highlighting without moving the camera. A single minimap tap waits 0.4 seconds.
+  Reused highlight handles avoid rebuilding unchanged selections every frame;
+  lists are rebuilt when changed and periodically refreshed every 30 frames.
+- ToE spellbooks accept horizontal page swipes and vertical bookmark swipes;
+  near-miss school-tab taps select the closest bookmark within the snap distance.
+- Experimental ToE VPN LAN support adds launcher peer addresses and an in-game
+  switch, off by default, for Tailscale-style discovery and tunnel addresses.
+  Peer names resolve in a background thread. Live VPN play remains untested.
+- DXVK/Turnip renderer sources, capability probes, bridge generation/build tools,
+  dependency hashes and license notes are included for development. The renderer
+  UI and probe service are disabled, and the default APK ships no DXVK/Turnip
+  runtime libraries; the experimental GPU stall remains unresolved.
+- A successful-start marker identifies the installed build and is cleared before
+  each engine start. After an update or an unsuccessful start, the app icon opens
+  the launcher; a successful start restores automatic game launch.
+- The launcher brings back a running game only while its game activity still has
+  an Android task, so a process surviving a removed task cannot hijack the launcher.
+- ZIP import recognizes Cyrillic CP866 names from Windows archivers, including
+  names whose bytes also form valid UTF-8. Explicit UTF-8 and valid Unicode extra
+  fields retain precedence; other names use the existing decoding fallbacks.
+- ZIP import restores file modification times from DOS, extended Unix or NTFS
+  timestamps, including the metadata written by 7-Zip.
+- Archive inspection and extraction report decoder/runtime failures and Java
+  errors through the launcher instead of leaving an unfinished import. Existing
+  CRC checks and extraction cleanup are retained.
+- Missing or blocked system file pickers show an error. Refused foreground-service
+  starts are logged and extraction continues while the launcher is on screen.
+- Sparse graphics buffer remapping uses local pointers, chooses index width once,
+  prefetches scattered reads and checks the gathered vertex range once per draw.
+  The same implementation now serves all three engines; no FPS gain is claimed.
+- Heroes V 1.6 and HoF 2.1 use widescreen anchors for new-day/week and tactics
+  messages, announcement boxes, turn timers, edit dials, Fort on the Hill,
+  mission objectives and the right combat hero panel.
+- HoF loading screens regain the gradient background supplied by the original
+  game around the resized loading artwork.
+- The launcher adds an optional New Creature Framework switch for ToE 3.1,
+  disabled by default. It raises the creature count from 180 to 1000 and guards
+  random-map copies of missing creature map visuals. Mods must supply the creature
+  records; enabling it with an unmodified game prevents startup.
+- New Creature Framework uses host values in the translated code, preserving its
+  control flow and compatibility with the existing ToE PGO profile.
+- Native address mappings, layout patch anchors and source hashes are updated in
+  all three edition contracts for the shared touch and rendering changes.
+- Regression coverage is extended for two-finger contact order, creature cards,
+  reserve deployment, successful-start markers, sparse buffers, CP866 ZIP names,
+  archive timestamps and New Creature Framework transforms and host values.
+- The release uses the retrained ToE PGO profile covering menus, adventure views,
+  hero interaction and battles. Vanilla and HoF still build without PGO; the local
+  profile is a build input outside Git. No measurable FPS gain was established.
+- Android version is now `0.3-dev` / code `5`; local APK filenames and version
+  documentation follow that version.
+
+Outstanding player reports: the oversized spellbook on Pixel 10 and a HoF
+hot-seat hero-battle crash were not reproduced. No fix is claimed for either.
+Broader campaign, save/load and legacy LAN checks remain outstanding, as do legacy
+PGO profiles and the ToE-only generated-code optimizations.
 
 ## Checks
 

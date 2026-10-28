@@ -108,6 +108,13 @@ static uint32_t void_galloc(uint32_t size) {
 static void void_gfree(uint32_t va) { assert(va >= 0x10000 && va < heap); --live_blocks; }
 static void void_log(const char *format, ...) { (void)format; }
 static void void_fatal(const char *format, ...) { fprintf(stderr, "%s\n", format); abort(); }
+static int void_vm_readable(uint32_t va, uint32_t size) { return va >= 0x1000 && va + size <= sizeof memory; }
+/* The engine allocator 0x008791F0 (cdecl size) for string storage, as its static initializers use it. */
+static int engine_allocations;
+static uint32_t void_call_guest(uint32_t va, int n, const uint32_t *args, int pops) {
+    assert(va == 0x008791F0u && n == 1 && args[0] == 8 && !pops); ++engine_allocations;
+    uint32_t at = heap; heap += 16; assert(heap < 0x20000); memset(GPTR(at), 0, 16); return at;
+}
 static float ui_applied = -1, render_applied = -1;
 static int ui_sets, render_sets;
 static void void_touch_set_scale(float scale) { ui_applied = scale; ++ui_sets; }
@@ -119,7 +126,7 @@ void void_android_settings_changed(int which, float value) {
 }
 /* The engine's variable registration (0x00C11400): ECX name {begin,end,cap},
  * EDX value copier, stack: return, storage, default, profile level; RET 0xC. */
-typedef struct { char name[64]; uint32_t storage, copier, level; float value; char text[32]; } registration;
+typedef struct { char name[64]; uint32_t storage, copier, level; float value; char text[64]; } registration;
 static registration registered[16];
 static int registrations;
 void sub_00C11400_lifted(void) {
@@ -161,8 +168,23 @@ static int notified(int which, float value) {
 }
 static const float option_values[7][16] = {/* OPTION_VALUES */};
 static const int option_counts[7] = {/* OPTION_COUNTS */};
+static void choose(const char *text) {   /* the string copier's assignment of an item name */
+    uint32_t chars = void_galloc(32), length = (uint32_t)strlen(text);
+    memcpy(GPTR(chars), text, length + 1);
+    MEM32(port_text_storage + 12) = chars; MEM32(port_text_storage + 16) = chars + length; MEM32(port_text_storage + 20) = chars + length + 1;
+}
 int main(void) {
-    static const char *const names[7] = {"port_ui_scale", "port_render_scale", "port_camera_sensitivity", "port_fps_limit", "port_cursor_offset_x", "port_cursor_offset_y", "port_touch_cursor"};
+    static const char *const names[8] = {"port_ui_scale", "port_render_scale", "port_camera_sensitivity", "port_fps_limit", "port_cursor_offset_x", "port_cursor_offset_y", "port_touch_cursor", "port_lan_vpn"};
+    /* ToE frame-rate items: half rate, then the display's rates (rounded, deduplicated, 45..240). */
+    static const float modes[] = {120.0f, 59.94f, 90.0f, 60.0f, 24.0f, 300.0f, 119.88f};
+    void_port_set_refresh_rates(modes, 7);
+    assert(!strcmp(port_text_defaults[0], "30;60;90;120") && !strcmp(port_text_defaults[1], "60"));
+    static const float only90[] = {90.0f};
+    void_port_set_refresh_rates(only90, 1);
+    assert(!strcmp(port_text_defaults[0], "30;90") && !strcmp(port_text_defaults[1], "30"));
+    void_port_set_refresh_rates(NULL, 0);
+    assert(!strcmp(port_text_defaults[0], "30;60") && !strcmp(port_text_defaults[1], "60"));
+    void_port_set_refresh_rates(modes, 7);
     for (int i = 0; i < 3; ++i) assert(port_defaults[i] == 1.0f);
     assert(port_defaults[3] == 60.0f && void_port_fps_limit() == 60.0f);
     /* Java's saved values seed the defaults; invalid seeds are ignored. */
@@ -176,19 +198,30 @@ int main(void) {
     /* The first engine registration also registers the port's four profile floats. */
     engine_name = void_galloc(64); int blocks = live_blocks;
     engine_registers("net_timeout");
-    assert(registrations == 8 && !strcmp(registered[0].name, "net_timeout") && registered[0].storage == 0x2F010);
+    assert(registrations == 11 && !strcmp(registered[0].name, "net_timeout") && registered[0].storage == 0x2F010);
     assert(g_eax == 0x1001 && g_ecx == 0xC001 && g_edx == 0xD001 && g_ebx == 0xB001);
     assert(g_esi == 0x5001 && g_edi == 0xE001 && g_ebp == 0xF001);
-    static const char *const texts[7] = {"1.25", "0.6", "2", "60", "0", "0", "0"};
-    for (int i = 0; i < 7; ++i) {
+    static const char *const texts[8] = {"1.25", "0.6", "2", "60", "0", "0", "0", "0"};
+    for (int i = 0; i < 8; ++i) {
         const registration *r = &registered[1 + i];
         assert(!strcmp(r->name, names[i]) && r->level == 2 && r->copier == 0x00499630u);
         assert(r->storage == port_storage + 4u * (uint32_t)i && r->value == port_defaults[i] && !strcmp(r->text, texts[i]));
         assert(MEMF(r->storage) == port_defaults[i]);
     }
-    assert(live_blocks == blocks + 1);     /* storage only: names, texts and scratch are freed */
+    /* ToE: the frame-rate list (level 0) and choice (profile) as engine strings, empty until copied. */
+    assert(!strcmp(registered[9].name, "port_fps_items") && registered[9].level == 0 && registered[9].copier == 0x00499700u);
+    assert(!strcmp(registered[9].text, "30;60;90;120") && registered[9].storage == port_text_storage);
+    assert(!strcmp(registered[10].name, "port_fps_choice") && registered[10].level == 2 && registered[10].copier == 0x00499700u);
+    assert(!strcmp(registered[10].text, "60") && registered[10].storage == port_text_storage + 12);
+    /* Each storage is an empty engine string with an 8-byte buffer, as the engine's initializers make them. */
+    assert(engine_allocations == 2 && void_port_fps_limit() == 60.0f);
+    for (int i = 0; i < 2; ++i) {
+        uint32_t text = port_text_storage + 12u * (uint32_t)i;
+        assert(MEM32(text) && MEM32(text + 4) == MEM32(text) && MEM32(text + 8) == MEM32(text) + 8);
+    }
+    assert(live_blocks == blocks + 2);     /* storage only: names, texts and scratch are freed */
     engine_registers("net_port");
-    assert(registrations == 9 && !strcmp(registered[8].name, "net_port") && g_eax == 0x1009);
+    assert(registrations == 12 && !strcmp(registered[11].name, "net_port") && g_eax == 0x100C);
     /* The frame pump applies and reports each change once, clamped to its range. */
     void_port_settings_pump();
     assert(ui_sets == 1 && ui_applied == 1.25f && render_sets == 1 && render_applied == 0.6f && notifications == 3);
@@ -215,21 +248,26 @@ int main(void) {
         if (which == 1) assert(render_applied == value);
         if (which == 2) assert(void_port_camera_sensitivity() == value);
         if (which < 3) assert(port_applied[which] == value);
-        else if (which == 3) assert(void_port_fps_limit() == value);
+        else if (which == 3) assert(void_port_fps_limit() == 60.0f);   /* ToE reads port_fps_choice */
         else if (which < 6) assert(void_port_cursor_offset(which == 5) == value);
         else assert(void_port_touch_cursor() == (value >= 0.5f));
     }
-    MEMF(port_storage + 12) = NAN; assert(void_port_fps_limit() == 60.0f);
-    MEMF(port_storage + 12) = INFINITY; assert(void_port_fps_limit() == 60.0f);
-    MEMF(port_storage + 12) = -1; assert(void_port_fps_limit() == 0.0f);
-    MEMF(port_storage + 12) = 1; assert(void_port_fps_limit() == 30.0f);
-    MEMF(port_storage + 12) = 1000; assert(void_port_fps_limit() == 240.0f);
+    choose("90"); assert(void_port_fps_limit() == 90.0f);
+    choose("120"); assert(void_port_fps_limit() == 120.0f);
+    choose("30"); assert(void_port_fps_limit() == 30.0f);
+    choose("x60"); assert(void_port_fps_limit() == 60.0f);
+    choose("1000"); assert(void_port_fps_limit() == 60.0f);
+    choose("12"); assert(void_port_fps_limit() == 60.0f);
+    MEM32(port_text_storage + 16) = MEM32(port_text_storage + 12) - 1; assert(void_port_fps_limit() == 60.0f);
+    MEMF(port_storage + 28) = 1; assert(void_port_lan_vpn());
+    MEMF(port_storage + 28) = 0; assert(!void_port_lan_vpn());
+    MEMF(port_storage + 28) = NAN; assert(!void_port_lan_vpn());
     MEMF(port_storage + 16) = -3; assert(void_port_cursor_offset(0) == -0.2f);
     MEMF(port_storage + 20) = 3; assert(void_port_cursor_offset(1) == 0.2f);
     MEMF(port_storage + 16) = NAN; assert(void_port_cursor_offset(0) == 0.0f);
     MEMF(port_storage + 24) = NAN; assert(!void_port_touch_cursor());
     assert(!port_lock);
-    puts("PASS actual port settings: Java seeds, first registration adds port_ui/render/camera as level-2 profile floats with %g defaults (caller registers kept), later ones pass through, pump applies/reports each change once with UI/render/camera clamps and every options value");
+    puts("PASS actual port settings: ToE frame-rate strings from display rates, LAN VPN switch, Java seeds, first registration adds port_ui/render/camera as level-2 profile floats with %g defaults (caller registers kept), later ones pass through, pump applies/reports each change once with UI/render/camera clamps and every options value");
     return 0;
 }
 '''
@@ -244,7 +282,18 @@ class PortSettingsTest(unittest.TestCase):
         self.assertEqual([c.findtext("ID") for c in categories], ["game", "video_audio", "port_additional"])
         for category in categories[:2]:
             self.assertFalse(any(o.findtext("ID", "").startswith("port_") for o in category.findall(".//Options/Item")))
-        self.assertEqual([o.findtext("ID") for o in categories[2].findall(".//Options/Item")], [o[0] for o in port_ui.OPTIONS])
+        self.assertEqual([o.findtext("ID") for o in categories[2].findall(".//Options/Item")],
+                         [o[0] for o in port_ui.OPTIONS + port_ui.TOE_OPTIONS])
+        kinds = {o.findtext("ID"): o.findtext("Type") for o in categories[2].findall(".//Options/Item")}
+        self.assertEqual((kinds["port_render_scale"], kinds["port_ui_scale"], kinds["port_fps_limit"]), ("OPTION_COMBO_BOX",) * 3)
+        self.assertEqual((kinds["port_touch_cursor"], kinds["port_lan_vpn"]), ("OPTION_CHECK_BOX",) * 2)
+        rates = categories[2].find(".//Options/Item[ID='port_fps_limit']")
+        self.assertEqual((rates.findtext("ItemsGlobalVar"), rates.findtext("UseItemNameAsValue"), rates.findtext("GlobalVar1")),
+                         ("port_fps_items", "true", "port_fps_choice"))
+        for edition in ("vanilla", "hof"):   # legacy pages keep the scrollers and no network switch
+            legacy = ET.fromstring(port_ui.patch_uiconsts(original, edition)).findall("GameOptions/Categories/Item")[2]
+            self.assertEqual({o.findtext("Type") for o in legacy.findall(".//Options/Item")}, {"OPTION_SCROLLER"})
+            self.assertEqual([o.findtext("ID") for o in legacy.findall(".//Options/Item")], [o[0] for o in port_ui.OPTIONS])
         self.assertEqual(len(categories[2].findall("Pages/Item")), 2)  # Native two-column templates have valid initial widths.
         self.assertEqual(tree.findtext(".//Options/Item[ID='tooltip_delay']/DefaultValue1"), "0")
         members = port_ui.launcher_buttons(game)

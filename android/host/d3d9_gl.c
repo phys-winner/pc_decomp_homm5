@@ -1032,6 +1032,13 @@ _Static_assert(SPARSE_MAX_INDICES <= SPARSE_DENSE_MASK + 1u, "sparse dense index
 typedef uint32_t sparse_map_entry;
 static sparse_map_entry *sparse_map;
 static uint32_t sparse_map_capacity, sparse_map_generation;
+/* How many entries ahead the scattered map and vertex reads are requested. */
+#define SPARSE_AHEAD 8u
+#if defined(__GNUC__) || defined(__clang__)
+#define SPARSE_PREFETCH(p) __builtin_prefetch((p))
+#else
+#define SPARSE_PREFETCH(p) ((void)(p))
+#endif
 
 /* One entry per vertex of the draw's referenced span, valid when stamped with
  * this draw's generation: nothing is cleared per draw, and neighbouring
@@ -1055,22 +1062,34 @@ static int draw_sparse_map(const uint8_t *source, uint32_t unit, uint32_t count,
         sparse_map_generation = 1;
     }
     uint32_t generation = sparse_map_generation << SPARSE_DENSE_BITS, unique = 0;
-    for (uint32_t i = 0; i < count; ++i) {
-        uint32_t raw;
-        if (unit == 4) memcpy(&raw, source + (size_t)i * 4u, 4);
-        else { uint16_t value; memcpy(&value, source + (size_t)i * 2u, 2); raw = value; }
-        int64_t vertex = (int64_t)raw + (int32_t)base;
-        if (vertex < first || vertex > last) return 0;
-        sparse_map_entry *e = &sparse_map[(uint32_t)vertex - first];
-        /* Subtraction extracts the dense index only when this draw's stamp matches. */
-        uint32_t dense = *e - generation;
-        if (dense > SPARSE_DENSE_MASK) {
-            dense = unique;
-            *e = generation | unique;
-            sparse_vertices[unique++] = (uint32_t)vertex;
-        }
-        sparse_indices[i] = dense;
+    /* The far adventure view remaps hundreds of thousands of indices a frame. Locals the
+       stores cannot alias keep the loop in registers (the globals were spilled and reloaded
+       every index), and the index width is chosen once instead of per index. */
+    sparse_map_entry *map = sparse_map;
+    uint32_t *indices = sparse_indices, *vertices = sparse_vertices;
+    int64_t low = (int64_t)first - (int32_t)base, high = (int64_t)last - (int32_t)base;
+    uint32_t shift = (uint32_t)((int32_t)base - (int64_t)first);   /* raw + shift = vertex - first */
+#define SPARSE_REMAP(type)                                                              \
+    for (uint32_t i = 0; i < count; ++i) {                                              \
+        type value;                                                                     \
+        if (i + SPARSE_AHEAD < count) {                                                 \
+            memcpy(&value, source + (size_t)(i + SPARSE_AHEAD) * sizeof value, sizeof value); \
+            uint32_t ahead = (uint32_t)value + shift;                                   \
+            if (ahead <= span - 1u) SPARSE_PREFETCH(map + ahead);                       \
+        }                                                                               \
+        memcpy(&value, source + (size_t)i * sizeof value, sizeof value);                \
+        uint32_t raw = value;                                                           \
+        if ((int64_t)raw < low || (int64_t)raw > high) return 0;                        \
+        uint32_t slot = raw + shift, dense = map[slot] - generation;                    \
+        if (dense > SPARSE_DENSE_MASK) {                                                \
+            dense = unique;                                                             \
+            map[slot] = generation | unique;                                            \
+            vertices[unique++] = slot + first;                                          \
+        }                                                                               \
+        indices[i] = dense;                                                             \
     }
+    if (unit == 4) { SPARSE_REMAP(uint32_t) } else { SPARSE_REMAP(uint16_t) }
+#undef SPARSE_REMAP
     *unique_count = unique;
     return 1;
 }
@@ -1131,10 +1150,16 @@ static int draw_sparse_gather(d3d_buffer *b, uint32_t offset, uint32_t stride, u
     const uint8_t *shadow = (const uint8_t *)GPTR(b->shadow);
     /* Fixed-size pieces inline; a memcpy call per small vertex dominated. */
     uint32_t wide = attr_end & ~15u, words = attr_end & 12u, tail = attr_end & 3u;
+    /* One range check for the whole draw (its highest vertex), then copies only; the scattered
+       source vertices are fetched ahead, which an in-order core cannot do for itself. */
+    const uint32_t *vertices = sparse_vertices;
+    uint32_t highest = 0;
+    for (uint32_t i = 0; i < unique; ++i) if (vertices[i] > highest) highest = vertices[i];
+    if ((uint64_t)offset + (uint64_t)highest * stride + attr_end > b->size) return 0;
+    const uint8_t *base = shadow + offset;
     for (uint32_t i = 0; i < unique; ++i) {
-        uint64_t source = (uint64_t)offset + (uint64_t)sparse_vertices[i] * stride;
-        if (source + attr_end > b->size) return 0;
-        const uint8_t *from = shadow + source;
+        if (i + SPARSE_AHEAD < unique) SPARSE_PREFETCH(base + (size_t)vertices[i + SPARSE_AHEAD] * stride);
+        const uint8_t *from = base + (size_t)vertices[i] * stride;
         uint8_t *to = out + (size_t)i * stride;
         uint32_t k = 0;
         for (; k < wide; k += 16) memcpy(to + k, from + k, 16);

@@ -31,6 +31,34 @@ LICENSE_FILES = {
 }
 
 CHUNK = 128 << 20
+APK_BUDGET = 190_000_000
+
+
+def dxvk_runtime():
+    """Tribes of the East's DXVK renderer as tools/build_dxvk.py staged it: the libraries for
+    lib/arm64-v8a (extracted by the installer, where adrenotools and the engine's dlopen find
+    them) and their licenses, both checked against the receipt, which must match the current
+    bridge sources."""
+    stage = ROOT / "build/dxvk"
+    receipt_path = stage / "build-receipt.json"
+    if not receipt_path.is_file():
+        raise SystemExit("The DXVK renderer is not staged: run tools/build_dxvk.py (or leave out --dxvk)")
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    stale = [relative for relative, digest in receipt["sources"].items()
+             if not (ROOT / relative).is_file() or
+             hashlib.sha256((ROOT / relative).read_bytes().replace(b"\r\n", b"\n")).hexdigest() != digest]
+    if stale:
+        raise SystemExit("The staged DXVK bridge is older than its sources (" + ", ".join(stale) + "): run tools/build_dxvk.py")
+    files = []
+    for folder, rows in (("runtime", receipt["runtime"]), ("licenses", receipt["licenses"])):
+        found = []
+        for row in rows:
+            path = stage / folder / row["name"]
+            if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != row["sha256"]:
+                raise SystemExit("The staged DXVK renderer changed after tools/build_dxvk.py: " + row["name"])
+            found.append(path)
+        files.append(found)
+    return files[0], files[1]
 
 
 def xz_tool():
@@ -166,6 +194,11 @@ def main():
     parser.add_argument("--thinlto-jobs", type=int, default=None, metavar="N",
                         help="pass the ThinLTO backend worker limit to build_android.py")
     parser.add_argument("--protocol-check", action="store_true", help="build_android.py validation build (see there)")
+    # DXVK/Turnip support is commented out (2026-10-29, RendererPolicy.ENABLED in the app): the APK
+    # carries the renderer only when asked to, and the launcher offers it only with ENABLED.
+    parser.add_argument("--dxvk", action="store_true",
+                        help="package the Tribes of the East DXVK renderer (tools/build_dxvk.py); off: OpenGL ES only")
+    parser.add_argument("--no-dxvk", action="store_true", help=argparse.SUPPRESS)   # the default now
     args = parser.parse_args()
     if args.thinlto_jobs is not None and (not args.thinlto or args.thinlto_jobs < 1):
         parser.error("--thinlto-jobs must be positive and requires --thinlto")
@@ -204,6 +237,7 @@ def main():
         except (ValueError, RuntimeError, OSError) as failure:
             raise SystemExit(f"{edition}: mandatory native patches are incomplete: {failure}") from failure
         libraries.append(library)
+    dxvk_libraries, dxvk_licenses = dxvk_runtime() if args.dxvk and not args.no_dxvk else ([], [])
     # The launcher's texture converter (android/texconv) is its own small library.
     subprocess.run([sys.executable, str(ROOT / "tools/build_texconv.py")], check=True)
     texconv = ROOT / "build/arm64-texconv/libtexconv.so"
@@ -218,6 +252,8 @@ def main():
             raise SystemExit(f"Mandatory resource patches are incomplete: {failure}") from failure
         for edition, overlay in overlays.items():
             receipts[edition]["overlay"] = overlay
+        for license_file in dxvk_licenses:
+            shutil.copy2(license_file, staged / "licenses" / license_file.name)
         (staged / "edition-patches.json").write_text(json.dumps(receipts, indent=2) + "\n", encoding="utf-8")
         if OUT.exists():
             OUT.resolve().relative_to(ROOT.resolve())
@@ -253,6 +289,9 @@ def main():
         apk.writestr("assets/native/index.txt", "".join(row for _, row in payloads))
         apk.write(unpacker, "lib/arm64-v8a/libhomm5xz.so")
         apk.write(texconv, "lib/arm64-v8a/libtexconv.so")
+        # DXVK, its bridge, libc++_shared and the adrenotools/Turnip set; deflated, like the others.
+        for library in dxvk_libraries:
+            apk.write(library, "lib/arm64-v8a/" + library.name)
     aligned = OUT / "aligned.apk"
     # -P 16: uncompressed native code on 16 KiB boundaries (Android 15+ 16 KiB page devices).
     run(TOOLS / "zipalign.exe", "-f", "-P", "16", "4", unsigned, aligned)
@@ -266,6 +305,8 @@ def main():
     run(TOOLS / "apksigner.bat", "sign", "--ks", keystore, "--ks-pass", "pass:android", "--key-pass", "pass:android",
         "--out", apk, aligned)
     print(f"APK: {apk} ({apk.stat().st_size / 1e6:.1f} MB)")
+    if apk.stat().st_size > APK_BUDGET:
+        print(f"warning: the APK exceeds its {APK_BUDGET / 1e6:.0f} MB budget")
     if args.install:
         run(ADB, *(["-s", args.serial] if args.serial else []), "install", "-r", "-g", apk)
         print("installed")

@@ -209,7 +209,7 @@ class OverlayContractTest(unittest.TestCase):
             ui.writestr('UI/MPChatInGame/ChatInputActivator.(WindowMSButtonShared).xdb',
                 '<WindowMSButtonShared><VisualStates><Item><Normal><Background href=""/>'
                 '</Normal></Item></VisualStates></WindowMSButtonShared>')
-            ui.writestr(port_ui.UICONSTS, '<Root>' + ''.join('<ID>' + row[0] + '</ID>' for row in port_ui.OPTIONS) + '</Root>')
+            ui.writestr(port_ui.UICONSTS, '<Root>' + ''.join('<ID>' + row[0] + '</ID>' for row in port_ui.options(edition)) + '</Root>')
             for name in ('UI/DialogueScreen.(WindowScreenShared).xdb',
                          'UI/CusceneScreen.(WindowScreenShared).xdb',
                          'UI/CutsceneScreen/SubtitlesArea.(WindowStaticText).xdb'):

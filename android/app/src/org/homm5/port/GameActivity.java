@@ -66,6 +66,13 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private static native void nativeUiScale(float scale);
     private static native void nativeRenderScale(float scale);
     private static native void nativeCameraSensitivity(float value);
+    private static native void nativeNewCreatureFramework(boolean enabled);
+    private static native void nativeRefreshRates(float[] rates);
+    private static native void nativeLanPeers(String peers);
+    /** Tribes of the East's renderer (android/host/d3d9_dxvk.c): mode as RendererPolicy.nativeMode. */
+    private static native void nativeRenderer(int mode, String libraryDir, String cacheDir);
+    /** The mode the session renders with once Direct3D was created (-1 before; 0 OpenGL ES). */
+    private static native int nativeRendererActive();
     private static native boolean nativeText(int generation, String text);
     private static native boolean nativeTextKey(int generation, int key, int count);
     private static native int nativeTextCancel();
@@ -108,6 +115,11 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private float loadingShown;
     private boolean nativeReady;
     private boolean resumed;
+    /* The renderer of this start (RendererPolicy; OpenGL ES for the other editions). The DXVK
+       modes keep one surface for the activity's life and hand it back on onStart (surfaceHidden). */
+    private String renderer = RendererPolicy.GLES;
+    private boolean surfaceHidden, rendererReported;
+    private android.app.AlertDialog rendererDialog;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -123,7 +135,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                 runOnUiThread(() -> {
                     if (isFinishing() || isDestroyed()) return;
                     nativeReady = true;
-                    startGame();
+                    prepareRenderer();
                 });
             } catch (java.io.IOException | UnsatisfiedLinkError e) {
                 android.util.Log.e("HeroesV", "native library: " + e);
@@ -136,6 +148,83 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             }
         }, "native-library").start();
     }
+
+    /* ------------------------------------------------------------ renderer */
+
+    /** Tribes of the East: the renderer is fixed before the engine starts. While nobody has chosen
+     *  a mode (the launcher picks the best one once its driver check has finished, or the player
+     *  does), a start that would run on OpenGL ES offers the best mode once. No restart is needed:
+     *  nothing has created Direct3D yet. */
+    private void prepareRenderer() {
+        /* DXVK/Turnip support is commented out (RendererPolicy.ENABLED): OpenGL ES, as for the other editions. */
+        if (!RendererPolicy.ENABLED || !"toe".equals(gameEdition())) { startGame(); return; }
+        String chosen = Renderers.chosen(this);
+        boolean undecided = chosen.isEmpty()
+            || (RendererPolicy.GLES.equals(chosen) && Renderers.AUTO.equals(Renderers.origin(this)));
+        if (!undecided || Renderers.offered(this) || !Renderers.needsProbe(this)) { startRenderer(chosen); return; }
+        if (Renderers.report(this) != null) { offerRenderer(chosen); return; }
+        Renderers.probe(this);
+        loadingText.setText(Renderers.ru() ? "Проверка видеодрайвера…" : "Checking the graphics driver…");
+        final long until = SystemClock.uptimeMillis() + 6000;
+        handler.postDelayed(new Runnable() {
+            @Override public void run() {
+                if (isFinishing() || isDestroyed()) return;
+                if (Renderers.report(GameActivity.this) == null && SystemClock.uptimeMillis() < until) {
+                    handler.postDelayed(this, 250);
+                    return;
+                }
+                offerRenderer(chosen);
+            }
+        }, 250);
+    }
+
+    private void offerRenderer(String chosen) {
+        java.util.Map<String, String> report = Renderers.report(this);
+        if (report == null) { startRenderer(chosen); return; }   /* not checked in time: next start */
+        String best = RendererPolicy.best(Renderers.statuses(this, report), report);
+        if (RendererPolicy.GLES.equals(best)) {
+            if (chosen.isEmpty()) Renderers.choose(this, RendererPolicy.GLES, Renderers.AUTO);
+            startRenderer(RendererPolicy.GLES);
+            return;
+        }
+        boolean ru = Renderers.ru();
+        String title = RendererPolicy.title(best);
+        rendererDialog = new android.app.AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+            .setTitle(ru ? "Режим отрисовки" : "Renderer")
+            .setMessage(String.format(ru
+                ? "Игра запускается на OpenGL ES, а этому устройству доступен %1$s.\n\n%2$s\n\n%3$s\n\nПереключиться? Выбор можно изменить в лаунчере."
+                : "The game starts on OpenGL ES, and %1$s is available on this device.\n\n%2$s\n\n%3$s\n\nSwitch? The launcher can change it later.",
+                title, RendererPolicy.description(best, ru), RendererPolicy.limits(ru)))
+            .setPositiveButton(ru ? "Переключить на " + title : "Switch to " + title, (dialog, which) -> {
+                Renderers.choose(this, best, Renderers.OFFER);
+                Renderers.markOffered(this);
+                startRenderer(best);
+            })
+            .setNegativeButton(ru ? "Оставить OpenGL ES" : "Keep OpenGL ES", (dialog, which) -> {
+                Renderers.choose(this, RendererPolicy.GLES, Renderers.USER);
+                Renderers.markOffered(this);
+                startRenderer(RendererPolicy.GLES);
+            })
+            .setCancelable(false)
+            .create();
+        rendererDialog.setOnDismissListener(dialog -> rendererDialog = null);
+        rendererDialog.show();
+    }
+
+    /** A chosen DXVK mode that is known not to run here any more starts on OpenGL ES; without a
+     *  current check (just updated) the choice stands, and the engine falls back if DXVK fails. */
+    private void startRenderer(String chosen) {
+        if (isFinishing() || isDestroyed()) return;
+        if ("toe".equals(gameEdition()) && RendererPolicy.valid(chosen) && !RendererPolicy.GLES.equals(chosen)) {
+            java.util.Map<String, String> report = Renderers.report(this);
+            RendererPolicy.Status status = RendererPolicy.status(Renderers.statuses(this, report), chosen);
+            renderer = status.available || (report == null && Renderers.needsProbe(this)) ? chosen : RendererPolicy.GLES;
+            if (!renderer.equals(chosen)) android.util.Log.w("HeroesV", "renderer " + chosen + " unavailable: " + status.reason);
+        }
+        startGame();
+    }
+
+    private boolean dxvkSurface() { return !RendererPolicy.GLES.equals(renderer) && Build.VERSION.SDK_INT >= 30; }
 
     private void startGame() {
         currentActivity = new WeakReference<>(this);
@@ -153,6 +242,9 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         game = new FrameLayout(this);
         game.setBackgroundColor(Color.BLACK);
         surface = new SurfaceView(this);
+        /* DXVK keeps a presenter (swapchain) per window: one surface for the activity's life,
+           hidden and handed back around onStop/onStart, never leaves one behind per Home press. */
+        if (dxvkSurface()) surface.setSurfaceLifecycle(SurfaceView.SURFACE_LIFECYCLE_FOLLOWS_ATTACHMENT);
         surface.getHolder().addCallback(this);
         game.addView(surface, new FrameLayout.LayoutParams(-1, -1));
         touch = new TouchLayer(this);
@@ -196,7 +288,23 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         nativeUiScale(savedFloat("ui_scale", 1));
         nativeRenderScale(savedFloat("render_scale", 1));
         nativeCameraSensitivity(savedFloat("camera_sensitivity", 1));
+        /* MMH5.5's New Creature Framework patches exist for the 3.1 engine only (android/host/ncf.c). */
+        if ("toe".equals(gameEdition())) nativeNewCreatureFramework(Launcher.newCreatureFramework(this));
+        /* ToE's frame rate combobox lists the display's own rates (port_settings.c). */
+        if ("toe".equals(gameEdition())) nativeRefreshRates(displayRefreshRates());
+        /* Tailscale/VPN players for the LAN search, used with the game's option (network.c). */
+        if ("toe".equals(gameEdition())) nativeLanPeers(Launcher.lanPeers(this));
+        /* So is the DXVK renderer (android/host/d3d9_dxvk.c): its libraries were extracted with the APK. */
+        if (RendererPolicy.ENABLED && "toe".equals(gameEdition())) {
+            nativeRenderer(RendererPolicy.nativeMode(renderer), getApplicationInfo().nativeLibraryDir, getCacheDir().getAbsolutePath());
+            Renderers.startedWith(this, renderer);
+            android.util.Log.i("HeroesV", "renderer " + renderer);
+        }
         android.util.Log.i("HeroesV", "game " + gameDir + ", images " + images + ", overlay " + overlay);
+        /* Until this start shows its first screen, the icon opens the launcher: a start that
+           crashes or hangs must not be repeated by every later tap on the icon. */
+        if (!Launcher.startupMarker(this, gameEdition()).delete() && Launcher.startupMarker(this, gameEdition()).exists())
+            android.util.Log.w("HeroesV", "startup marker stays");
         nativeStart(gameDir.getAbsolutePath(), data.getAbsolutePath(), images.getAbsolutePath(),
                 overlay != null ? overlay.getAbsolutePath() : null, cache.getAbsolutePath(), 0, 0,
                 new File(base, "verbose").exists());
@@ -208,6 +316,21 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private float savedFloat(String key, float fallback) {
         try { return preferences.getFloat(key, fallback); }
         catch (ClassCastException ignored) { return fallback; }
+    }
+
+    /* Refresh rates of the display's modes at its current resolution. */
+    private float[] displayRefreshRates() {
+        Display display = getWindowManager().getDefaultDisplay();
+        Display.Mode current = display != null ? display.getMode() : null;
+        Display.Mode[] modes = display != null ? display.getSupportedModes() : null;
+        if (current == null || modes == null) return new float[0];
+        float[] rates = new float[modes.length];
+        int count = 0;
+        for (Display.Mode mode : modes)
+            if (mode != null && mode.getPhysicalWidth() == current.getPhysicalWidth()
+                    && mode.getPhysicalHeight() == current.getPhysicalHeight() && Float.isFinite(mode.getRefreshRate()))
+                rates[count++] = mode.getRefreshRate();
+        return java.util.Arrays.copyOf(rates, count);
     }
 
     private int dp(float value) { return Math.round(value * getResources().getDisplayMetrics().density); }
@@ -352,10 +475,35 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     @Override public void surfaceCreated(SurfaceHolder holder) {
         refreshSurface = null;
         requestHighRefresh();
+        surfaceHidden = false;
         nativeSurface(holder.getSurface());
     }
     @Override public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) { requestHighRefresh(); }
-    @Override public void surfaceDestroyed(SurfaceHolder holder) { refreshSurface = null; releaseAll(); nativeSurface(null); }
+    @Override public void surfaceDestroyed(SurfaceHolder holder) {
+        refreshSurface = null;
+        releaseAll();
+        if (!surfaceHidden) nativeSurface(null);
+        surfaceHidden = false;
+    }
+
+    /* DXVK modes: the surface outlives onStop (SURFACE_LIFECYCLE_FOLLOWS_ATTACHMENT), so the game
+       is told it is gone, waits in its present as without a surface, and gets the same window back. */
+    @Override protected void onStop() {
+        if (nativeReady && surface != null && dxvkSurface() && !surfaceHidden) {
+            surfaceHidden = true;
+            releaseAll();
+            nativeSurface(null);
+        }
+        super.onStop();
+    }
+
+    @Override protected void onStart() {
+        super.onStart();
+        if (surfaceHidden && surface != null && surface.getHolder().getSurface().isValid()) {
+            surfaceHidden = false;
+            nativeSurface(surface.getHolder().getSurface());
+        }
+    }
 
     @Override protected void onPause() {
         resumed = false;
@@ -378,6 +526,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         if (hardware != null) ((InputManager)getSystemService(Context.INPUT_SERVICE)).unregisterInputDeviceListener(hardware);
         if (gamepadHelp != null) gamepadHelp.dismiss();
         if (gameSwitchDialog != null) gameSwitchDialog.dismiss();
+        if (rendererDialog != null) rendererDialog.dismiss();
         handler.removeCallbacksAndMessages(null);
         if (gestureProbe != null) unregisterReceiver(gestureProbe);
         if (lanLock != null && lanLock.isHeld()) lanLock.release();
@@ -441,8 +590,9 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             loadingBar.setProgress(Math.round(loadingShown * 1000));
             loadingText.setText(String.format(Locale.getDefault(), "%s  %d%%", text(T_LOADING), Math.round(loadingShown * 100)));
             if (ready) {
-                try { Launcher.startupMarker(GameActivity.this, gameEdition()).createNewFile(); }
+                try { Launcher.markStarted(GameActivity.this, gameEdition()); }
                 catch (java.io.IOException e) { android.util.Log.w("HeroesV", "startup marker: " + e); }
+                reportRenderer();
                 if (work > 50) preferences.edit().putInt("startup_work", work).apply();
                 View done = loading;
                 loading = null;
@@ -454,6 +604,18 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             handler.postDelayed(this, 100);
         }
     };
+
+    /** The first screen is up, so Direct3D exists: a DXVK mode that fell back to OpenGL ES is told
+     *  once here and in the launcher (homm5.log has the reason). */
+    private void reportRenderer() {
+        if (rendererReported || !"toe".equals(gameEdition()) || RendererPolicy.GLES.equals(renderer)) return;
+        rendererReported = true;
+        if (nativeRendererActive() != RendererPolicy.GLES_NATIVE) { Renderers.clearFallback(this); return; }
+        Renderers.fellBack(this, renderer);
+        android.widget.Toast.makeText(this, String.format(Renderers.ru()
+            ? "%s не запустился, игра идёт на OpenGL ES" : "%s did not start; the game runs on OpenGL ES",
+            RendererPolicy.title(renderer)), android.widget.Toast.LENGTH_LONG).show();
+    }
 
     private static final int T_LOADING = 0, T_SWITCH_GAME = 1, T_OPEN_LAUNCHER = 2, T_CANCEL = 3, T_CURRENT_GAME = 4;
     private static String text(int id) {
@@ -642,8 +804,18 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         gamepadHelp = new android.app.AlertDialog.Builder(this)
             .setTitle("Управление")
             .setMessage("Сенсорное управление\n\n"
-                + "Касание — выбор или действие; удержание — описание. В бою отпустите палец, чтобы отдать приказ; "
-                + "касание вторым пальцем отменяет его.\n"
+                + "Касание — выбор или действие; удержание — описание. В бою отпустите палец, чтобы отдать приказ. "
+                + "Пока палец наводит, коснитесь экрана вторым пальцем и держите его — откроется карточка "
+                + "существа под первым пальцем. Поднимите второй палец, чтобы закрыть её и продолжить наведение; "
+                + "если первым поднять наводящий палец, приказа не будет. Быстрое касание двумя пальцами "
+                + "отменяет приказ. При расстановке войск отряды перетаскиваются между полем и ячейками запаса.\n"
+                + ("toe".equals(gameEdition())
+                    ? "Портрет на шкале инициативы выделяется касанием; второе касание этого портрета открывает карточку "
+                        + "существа, каждое следующее переключает описание и эффекты, касание в другом месте закрывает её.\n"
+                        + "Двойное касание мини-карты (или касание её двумя пальцами) включает и выключает подсветку объектов.\n"
+                        + "Книга заклинаний: свайп влево или вправо листает страницы, вверх или вниз — закладки; касание "
+                        + "рядом с закладкой выбирает её.\n"
+                    : "")
                 + "Два пальца — перемещение, масштаб и поворот камеры; два пальца рядом вверх-вниз — наклон. "
                 + "Одновременное короткое касание поля тремя пальцами — исходные наклон и поворот; в бою также положение камеры.\n\n"
                 + "Разделение армий\n\n"
@@ -1015,20 +1187,24 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
      * jumps, and continued by the remaining fingers until the last one lifts;
      * two fingers moving up or down together (side by side) tilt instead. A
      * second finger added to a held or dragged one keeps the first one's
-     * gesture (troop splitting, cancelling an aim).
+     * gesture (troop splitting, cancelling an aim; a combat aim shows its
+     * card while the second finger rests).
      */
     private final class TouchLayer extends View {
         private static final int BEGIN = 0, TAP = 1, DOUBLE_TAP = 2, PAN = 3, TRANSFORM = 4,
                 HOLD_BEGIN = 5, HOLD_DRAG = 6, END = 7, TWO_FINGER_BEGIN = 8,
                 TWO_FINGER_CANCEL = 9, ABORT = 10, SECOND_BEGIN = 11, SECOND_TAP = 12, SECOND_HOLD = 13,
-                THREE_FINGER_TAP = 14, TILT = 15;
+                THREE_FINGER_TAP = 14, TILT = 15, SECOND_END = 19, FIRST_END = 20, TWO_FINGER_TAP = 21;
         private static final long HOLD_MS = 450, MULTI_TAP_MS = 300, CHORD_JOIN_MS = 120, CHORD_TAP_MS = 300;
+        /* ToE: a finger added this long after the first is a second finger (combat card, troop split)
+           rather than the start of a two-finger camera gesture, whose fingers land together. */
+        private static final long SECOND_MS = 200;
         private int pointer = -1, secondPointer = -1;
         private boolean open, panning, holding, multi, transformed, tilting;
         private float downX, downY, lastX, lastY, lastTapX, lastTapY;
         private int nextTapCount;
         private long lastTapTime = -1;
-        private boolean chordCandidate, chord;
+        private boolean chordCandidate, chord, pairTap;
         private long chordDownTime;
         private int chordContacts;
         private final int[] chordIds = new int[3];
@@ -1040,6 +1216,9 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         private int angleA = -1, angleB = -1;
         private float secondaryX, secondaryY, secondaryDownX, secondaryDownY;
         private boolean secondaryCandidate, secondaryHeld;
+        /* released: the first finger lifted past the resting second one (FIRST_END), whose own
+           lift ends the gesture (SECOND_END). */
+        private boolean released;
 
         TouchLayer(Context context) {
             super(context);
@@ -1084,10 +1263,10 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         private void reset() {
             cancelHold();
             cancelSecondaryHold();
-            open = panning = holding = multi = transformed = tilting = false;
+            open = panning = holding = multi = transformed = tilting = released = false;
             pointer = secondPointer = angleA = angleB = -1;
             secondaryCandidate = secondaryHeld = false;
-            chordCandidate = chord = false;
+            chordCandidate = chord = pairTap = false;
             chordContacts = 0;
         }
 
@@ -1276,7 +1455,10 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                 }
                 return true;
             }
-            if (action == MotionEvent.ACTION_POINTER_UP || action == MotionEvent.ACTION_UP) chordCandidate = false;
+            if (action == MotionEvent.ACTION_POINTER_UP || action == MotionEvent.ACTION_UP) {
+                if (chordCandidate && chordContacts == 2 && multi) pairTap = true;
+                chordCandidate = false;
+            }
             return false;
         }
 
@@ -1312,6 +1494,14 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                 postDelayed(hold, HOLD_MS);
             } else if (!open) {
                 return true;
+            } else if (released) {
+                // Only the resting second finger is left; later contacts and moves are ignored.
+                if (action == MotionEvent.ACTION_UP || (action == MotionEvent.ACTION_POINTER_UP
+                        && event.getPointerId(index) == secondPointer)) {
+                    emit(SECOND_END, secondaryX, secondaryY);
+                    cancelGesture();
+                }
+                return true;
             } else if (chordEvent(event)) {
                 return true;
             } else if (action == MotionEvent.ACTION_POINTER_DOWN) {
@@ -1321,7 +1511,9 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                 if (first < 0) { cancelGesture(); return true; }
                 cancelHold();
                 secondPointer = event.getPointerId(index);
-                if (holding || panning) {
+                boolean late = "toe".equals(gameEdition()) && !chordCandidate
+                        && event.getEventTime() - event.getDownTime() >= SECOND_MS;
+                if (holding || panning || late) {
                     secondaryCandidate = true; secondaryHeld = false;
                     secondaryDownX = secondaryX = event.getX(index);
                     secondaryDownY = secondaryY = event.getY(index);
@@ -1345,13 +1537,19 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             } else if (action == MotionEvent.ACTION_POINTER_UP) {
                 int lifted = event.getPointerId(index);
                 if (secondaryCandidate) {
-                    if (lifted == pointer) { cancelGesture(); return true; }
+                    if (lifted == pointer) {
+                        emit(FIRST_END, event.getX(index), event.getY(index));
+                        cancelSecondaryHold();
+                        released = true;
+                        return true;
+                    }
                     if (lifted == secondPointer) {
                         moveSecondary(event);
                         if (!open) return true;
                         if (secondaryCandidate) {
                             cancelSecondaryHold();
                             if (!secondaryHeld) emit(SECOND_TAP, event.getX(index), event.getY(index));
+                            emit(SECOND_END, event.getX(index), event.getY(index));
                             secondaryCandidate = secondaryHeld = false;
                             secondPointer = -1;
                             return true;
@@ -1365,7 +1563,9 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                 cancelHold();
                 cancelSecondaryHold();
                 if (multi) {
-                    if (!transformed && !tilting) emit(TWO_FINGER_CANCEL, lastX, lastY);
+                    if (pairTap && !transformed && !tilting && "toe".equals(gameEdition())
+                            && event.getEventTime() - chordDownTime <= CHORD_TAP_MS) emit(TWO_FINGER_TAP, lastX, lastY);
+                    else if (!transformed && !tilting) emit(TWO_FINGER_CANCEL, lastX, lastY);
                     emit(END, lastX, lastY);
                 } else {
                     float x = event.getX(index), y = event.getY(index);

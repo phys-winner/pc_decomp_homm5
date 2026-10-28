@@ -11,6 +11,9 @@
 #include <unistd.h>
 
 int void_modules_start(void);
+#ifndef HOMM5_LEGACY_UI
+void void_highlight_init(void);   /* highlight.c: the map's object highlight without its per-frame rebuild */
+#endif
 
 void void_files_std_init(void);
 static int exiting;
@@ -100,6 +103,9 @@ int void_game_main(const char *game, const char *data, const char *images, int s
         void_log("[selftest] imports and process TLS initialized; entry %08X, result %d", entry, code);
     } else {
         void_touch_engine_init();
+#ifndef HOMM5_LEGACY_UI
+        void_highlight_init();
+#endif
         void_input_script_start();
         void_log("[void] starting lifted H5_Game.exe at %08X", entry);
         code = (int)void_call_guest(entry, 0, NULL, 1);

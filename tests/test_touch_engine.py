@@ -19,15 +19,17 @@ static uint32_t mock_screen = 0x4000;
 static int downs, ups, doubles, hovers, picks, commands, evaluations, releases, cancels, cameras;
 static int ui_pans, last_camera_kind;
 static int force_ui, busy, pick_available = 1, change_on_down;
-static int inspections,inspection_changes_screen;
-static int previews, placement_begins, placement_moves, placement_ends, placement_cancels;
+static int inspections,inspection_changes_screen,held_details;
+static int previews, placement_begins, placement_moves, placement_ends, placement_cancels, reserve_slot = -1;
 static int double_object, same_selection, owned, town_visible, town_views, town_selections, ghost_views;
 static int announcement_visible, announcement_probes, announcement_actions, announcement_changes_screen;
 static int picked_active, cast_available, combat_shortcuts, shortcut_effect, clear_target_during_prepare, combat_pick_changes_screen;
 static int context_ctors, context_dtors, cast_changes_screen;
 static int book_type, book_picks, book_actions, book_wm_consumed, book_pick_changes_screen, book_pick_closes;
-static int book_missing_picker, book_missing_action;
-static uint32_t book_descriptor;
+static int book_missing_picker, book_missing_action, book_probes, book_swipes;
+static uint32_t book_descriptor, book_probe_descriptor, last_book_swipe;
+static uint32_t atb_unit, atb_unit2;
+static int atb_lookups, minimap_hit, hero_moving, hero_stops;
 static int town_actions,town_blocked,town_busy;
 static int town_portrait_hits,town_portrait_opens,town_portrait_changes_screen;
 static uint32_t town_portrait_pick;
@@ -50,6 +52,8 @@ int void_input_pointer(uint32_t *x,uint32_t *y,uint64_t *moved) {
     *x=physical_x;*y=physical_y;*moved=physical_moved_ns;return physical_seen;
 }
 void void_input_screen_size(int *w,int *h) {*w=1280;*h=800;}
+static int key_down[256];
+void void_input_key(uint32_t vk,int down) {key_down[vk&255]=down;}
 static float cursor_offset_x,cursor_offset_y;
 static int show_touch_cursor;
 float void_port_cursor_offset(int vertical) {return vertical?cursor_offset_y:cursor_offset_x;}
@@ -94,7 +98,9 @@ static uint32_t void_call_guest(uint32_t va, int n, const uint32_t *args, int po
     if(va==0xAC3590) {assert(!n && pops && loading_stage==2);loading_stage=3;return loading_no_command ? 0 : 0x73000;}
     assert(va == 0xD119FC && n == 5 && !pops);
     if (args[2] == 0xF2DAF4) {
+        if(args[3]==0xF34164) return minimap_hit && args[0]==0x6800 ? 0x6A00 : 0;   /* NUI::CAdvMinimap */
         if(args[3]==0xF786F0) return MEM32(args[0])==0xE85E94 ? args[0]-0x17C : 0;
+        if(args[3]==0xF2DC80) return 0;   /* CWindowSlider: none here */
         if(args[3]==0xF2DA88) {assert(args[0]==0x6044);return 0x6000;}
         if(args[0]==0x6810 || args[0]==0x6820 || args[0]==0x6900)return 0;
         assert(args[0] == 0x6800);
@@ -108,6 +114,11 @@ static uint32_t void_call_guest(uint32_t va, int n, const uint32_t *args, int po
     return mock_screen;
 }
 static uint32_t void_call_guest_this(uint32_t va, uint32_t self, int n, const uint32_t *args) {
+    /* A held world object's details (UI root +70 at the published point, forced). */
+    if(va==0x487A84) {
+        assert(self==0x6000&&n==2&&args[1]==1);++held_details;
+        assert(MEMF(0x101E0)==MEMF(args[0])&&MEMF(0x101E4)==MEMF(args[0]+4));return 0;
+    }
     if(va==0x487A80) {
         assert(self==0x6000&&n==2&&args[1]==1);++inspections;
         assert(MEMF(0x101E0)==MEMF(args[0])&&MEMF(0x101E4)==MEMF(args[0]+4));
@@ -198,7 +209,12 @@ static uint32_t void_call_guest_this(uint32_t va, uint32_t self, int n, const ui
     }
     if (va==0x683450 || va==0x67BAB0) {
         assert(self==0x4000 && n==4 && args[0]==0x10000 && !args[1] && !args[2] && args[3]==1);
-        assert(MEMF(args[0])==731 && MEMF(args[0]+4)==333);
+        if (MEMF(args[0])!=731 || MEMF(args[0]+4)!=333) {
+            /* A bookmark probe around a tap that hit no part: within its reach, after the click. */
+            float dx=MEMF(args[0])-731, dy=MEMF(args[0]+4)-333;
+            assert(dx*dx+dy*dy<=46.0f*46.0f && downs+doubles==1 && ups==1 && book_picks==1);
+            ++book_probes;return book_probe_descriptor;
+        }
         assert(va==(book_type==1 ? 0x683450u : 0x67BAB0u));
         assert(downs+doubles==1 && ups==1); /* The window manager has already declined the click. */
         ++book_picks;if(book_pick_changes_screen)mock_screen=0x5000;
@@ -206,10 +222,15 @@ static uint32_t void_call_guest_this(uint32_t va, uint32_t self, int n, const ui
         return book_descriptor;
     }
     if (va==0x493ED0) {
-        assert(self==book_descriptor+4 && n==1 && !args[0]);
-        assert(g_edx==MEM32(book_descriptor+0x10));
-        assert(MEM32(self)==0x41000 && MEM32(self+4)>MEM32(self));
+        assert((self==book_descriptor+4 || self==book_probe_descriptor+4) && n==1 && !args[0]);
+        assert(g_edx==MEM32(self-4+0x10));
+        assert((MEM32(self)==0x41000 || MEM32(self)==0x41100) && MEM32(self+4)>MEM32(self));
         ++book_actions;return 0;
+    }
+    /* The books' page and bookmark message handlers (book_swipe): thiscall on the book, one argument. */
+    if (va==0x686020 || va==0x686080 || va==0x6860C0 || va==0x6860E0 || va==0x67E2E0 || va==0x67E320 || va==0x67E2A0) {
+        assert(self==0x4000 && n==1 && !args[0] && MEM32(0x4000)==(va>=0x680000 ? 0xE30EB4u : 0xE30CA4u));
+        ++book_swipes;last_book_swipe=va;return 1;
     }
     if(va==0xA4DCB0) {assert(self==0x6000 && !n);return focused_field;}
     if(va==0xC3EF90 || va==0xC3EC00 || va==0xC89510 || va==0xC89570) {
@@ -229,6 +250,14 @@ static uint32_t void_call_guest_this(uint32_t va, uint32_t self, int n, const ui
         float value; memcpy(&value,args,4); assert(value==scroll_value); ++scroll_notifies; return 0;
     }
     if (va == 0x540DA0) { assert(self==0x4000 && !n); MEM32(0x42D4)=0; return 0; }
+    /* The initiative bar's portrait lookup (combat screen +494): two portraits left of logical x 300. */
+    if (va == 0x55DC40) {
+        assert(self==0x8700 && n==1 && args[0]==0x10000); ++atb_lookups;
+        return MEMF(args[0]) < 200 ? atb_unit : MEMF(args[0]) < 300 ? atb_unit2 : 0;
+    }
+    /* The adventure controller's hero-on-the-move mode and its cancel command. */
+    if (va == 0x603370) { assert(self==0x8000 && n==1 && args[0]==3); return 0x123400u | (uint32_t)hero_moving; }
+    if (va == 0x604D60) { assert(self==0x8000 && !n); ++hero_stops; return 0; }
     if (va == 0x667470) {
         assert(self==0x8600 && n==2 && args[0]==0x10000 && args[1]<=1);
         assert(MEMF(args[0])==731 && MEMF(args[0]+4)==333);
@@ -291,6 +320,8 @@ static uint32_t void_call_guest_this(uint32_t va, uint32_t self, int n, const ui
     }
     if (va == 0x54E030) { assert(self==0x10008 && !n); ++releases; return 0; }
     if (va == 0x576260) { assert(self==0x8500 && !n); ++placement_cancels; return 0; }
+    /* The tactics reserve's slot hit test (PlacementBar), -1 for none. */
+    if (va == 0x5764A0) { assert(self==0x8500 && n==1 && args[0]==0x10000); return (uint32_t)reserve_slot; }
     if (va == 0x603980) { assert(self == 0x8000 && !n); if(clear_target_during_prepare)MEM32(0x8044)=0; return busy; }
     if (va == 0x41A760) { assert(self==0x10014 && n==1 && args[0]==0x4750); return ((MEM32(self)^MEM32(args[0]))&0xFFFFFFu)==0; }
     if (va == 0x603360) { assert(self == 0x8000 && !n); return MEM32(0x8044)==0; }
@@ -365,14 +396,16 @@ static void reset(int kind) {
     edit_kind=text_arms=text_cancelled=text_chars=text_keys=0;focused_field=0;
     MEM32(0x30000)=0xABCDE;MEM32(0x31000)=0xBCDEF;MEM8(0x30141)=0;
     ui_pans=last_camera_kind=0;force_ui=busy=change_on_down=0; pick_available=1;
-    inspections=inspection_changes_screen=0;MEM32(0x6000)=0;
-    previews=placement_begins=placement_moves=placement_ends=placement_cancels=0;
+    inspections=inspection_changes_screen=held_details=0;MEM32(0x6000)=0;
+    previews=placement_begins=placement_moves=placement_ends=placement_cancels=0;reserve_slot=-1;
     double_object=town_views=town_selections=ghost_views=0; same_selection=owned=town_visible=1;
     announcement_visible=announcement_probes=announcement_actions=announcement_changes_screen=0;
     picked_active=cast_available=combat_shortcuts=shortcut_effect=clear_target_during_prepare=combat_pick_changes_screen=0;
     context_ctors=context_dtors=cast_changes_screen=0;
     book_type=book_picks=book_actions=book_wm_consumed=book_pick_changes_screen=book_pick_closes=0;
-    book_missing_picker=book_missing_action=0;book_descriptor=0x40000;
+    book_missing_picker=book_missing_action=book_probes=book_swipes=0;book_descriptor=0x40000;
+    book_probe_descriptor=last_book_swipe=0;
+    atb_unit=atb_unit2=0;atb_lookups=minimap_hit=hero_moving=hero_stops=0;
     town_actions=town_blocked=town_busy=0;MEM32(0x414C)=MEM32(0x4150)=0;
     town_portrait_hits=town_portrait_opens=town_portrait_changes_screen=0;
     town_portrait_pick=0;MEM32(0x42A8)=0;MEM32(0x44E8)=MEM32(0x4600)=0;MEM32(0x41BC)=0;
@@ -607,7 +640,37 @@ int main(void) {
     event(TOUCH_TAP,900,400);assert(!book_picks && !book_actions);
     reset_book(0);book_pick_closes=1;event(TOUCH_BEGIN,900,400);event(TOUCH_TAP,900,400);
     assert(book_picks==1 && !book_actions);
-    reset_book(0);book_descriptor=0;event(TOUCH_BEGIN,900,400);event(TOUCH_TAP,900,400);assert(book_picks==1 && !book_actions);
+    reset_book(0);book_descriptor=0;event(TOUCH_BEGIN,900,400);event(TOUCH_TAP,900,400);
+    assert(book_picks==1 && book_probes==24 && !book_actions);   /* three rings of bookmark probes, none there */
+    /* A tap beside a bookmark takes it: the nearest probe that hits a "MB_Button_School" part. */
+    reset_book(0);book_descriptor=0;book_probe_descriptor=0x40024;memcpy(ADDR(0x40024),ADDR(0x40000),36);
+    MEM32(0x40028)=0x41100;MEM32(0x4002C)=0x41110;MEM32(0x40034)=4;memcpy(ADDR(0x41100),"MB_Button_School",16);
+    event(TOUCH_BEGIN,900,400);event(TOUCH_TAP,900,400);assert(book_picks==1 && book_probes==1 && book_actions==1 && g_edx==4);
+    /* Any other part found beside the tap is no bookmark: nothing. */
+    reset_book(0);book_descriptor=0;book_probe_descriptor=0x40000;
+    event(TOUCH_BEGIN,900,400);event(TOUCH_TAP,900,400);assert(book_probes==24 && !book_actions);
+    /* Swipes turn pages (left: next) and step bookmarks (up: the previous one); the orcish book has two pages and a tab. */
+    reset_book(0);event(TOUCH_BEGIN,900,400);event(TOUCH_PAN,800,404);event(TOUCH_END,800,404);
+    assert(book_swipes==1 && last_book_swipe==0x686020 && !book_picks && !book_actions && !downs && !ups);
+    reset_book(0);event(TOUCH_BEGIN,900,400);event(TOUCH_PAN,1000,396);event(TOUCH_END,1000,396);
+    assert(book_swipes==1 && last_book_swipe==0x686080);
+    reset_book(0);event(TOUCH_BEGIN,900,400);event(TOUCH_PAN,904,300);event(TOUCH_END,904,300);
+    assert(book_swipes==1 && last_book_swipe==0x6860C0);
+    reset_book(0);event(TOUCH_BEGIN,900,400);event(TOUCH_PAN,896,500);event(TOUCH_END,896,500);
+    assert(book_swipes==1 && last_book_swipe==0x6860E0);
+    reset_book(1);event(TOUCH_BEGIN,900,400);event(TOUCH_PAN,800,400);event(TOUCH_END,800,400);
+    assert(book_swipes==1 && last_book_swipe==0x67E2E0);
+    reset_book(1);event(TOUCH_BEGIN,900,400);event(TOUCH_PAN,1000,400);event(TOUCH_END,1000,400);
+    assert(book_swipes==1 && last_book_swipe==0x67E320);
+    reset_book(1);event(TOUCH_BEGIN,900,400);event(TOUCH_PAN,900,520);event(TOUCH_END,900,520);
+    assert(book_swipes==1 && last_book_swipe==0x67E2A0);
+    /* Short or diagonal travel, a held finger, a closing book or a start on a window: no swipe. */
+    reset_book(0);event(TOUCH_BEGIN,900,400);event(TOUCH_PAN,860,404);event(TOUCH_END,860,404);assert(!book_swipes);
+    reset_book(0);event(TOUCH_BEGIN,900,400);event(TOUCH_PAN,800,330);event(TOUCH_END,800,330);assert(!book_swipes);
+    reset_book(0);event(TOUCH_BEGIN,900,400);event(TOUCH_HOLD_BEGIN,900,400);event(TOUCH_HOLD_DRAG,800,400);
+    event(TOUCH_END,800,400);assert(!book_swipes && !book_actions);
+    reset_book(0);event(TOUCH_BEGIN,900,400);event(TOUCH_PAN,800,400);MEM8(0x41ED)=1;event(TOUCH_END,800,400);assert(!book_swipes);
+    reset_book(0);force_ui=1;event(TOUCH_BEGIN,900,400);event(TOUCH_PAN,800,400);event(TOUCH_END,800,400);assert(!book_swipes);
     reset_book(0);book_descriptor+=4;event(TOUCH_BEGIN,900,400);event(TOUCH_TAP,900,400);assert(!book_actions);
     reset_book(0);book_descriptor=0x40048;event(TOUCH_BEGIN,900,400);event(TOUCH_TAP,900,400);assert(!book_actions);
     reset_book(0);MEM32(0x41B8)=0x3FFFF;event(TOUCH_BEGIN,900,400);event(TOUCH_TAP,900,400);assert(!book_actions);
@@ -736,6 +799,166 @@ int main(void) {
     assert(!cameras && commands==1 && picks==3 && evaluations==3);
     reset(2); event(TOUCH_BEGIN,900,400); event(TOUCH_HOLD_BEGIN,900,400); event(TOUCH_HOLD_DRAG,950,410);
     event(TOUCH_END,950,410); assert(!cameras && !cancels && commands==1);
+    /* A held creature is still aimed at: the release gives the order. */
+    reset(2); picked_active=1; event(TOUCH_BEGIN,900,400); event(TOUCH_HOLD_BEGIN,900,400); event(TOUCH_END,900,400);
+    assert(commands==1 && !cancels && !gesture.active);
+    /* ToE: a second finger by the aiming one shows the card of what it aims at at once (with the
+       original's RightClickEnabled option), without waiting for the tooltip. Its tap keeps the card
+       until the aiming finger lifts, with no order; later second-finger taps switch the card and the
+       effects panel (each request steps the tooltip mode; two return to the card). */
+    reset(2); picked_active=1; MEM32(0x6000)=0x94000; MEM32(0x94070)=0x487A84; MEM8(0xF39CA0)=1;
+    event(TOUCH_BEGIN,900,400); event(TOUCH_HOLD_BEGIN,900,400); event(TOUCH_SECOND_BEGIN,1200,300);
+    assert(gesture.card && gesture.held && !gesture.cancelled && !cancels && gesture.x==900 && gesture.y==400);
+    assert(held_details==1 && gesture.card_mode==1);
+    MEM32(0x6008)=0x115000; void_touch_ui_pump(); assert(held_details==1);
+    void_touch_ui_pump(); assert(held_details==1);
+    event(TOUCH_SECOND_TAP,1200,300); assert(held_details==1 && gesture.card && gesture.card_sticky && !cancels && !commands);
+    event(TOUCH_SECOND_END,1200,300); assert(gesture.card && gesture.held && gesture.world_hover && !commands);
+    event(TOUCH_SECOND_BEGIN,1200,300); assert(held_details==2 && gesture.card_mode==2);
+    event(TOUCH_SECOND_TAP,1200,300); event(TOUCH_SECOND_END,1200,300); assert(gesture.card);
+    event(TOUCH_SECOND_BEGIN,1200,300); assert(held_details==4 && gesture.card_mode==1);
+    event(TOUCH_SECOND_TAP,1200,300); event(TOUCH_SECOND_END,1200,300);
+    event(TOUCH_TAP,900,400); assert(!commands && gesture.card);   /* the first finger's release, reported as a tap */
+    int card_hovers=hovers; event(TOUCH_END,900,400);
+    assert(!commands && !cancels && !gesture.card && !gesture.active && hovers==card_hovers+1);
+    MEM32(0x6008)=0;
+    /* From a drag (no hold): the card comes and goes, the drag's own state returns. */
+    reset(2); picked_active=1; MEM32(0x6000)=0x94000; MEM32(0x94070)=0x487A84; MEM8(0xF39CA0)=1;
+    event(TOUCH_BEGIN,900,400); event(TOUCH_PAN,950,410); event(TOUCH_SECOND_BEGIN,1200,300);
+    assert(gesture.card && gesture.held && gesture.world_hover);
+    MEM32(0x6008)=0x115000; void_touch_ui_pump(); assert(held_details==1);
+    event(TOUCH_HOLD_DRAG,960,420); assert(gesture.card && gesture.x==960);
+    event(TOUCH_SECOND_HOLD,1200,300); event(TOUCH_SECOND_END,1200,300);
+    assert(!gesture.card && !gesture.held && !gesture.world_hover && !commands);
+    event(TOUCH_END,960,420); assert(commands==1 && !cancels); MEM32(0x6008)=0;
+    /* The aiming finger lifted while the card rests: no order, the card stays until the second
+       finger lifts, then the gesture is over and its abort is spent. */
+    reset(2); picked_active=1; MEM32(0x6000)=0x94000; MEM32(0x94070)=0x487A84; MEM8(0xF39CA0)=1;
+    event(TOUCH_BEGIN,900,400); event(TOUCH_HOLD_BEGIN,900,400); event(TOUCH_SECOND_BEGIN,1200,300);
+    MEM32(0x6008)=0x115000; void_touch_ui_pump(); assert(held_details==1);
+    card_hovers=hovers; event(TOUCH_FIRST_END,910,405);
+    assert(!commands && gesture.active && gesture.card==2 && hovers==card_hovers && gesture.x==900);
+    void_touch_ui_pump(); assert(hovers==card_hovers+1 && MEMF(0x101E0)!=-1 && held_details==1);
+    event(TOUCH_SECOND_END,1200,300); assert(!commands && !gesture.active && !gesture.card && MEMF(0x101E0)==-1);
+    event(TOUCH_ABORT,0,0); assert(!commands && !cancels); MEM32(0x6008)=0;
+    /* A spell aim shows its target's card the same way and still casts, or stays armed. */
+    reset(2); MEM32(0x4394)=42; event(TOUCH_BEGIN,900,400); event(TOUCH_HOLD_BEGIN,900,400);
+    event(TOUCH_SECOND_BEGIN,1200,300); assert(gesture.card && !cancels);
+    event(TOUCH_SECOND_HOLD,1200,300); event(TOUCH_SECOND_END,1200,300); event(TOUCH_END,900,400);
+    assert(commands==1 && !cancels);
+    reset(2); MEM32(0x4394)=42; event(TOUCH_BEGIN,900,400); event(TOUCH_HOLD_BEGIN,900,400);
+    event(TOUCH_SECOND_BEGIN,1200,300); event(TOUCH_SECOND_TAP,1200,300); event(TOUCH_SECOND_END,1200,300);
+    event(TOUCH_END,900,400); assert(!commands && !cancels);   /* a tapped card: no cast */
+    reset(2); MEM32(0x4394)=42; event(TOUCH_BEGIN,900,400); event(TOUCH_HOLD_BEGIN,900,400);
+    event(TOUCH_SECOND_BEGIN,1200,300); event(TOUCH_FIRST_END,900,400); event(TOUCH_SECOND_END,1200,300);
+    event(TOUCH_ABORT,0,0); assert(!commands && !cancels && !gesture.active);
+    /* The resting finger moved: the card holds the view still (no camera) and no order follows. */
+    reset(2); picked_active=1; event(TOUCH_BEGIN,900,400); event(TOUCH_HOLD_BEGIN,900,400);
+    event(TOUCH_SECOND_BEGIN,1200,300); event(TOUCH_TWO_FINGER_BEGIN,1050,350);
+    assert(gesture.card && gesture.held && !gesture.panning);
+    event(TOUCH_TRANSFORM,1060,360); event(TOUCH_TWO_FINGER_CANCEL,1060,360); event(TOUCH_END,1060,360);
+    assert(!cameras && !commands && !gesture.card);
+    /* Without the option, or under a modal combat window, no card. */
+    reset(2); picked_active=1; MEM32(0x6000)=0x94000; MEM32(0x94070)=0x487A84; MEM8(0xF39CA0)=0;
+    event(TOUCH_BEGIN,900,400); event(TOUCH_HOLD_BEGIN,900,400); event(TOUCH_SECOND_BEGIN,1200,300);
+    MEM32(0x6008)=0x115000; void_touch_ui_pump(); assert(!held_details); event(TOUCH_SECOND_END,1200,300);
+    event(TOUCH_END,900,400); assert(commands==1); MEM32(0x6008)=0;
+    reset(2); picked_active=1; MEM32(0x6000)=0x94000; MEM32(0x94070)=0x487A84; MEM8(0xF39CA0)=1;
+    event(TOUCH_BEGIN,900,400); event(TOUCH_HOLD_BEGIN,900,400); MEM32(0x42D4)=2; event(TOUCH_SECOND_BEGIN,1200,300);
+    MEM32(0x6008)=0x115000; void_touch_ui_pump(); assert(!held_details); MEM32(0x42D4)=0;
+    event(TOUCH_SECOND_END,1200,300); event(TOUCH_END,900,400); MEM32(0x6008)=0;
+    /* Placement keeps the old second finger: it cancels; the first finger's lift ends it at once. */
+    reset(2); MEM32(0x42E0)=0x1000; event(TOUCH_BEGIN,900,400); event(TOUCH_PAN,950,410);
+    event(TOUCH_SECOND_BEGIN,1200,300); assert(!gesture.card && gesture.cancelled && placement_cancels==1);
+    event(TOUCH_FIRST_END,950,410); assert(!gesture.active);
+    event(TOUCH_SECOND_END,1200,300); event(TOUCH_ABORT,0,0); assert(!placement_ends && !commands);
+    /* A held interface element lifted past a second finger ends then, as an abort always did. */
+    reset(1);MEM32(0x6000)=0x94000;MEM32(0x94070)=0x487A80;
+    event(TOUCH_BEGIN,100,200);event(TOUCH_HOLD_BEGIN,100,200);event(TOUCH_SECOND_BEGIN,200,250);
+    assert(gesture.second_info&&gesture.held&&gesture.active);
+    event(TOUCH_FIRST_END,110,220);assert(!gesture.active&&!inspections&&!commands&&MEMF(0x101E0)==-1);
+    event(TOUCH_SECOND_END,200,250);event(TOUCH_ABORT,0,0);assert(!inspections&&!commands);
+    /* Map objects: a still hold shows their card, no order there. */
+    reset(1); MEM32(0x6000)=0x94000; MEM32(0x94070)=0x487A84; MEM8(0xF39CA0)=1;
+    event(TOUCH_BEGIN,900,400); event(TOUCH_HOLD_BEGIN,900,400); MEM32(0x6008)=0x115000; void_touch_ui_pump();
+    assert(held_details==1); event(TOUCH_END,900,400); assert(!commands); MEM32(0x6008)=0; MEM8(0xF39CA0)=0;
+    /* ToE initiative bar: a tap selects a portrait (clicked as before, then hovered between touches as by a
+       resting mouse); the next tap on it shows its card at once (UI root +70) and holds it without a finger; each
+       further tap switches card and effects once (one request; two back to the card, the tooltip steps through
+       its short info); a hold or second finger on the open card changes nothing. */
+    reset(2); MEM32(0x4494)=0x8700; atb_unit=0x8A00; atb_unit2=0x8B00;
+    MEM32(0x6000)=0x94000; MEM32(0x94070)=0x487A84; MEM8(0xF39CA0)=1;
+    event(TOUCH_BEGIN,100,700); event(TOUCH_TAP,100,700); event(TOUCH_END,100,700);
+    assert(downs==1 && ups==1 && !held_details && atb.unit==0x8A00 && !atb.card && !commands);
+    void_touch_frame_presented(); int atb_hovers=hovers; void_touch_ui_pump(); void_touch_ui_pump();
+    assert(hovers==atb_hovers+2 && MEMF(0x101E0)==91 && MEMF(0x101E4)==573);
+    event(TOUCH_BEGIN,104,704); assert(gesture.atb && gesture.x==100 && gesture.y==700);
+    event(TOUCH_DOUBLE_TAP,104,704); event(TOUCH_END,104,704);
+    assert(held_details==1 && atb.card && atb.mode==1 && downs==1 && !doubles && ups==1);
+    lifted_timeout_calls=0; g_esp=0x20000; sub_006B92E0(); assert(lifted_timeout_calls==1);   /* held like a finger */
+    void_touch_frame_presented(); void_touch_ui_pump(); assert(MEMF(0x101E0)==91 && MEMF(0x101E4)==573);
+    event(TOUCH_BEGIN,98,698); event(TOUCH_TAP,98,698); event(TOUCH_END,98,698);
+    assert(held_details==2 && atb.mode==2 && downs==1);   /* the effects */
+    event(TOUCH_BEGIN,100,700); event(TOUCH_TAP,100,700); event(TOUCH_END,100,700);
+    assert(held_details==4 && atb.mode==1 && downs==1);   /* the card again */
+    MEM32(0x6008)=0x115000;
+    event(TOUCH_BEGIN,100,700); event(TOUCH_HOLD_BEGIN,100,700); void_touch_ui_pump();
+    event(TOUCH_SECOND_BEGIN,500,300); event(TOUCH_SECOND_TAP,500,300); event(TOUCH_SECOND_END,500,300);
+    event(TOUCH_END,100,700); void_touch_frame_presented(); void_touch_ui_pump();
+    assert(held_details==4 && atb.card && atb.mode==1 && !commands);
+    /* A touch beside the open card only closes it: no click, no order, no held tooltip any more. */
+    int atb_downs=downs; event(TOUCH_BEGIN,900,400); event(TOUCH_TAP,900,400); event(TOUCH_END,900,400);
+    assert(!atb.unit && !atb.card && downs==atb_downs && held_details==4 && !commands && !picks);
+    g_esp=0x20000; sub_006B92E0(); assert(g_eax==0x7FFFFFFF); MEM32(0x6008)=0;
+    /* Another portrait while one is open or selected: that one is selected (and clicked); a tap on the field with a
+       portrait only selected is an ordinary order; the bar moving under the selection ends it. */
+    event(TOUCH_BEGIN,100,700); event(TOUCH_TAP,100,700); event(TOUCH_END,100,700);
+    event(TOUCH_BEGIN,100,700); event(TOUCH_TAP,100,700); event(TOUCH_END,100,700); assert(atb.card && held_details==5);
+    atb_downs=downs; event(TOUCH_BEGIN,300,700); event(TOUCH_TAP,300,700); event(TOUCH_END,300,700);
+    assert(atb.unit==0x8B00 && !atb.card && downs==atb_downs+1 && held_details==5);
+    picked_active=1; event(TOUCH_BEGIN,900,400); event(TOUCH_TAP,900,400); event(TOUCH_END,900,400);
+    assert(!atb.unit && commands==1); picked_active=0;
+    event(TOUCH_BEGIN,100,700); event(TOUCH_TAP,100,700); event(TOUCH_END,100,700); assert(atb.unit==0x8A00);
+    atb_unit=0x8C00; void_touch_frame_presented(); void_touch_ui_pump(); assert(!atb.unit && MEMF(0x101E0)==-1);
+    /* A held portrait's second-finger taps switch its card the same way, one switch a tap. */
+    reset(2); MEM32(0x4494)=0x8700; atb_unit=0x8A00; MEM32(0x6000)=0x94000; MEM32(0x94070)=0x487A84; MEM8(0xF39CA0)=1;
+    event(TOUCH_BEGIN,100,700); event(TOUCH_HOLD_BEGIN,100,700); MEM32(0x6008)=0x115000;
+    event(TOUCH_SECOND_BEGIN,500,300); event(TOUCH_SECOND_TAP,500,300); event(TOUCH_SECOND_END,500,300);
+    assert(held_details==1 && gesture.card_mode==1);
+    event(TOUCH_SECOND_BEGIN,500,300); event(TOUCH_SECOND_TAP,500,300); event(TOUCH_SECOND_END,500,300);
+    assert(held_details==2 && gesture.card_mode==2);
+    event(TOUCH_SECOND_BEGIN,500,300); event(TOUCH_SECOND_TAP,500,300); event(TOUCH_SECOND_END,500,300);
+    assert(held_details==4 && gesture.card_mode==1);
+    event(TOUCH_END,100,700); assert(!commands); MEM32(0x6008)=0;
+    /* ToE minimap: a tap clicks once no second tap can follow; a double tap toggles the object highlight (Alt held)
+       without any click, so the camera stays; a touch elsewhere clicks a waiting tap at once; a two-finger tap on
+       the minimap toggles too, while one on the map only cancels an aim or stops the hero. */
+    reset(1); minimap_hit=1; MEM32(0x6A00)=0xE23B50;
+    event(TOUCH_BEGIN,100,200); event(TOUCH_TAP,100,200); event(TOUCH_END,100,200);
+    void_touch_frame_presented(); void_touch_ui_pump(); assert(!downs && !ups && !key_down[0x12]);
+    event(TOUCH_BEGIN,100,200); event(TOUCH_DOUBLE_TAP,100,200); event(TOUCH_END,100,200);
+    mock_now_ns+=500000000ull; void_touch_frame_presented(); void_touch_ui_pump();
+    assert(key_down[0x12] && !downs && !ups && !doubles);
+    event(TOUCH_BEGIN,100,200); event(TOUCH_TAP,100,200); event(TOUCH_END,100,200);
+    void_touch_frame_presented(); void_touch_ui_pump(); assert(!downs);
+    mock_now_ns+=500000000ull; void_touch_ui_pump(); assert(downs==1 && ups==1 && MEMF(0x101E0)==91);
+    void_touch_frame_presented(); void_touch_ui_pump(); assert(MEMF(0x101E0)==-1);   /* the hover leaves */
+    event(TOUCH_BEGIN,100,200); event(TOUCH_TAP,100,200); event(TOUCH_END,100,200);
+    event(TOUCH_BEGIN,900,400); assert(downs==2 && ups==2); event(TOUCH_END,900,400);
+    event(TOUCH_BEGIN,100,200); event(TOUCH_TAP,100,200); event(TOUCH_END,100,200);
+    /* Another screen meanwhile: no click there, and the highlight leaves with its screen. */
+    mock_screen=0x5000; mock_now_ns+=500000000ull; void_touch_ui_pump(); assert(downs==2 && !key_down[0x12]);
+    mock_screen=0x4000;
+    event(TOUCH_BEGIN,100,200); event(TOUCH_TWO_FINGER_BEGIN,110,210); event(TOUCH_TWO_FINGER_TAP,110,210);
+    event(TOUCH_END,110,210); assert(key_down[0x12] && !commands && !cancels && downs==2);
+    event(TOUCH_BEGIN,100,200); event(TOUCH_TWO_FINGER_BEGIN,110,210); event(TOUCH_TWO_FINGER_TAP,110,210);
+    event(TOUCH_END,110,210); assert(!key_down[0x12] && downs==2);
+    MEM32(0x6A00)=0; event(TOUCH_BEGIN,100,200); event(TOUCH_DOUBLE_TAP,100,200); event(TOUCH_END,100,200);
+    assert(!key_down[0x12] && doubles==1);   /* another window's double tap stays its own */
+    reset(1); event(TOUCH_BEGIN,900,400); event(TOUCH_TWO_FINGER_BEGIN,910,410); event(TOUCH_TWO_FINGER_TAP,910,410);
+    event(TOUCH_END,910,410); assert(!key_down[0x12] && !hero_stops && !commands);
+    reset(1); hero_moving=1; event(TOUCH_BEGIN,900,400); event(TOUCH_TWO_FINGER_BEGIN,910,410);
+    event(TOUCH_TWO_FINGER_TAP,910,410); event(TOUCH_END,910,410); assert(!key_down[0x12] && hero_stops==1 && !commands);
     /* Two fingers on the battlefield are the camera and give no order. */
     reset(2); event(TOUCH_BEGIN,900,400); event(TOUCH_TWO_FINGER_BEGIN,900,400); event(TOUCH_TRANSFORM,920,410);
     event(TOUCH_END,920,410); assert(cameras==1 && last_camera_kind==1 && !commands && !cancels);
@@ -783,6 +1006,20 @@ int main(void) {
     assert(placement_cancels==1 && cancels==1 && !commands);
     reset(2); MEM32(0x42E0)=0x1000; event(TOUCH_BEGIN,900,400); force_ui=1; event(TOUCH_TAP,900,400); event(TOUCH_END,900,400);
     assert(placement_begins==1 && placement_cancels==1 && !placement_ends && !commands);
+    /* The reserve (PlacementBar) is interface the placement controller owns: a stack is picked up
+       from it and dropped back on the field, or dropped into it from the field. */
+    reset(2); MEM32(0x42E0)=0x1000; force_ui=1; reserve_slot=3; event(TOUCH_BEGIN,900,400);
+    assert(!gesture.ui && gesture.placement && placement_begins==1 && !downs);
+    force_ui=0; reserve_slot=-1; event(TOUCH_PAN,950,410); event(TOUCH_END,950,410);
+    assert(placement_moves==1 && placement_ends==1 && !placement_cancels && !commands && !downs && !ups);
+    reset(2); MEM32(0x42E0)=0x1000; event(TOUCH_BEGIN,900,400); event(TOUCH_PAN,950,410);
+    force_ui=1; reserve_slot=2; event(TOUCH_END,950,410);
+    assert(placement_begins==1 && placement_ends==1 && !placement_cancels && !commands);
+    reset(2); MEM32(0x42E0)=0x1000; event(TOUCH_BEGIN,900,400); force_ui=1; reserve_slot=0; event(TOUCH_TAP,900,400);
+    assert(placement_begins==1 && placement_ends==1 && !placement_cancels && !commands);
+    /* Other interface over the arena stays interface during placement. */
+    reset(2); MEM32(0x42E0)=0x1000; force_ui=1; event(TOUCH_BEGIN,900,400); event(TOUCH_TAP,900,400);
+    assert(gesture.ui || !gesture.active); assert(!placement_begins && !placement_ends && downs==1);
 
     /* Announcement ownership is native, includes a read-only probe, and consumes a whole gesture. */
     reset(1);MEM32(0x40EC)=0x8600;announcement_visible=1;

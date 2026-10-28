@@ -12,6 +12,9 @@
  * machine's own name resolving to its LAN addresses. Calls that wait release
  * the guest machine. */
 #include "host.h"
+#if defined(VOID_ANDROID_APP) && !defined(HOMM5_LEGACY_UI)
+#include <jni.h>
+#endif
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -247,13 +250,144 @@ static int interfaces_recent(net_interface *out, int max)
     return n;
 }
 
-/* LAN addresses first (wlan, then any other), loopback last. */
+#ifndef HOMM5_LEGACY_UI
+/* LAN over Tailscale or another VPN (option port_lan_vpn, off by default). A
+ * tunnel has no broadcast and Tailscale spreads its members over 100.64.0.0/10,
+ * so a small discovery broadcast also goes to the peers the player listed in
+ * the launcher (names resolved on a thread of their own, every minute), and
+ * the game is offered the tunnel's address first: it writes its own address
+ * into its session packets. Off by default because a Wi-Fi player joining a
+ * host that has it on would be handed an address only tailnet members reach. */
+#define VPN_PEERS 16
+static char vpn_names[VPN_PEERS][128];
+static int vpn_name_count, vpn_resolver_started;
+static uint32_t vpn_addresses[VPN_PEERS];
+static int vpn_address_count;
+static pthread_mutex_t vpn_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* A tunnel member: point-to-point (tun) interface with a 100.64.0.0/10 address. */
+static int vpn_interface(const net_interface *n)
+{
+    uint32_t address = ntohl(n->address);
+    return (address & 0xFFC00000u) == 0x64400000u &&
+           ((n->flags & IFF_POINTOPOINT) || !strncmp(n->name, "tun", 3));
+}
+
+static int vpn_resolve(uint32_t *out)
+{
+    char names[VPN_PEERS][128];
+    pthread_mutex_lock(&vpn_lock);
+    int count = vpn_name_count;
+    memcpy(names, vpn_names, sizeof names);
+    pthread_mutex_unlock(&vpn_lock);
+    int found = 0;
+    for (int i = 0; i < count && found < VPN_PEERS; ++i) {
+        struct in_addr literal;
+        if (inet_aton(names[i], &literal)) { out[found++] = literal.s_addr; continue; }
+        struct addrinfo hints, *list = NULL;
+        memset(&hints, 0, sizeof hints);
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_DGRAM;
+        if (getaddrinfo(names[i], NULL, &hints, &list)) continue;
+        for (struct addrinfo *a = list; a && found < VPN_PEERS; a = a->ai_next)
+            if (a->ai_family == AF_INET) { out[found++] = ((struct sockaddr_in *)a->ai_addr)->sin_addr.s_addr; break; }
+        freeaddrinfo(list);
+    }
+    return found;
+}
+
+static void *vpn_resolver(void *unused)
+{
+    (void)unused;
+    for (;;) {
+        uint32_t found[VPN_PEERS];
+        int count = vpn_resolve(found);
+        pthread_mutex_lock(&vpn_lock);
+        memcpy(vpn_addresses, found, sizeof found);
+        vpn_address_count = count;
+        int listed = vpn_name_count;
+        pthread_mutex_unlock(&vpn_lock);
+        static int logged;
+        if (logged < 3 && ++logged) void_log("[network] VPN peers: %d listed, %d resolved", listed, count);
+        sleep(60);
+    }
+    return NULL;
+}
+
+/* The launcher's list before the game starts: addresses or names separated by
+ * spaces, commas, semicolons or lines. */
+void void_lan_vpn_peers(const char *list)
+{
+    pthread_mutex_lock(&vpn_lock);
+    vpn_name_count = 0;
+    for (const char *at = list ? list : ""; *at && vpn_name_count < VPN_PEERS;) {
+        size_t skip = strspn(at, " ,;\t\r\n"), length;
+        at += skip;
+        length = strcspn(at, " ,;\t\r\n");
+        if (length && length < sizeof vpn_names[0]) {
+            memcpy(vpn_names[vpn_name_count], at, length);
+            vpn_names[vpn_name_count++][length] = 0;
+        }
+        at += length;
+    }
+    int start = vpn_name_count && !vpn_resolver_started;
+    if (start) vpn_resolver_started = 1;
+    pthread_mutex_unlock(&vpn_lock);
+    if (start) {
+        pthread_t thread;
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+        if (pthread_create(&thread, &attr, vpn_resolver, NULL)) void_log("[network] VPN peer resolver failed to start");
+        pthread_attr_destroy(&attr);
+    }
+}
+
+/* A discovery broadcast to every resolved peer: the size sent, -1 if none took it. */
+static ssize_t vpn_broadcast(int fd, const void *data, size_t size, int flags, uint16_t port)
+{
+    uint32_t peers[VPN_PEERS];
+    pthread_mutex_lock(&vpn_lock);
+    int count = vpn_address_count;
+    memcpy(peers, vpn_addresses, sizeof peers);
+    pthread_mutex_unlock(&vpn_lock);
+    ssize_t result = -1;
+    for (int i = 0; i < count; ++i) {
+        struct sockaddr_in to = {.sin_family = AF_INET, .sin_port = port, .sin_addr.s_addr = peers[i]};
+        if (sendto(fd, data, size, flags | MSG_DONTWAIT, (struct sockaddr *)&to, sizeof to) >= 0) result = (ssize_t)size;
+    }
+    return result;
+}
+
+/* The tunnel first, so the game advertises the address its VPN peers reach. */
+static void vpn_first(net_interface *list, int n)
+{
+    if (!void_port_lan_vpn()) return;
+    for (int i = 1; i < n; ++i)
+        if (vpn_interface(&list[i]) && !vpn_interface(&list[0])) {
+            net_interface tunnel = list[i];
+            memmove(list + 1, list, sizeof *list * (size_t)i);
+            list[0] = tunnel;
+            break;
+        }
+}
+#endif
+
+/* LAN addresses first (wlan, then any other), loopback last; with the VPN
+ * option (ToE) the tunnel comes before them. */
 static int local_addresses(uint32_t *out, int max)
 {
     net_interface list[16];
     int n = interfaces(list, 16), count = 0;
+#ifndef HOMM5_LEGACY_UI
+    vpn_first(list, n);
+    int tunnel = n && void_port_lan_vpn() && vpn_interface(&list[0]);
+    if (tunnel && count < max) out[count++] = list[0].address;
+#else
+    int tunnel = 0;
+#endif
     for (int pass = 0; pass < 3; ++pass)
-        for (int i = 0; i < n && count < max; ++i) {
+        for (int i = tunnel; i < n && count < max; ++i) {
             int loopback = (list[i].flags & IFF_LOOPBACK) != 0, wlan = !strncmp(list[i].name, "wlan", 4);
             if ((pass == 0 && wlan && !loopback) || (pass == 1 && !wlan && !loopback) || (pass == 2 && loopback))
                 out[count++] = list[i].address;
@@ -792,6 +926,12 @@ static uint32_t do_send(uint32_t s, uint32_t buffer, uint32_t size, uint32_t fla
     if (blocking) void_blocking_end();
     trace_packet(slot, s, "sendto", to ? &in : NULL, (const uint8_t *)GPTR(buffer), sent);
     if (sent >= 0 && to && is_broadcast(in.sin_addr.s_addr)) echo_broadcast(slot, fd, GPTR(buffer), size, host_flags, in.sin_port);
+#ifndef HOMM5_LEGACY_UI
+    if (to && size <= 64 && void_port_lan_vpn() && is_broadcast(in.sin_addr.s_addr)) {
+        ssize_t peers = vpn_broadcast(fd, GPTR(buffer), size, host_flags, in.sin_port);
+        if (sent < 0 && peers >= 0) sent = peers;
+    }
+#endif
     if (sent < 0) {
         uint32_t e = fail_errno();
         if (socket_error != WSA_EWOULDBLOCK)
@@ -883,6 +1023,9 @@ static uint32_t do_wsaioctl(uint32_t s, uint32_t code, uint32_t out, uint32_t ou
     if (code == 0x4004747Fu) {                           /* SIO_GET_INTERFACE_LIST: INTERFACE_INFO[] */
         net_interface list[16];
         int n = interfaces(list, 16);
+#ifndef HOMM5_LEGACY_UI
+        vpn_first(list, n);
+#endif
         uint32_t need = 76u * (uint32_t)n;
         if (!out || out_size < need || !void_vm_writable(out, need)) return fail(WSA_EFAULT);
         memset(GPTR(out), 0, need);
@@ -1023,3 +1166,13 @@ WINAPI_EXPORT("iphlpapi.dll", GetAdaptersInfo, 2)
     }
     return 0;
 }
+
+#if defined(VOID_ANDROID_APP) && !defined(HOMM5_LEGACY_UI)
+JNIEXPORT void JNICALL Java_org_homm5_port_GameActivity_nativeLanPeers(JNIEnv *env, jobject self, jstring peers)
+{
+    (void)self;
+    const char *text = peers ? (*env)->GetStringUTFChars(env, peers, NULL) : NULL;
+    void_lan_vpn_peers(text);
+    if (text) (*env)->ReleaseStringUTFChars(env, peers, text);
+}
+#endif

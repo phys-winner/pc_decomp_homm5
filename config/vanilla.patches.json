@@ -89,29 +89,29 @@
     ]
   },
   "sources": {
-    "android/app/src/org/homm5/port/GameActivity.java": "bd2b0badd1f90bfa538a7472057472d2a6225f4705af83f292448e81856ccfeb",
+    "android/app/src/org/homm5/port/GameActivity.java": "938677e4b99efe9b2f67c0265c9109b74b1353358b7e2980736a77d451943e0e",
     "android/app/src/org/homm5/port/Games.java": "1bcd9870245cef51902911eaa307f8a0f493859ab4aedaa1b7e0080b99076e37",
-    "android/app/src/org/homm5/port/Launcher.java": "3b57ec6d58a72a6b4a7b4eb42f919ea2833562733abbed578f542c0d6a09716a",
+    "android/app/src/org/homm5/port/Launcher.java": "8323059e61d4147c756526f33174c2ed2c40b421d9e076d0b5326d24539782ea",
     "android/app/src/org/homm5/port/Textures.java": "af6d684c1be1dcd319b1683693a0364cf0da1ebb32893627eeb18364a6d3497f",
-    "android/host/android_main.c": "7f102ddb53ad4365b9a471166dbf9f3cc8edb598ca07b3165481a23456749490",
+    "android/host/android_main.c": "898350a280cdade97bd12b7ebaec7562b8cbd0a83f1dcc87f2f7b58982f017e8",
     "android/host/cutscene.c": "5a1cae756e24b77d6f1d2850cc36e1da16849a502bebaae7d753a781491cf583",
-    "android/host/d3d9_device.c": "3b94b8675fceef43e4e105d51cd2c9f7899ded0a6280ad7511916a169dd8e005",
+    "android/host/d3d9_device.c": "302504745e322ddd79362d2c644aa77b59972bd36e4df8fa554096706f927c37",
     "android/host/d3d9_ff.c": "831d4031dfff1dfa9f415b1b6b29d006fb0ce417ff2e080086c37e11e9e81979",
-    "android/host/d3d9_gl.c": "40823008f65feeaccff43dec22249972270e39380549349ccbedd071dd9f2d50",
+    "android/host/d3d9_gl.c": "82fe06ee63e5d5e0e9e7f6329d3861eac8c01cdd46e143003c282fb7702df4ee",
     "android/host/d3d9_internal.h": "301e78915e5df7fdbac5f5629dd47dc5eec46d08be9d4ef88e4faa0304c287c6",
     "android/host/d3d9_resource.c": "5d1359c462901df9e03fe067549e0ae58fb1006b08acc102eb6adaf78a4b4e0a",
     "android/host/d3d9_shader.c": "342369a1d27fc913d3661b65b4cdb5c037f3cafd1da4c5abe19c177a7de536b5",
-    "android/host/dsound.c": "56e5c9732a38afcf31f28894edc1d9488b183236e32774f14df54a9a36b4eb2e",
+    "android/host/dsound.c": "44a076fcaa3ef9c370203fcb53af28672f8e2129180e4e0437b59e450632a633",
     "android/host/files.c": "11a17a578f3b3d4f6d15594a6b66c8ed7ca0da6fd56c5b34fe7759c47a5df6e1",
     "android/host/fmod_stream.c": "d3af274c8761c4d73eb35f33e65644d5d3d8f5302bb3ed50657ef5a2afe87c27",
-    "android/host/network.c": "57a66cf26f842b519365abd3cae57304afda3723a5695162613b4085cc62ee03",
+    "android/host/network.c": "8e8e8fd1e615879effa2b3af694aaf02469a9300acdb480328a1926f8e1e7fd7",
     "android/host/nubi_log.c": "c7e2f9cc9712e0f2f1769eb98bc4bffd45d399630fb3ddc371c5d387d139ef32",
     "android/host/pe.c": "195e4d7a768a0eb53ca7a6eddceca66ecbfa969b55305fd46bdcb03a87771021",
-    "android/host/port_settings.c": "b110b8ebf44b0806da17cfd37d49efba3c6427054868230b725e98ba1853759c",
+    "android/host/port_settings.c": "fccbab3498627c4866ec6937fc58092bf80cd739f60f4788d73681a233257ab6",
     "android/host/texture_native.c": "59ee5a5e836db3321c3b1758c7aea2063c6d13a49d1d42b016a754c8a4521b07",
-    "android/host/touch.h": "325d55f7de7cf716360d76851542721fce88fed2f4265e3b9a208b1a529cf2eb",
+    "android/host/touch.h": "7b3ef8f626988daa7e997ad292586c4bb86bf5a18e16d57cbbaac378a7228a60",
     "android/host/touch_camera.c": "b37d4a3983917727c2d31292d4d84740aac089df22520f2a7623f124cbe5a5dd",
-    "android/host/touch_engine.c": "877b7fe4309dbf078dee559d1087332cfc4d08773f6689d6251bf4a5660f1815",
+    "android/host/touch_engine.c": "4407c2470ed424bec579dcfbd5aaf27f241696a6da2ba932c02cdf45baac89bb",
     "android/host/touch_queue.c": "fa0d789c54b5278e2c3fb890305c2bd8ee9b1c47a565b60b1662ae672edf1f75",
     "android/host/touch_render.c": "22cc8ceb651b3a3ae26a9ca24bfde7a78bd62fbcf678f529e2d0a99a991ea1b4",
     "android/host/touch_scale.c": "1176ec70324c8de88cdfac2938c295a23efc07e0e4732e77fe28962de8afaaec",
@@ -122,12 +122,12 @@
     "android/texconv/texconv_jni.cpp": "2f0a81e57a82666fd1559ba372c4b6c2c1116b7c0127ca1287d320ed8f97cd8d",
     "config/editions.json": "d027f842cc9cd9f4024d8de61b1c61930d9453dac85890fb3b759eac1089d304",
     "config/music/vanilla.json": "2c4a5b39e15a91182f888c540a18a7a8fabedca0821a2c0cff4e2e50beabd0aa",
-    "tools/build_android.py": "def7db6b636716296b0b1c6d82e196057f06c557044aeffc586e66a8d55073db",
-    "tools/build_game_apk.py": "f74922f9a0c4e403e05f561aa58df6aedf3b58e0c3d4a20f35a7d20d5d178f07",
+    "tools/build_android.py": "360c67c45ef027cd7ea3e798db991363bffabf5411f345055614474b62a7e79f",
+    "tools/build_game_apk.py": "b70bef55144c15e296945854f7d8fb6162e796ce37d2f2a2d87c54f5dc3933e2",
     "tools/editions.py": "b8387259953545ed8b52be2ce8aff98397a61c76a4f8e02d32717374593f3728",
     "tools/lift_homm5.py": "4df9027a199c145caa065ccc4be9ca65c7bbe23104488cc15fe0d64e076aba62",
-    "tools/port_patches.py": "ed93bc4cc3f7e612d42b5404b45252733e074b4897d1aebf45d00ceef2ac491d",
-    "tools/port_ui.py": "9a866af59976175ff1ed547cf430cbd7d592c71db105a331f61652da36defd4a",
+    "tools/port_patches.py": "a241c83b8d313184c9a51d33ccb3405d58fb4845adc10f7ac3b297041e290a1b",
+    "tools/port_ui.py": "8f552c665ad64f4d7b5f943b853325f5e2f88db37311aacc0e8e682452e01008",
     "tools/profile_defaults.py": "5e7dd650948f4d9f0a799d8da5209ce41eacaa599e360ac0007addd25c4aa275",
     "tools/town_music.py": "dec253ea97a813f59390f3077835696f857f2022336622d8b964f7ef315afbb1"
   },
@@ -310,7 +310,9 @@
     "150091C0": "150091C0",
     "150091E0": "150091E0",
     "006B92E0": "00672810",
-    "00FDD12C": "00FA80E4"
+    "00FDD12C": "00FA80E4",
+    "005764A0": "00549820",
+    "00F39CA0": "00F18774"
   },
   "reference_addresses": {
     "android/host/cutscene.c": [
@@ -411,6 +413,7 @@
       "00550EB0",
       "0055AF30",
       "00576260",
+      "005764A0",
       "005767A0",
       "005779D0",
       "00577DC0",
@@ -500,6 +503,7 @@
       "00F323A8",
       "00F339F4",
       "00F339F8",
+      "00F39CA0",
       "00F44B08",
       "00F786F0",
       "00F7A234",
@@ -763,7 +767,7 @@
       {
         "old": "read32(gesture.screen + 0x2E0) == 0x1000",
         "new": "read32(gesture.screen + 0x2D8) == 0x1000",
-        "count": 1
+        "count": 2
       },
       {
         "old": "read32(gesture.screen + 0x150)",
@@ -778,7 +782,7 @@
       {
         "old": "read32(gesture.screen + 0x488)",
         "new": "read32(gesture.screen + 0x45C)",
-        "count": 1
+        "count": 3
       },
       {
         "old": "object_method(window, 0xD8)",
@@ -794,6 +798,16 @@
         "old": "screen + 0xA0",
         "new": "screen + 0x98",
         "count": 5
+      },
+      {
+        "old": "    uint32_t method = object_method(gesture.root, 0x70);\n",
+        "new": "    uint32_t method = object_method(gesture.root, 0x6C);\n",
+        "count": 1
+      },
+      {
+        "old": "read32(gesture.screen + 0x2D4)) return;   /* a window owns combat input */",
+        "new": "read32(gesture.screen + 0x2CC)) return;   /* a window owns combat input */",
+        "count": 1
       }
     ],
     "android/host/touch_camera.c": [

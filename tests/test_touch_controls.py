@@ -28,6 +28,8 @@ public class TouchControlsCheck {
     static List<Touch> events = new ArrayList<>();
     static Map<Runnable, Long> queue = new HashMap<>();
     int dp(float n) { return Math.round(n); }
+    static String edition = "vanilla";
+    String gameEdition() { return edition; }
     static class Touch {
         final int kind; final float x,y,dx,dy,scale,rotation;
         Touch(int k,float x,float y,float dx,float dy,float s,float angle) {
@@ -62,9 +64,12 @@ public class TouchControlsCheck {
         static final int ACTION_DOWN=0, ACTION_UP=1, ACTION_MOVE=2, ACTION_CANCEL=3,
             ACTION_POINTER_DOWN=5, ACTION_POINTER_UP=6;
         final int action,index; final int[] ids; final float[] xs,ys;
+        static long gestureDown;
         MotionEvent(int a,int i,int[] ids,float[] xs,float[] ys) {
             action=a; index=i; this.ids=ids; this.xs=xs; this.ys=ys;
+            if (a==ACTION_DOWN) gestureDown=now;
         }
+        long getDownTime() { return gestureDown; }
         int getActionMasked() { return action; }
         int getActionIndex() { return index; }
         int getPointerCount() { return ids.length; }
@@ -334,10 +339,10 @@ public class TouchControlsCheck {
         t.onTouchEvent(one(0,1,200,200));advance(600);
         t.onTouchEvent(two(5,1,1,200,200,2,500,300));kinds(0,5,11);
         near(events.get(2).x,500f/1280);near(events.get(2).y,300f/800);
-        advance(50);t.onTouchEvent(two(6,1,1,200,200,2,500,300));kinds(0,5,11,12);
+        advance(50);t.onTouchEvent(two(6,1,1,200,200,2,500,300));kinds(0,5,11,12,19);
         t.onTouchEvent(two(5,1,1,200,200,3,550,300));
-        t.onTouchEvent(two(6,1,1,200,200,3,550,300));kinds(0,5,11,12,11,12);
-        t.onTouchEvent(one(2,1,300,200));t.onTouchEvent(one(1,1,300,200));kinds(0,5,11,12,11,12,6,7);
+        t.onTouchEvent(two(6,1,1,200,200,3,550,300));kinds(0,5,11,12,19,11,12,19);
+        t.onTouchEvent(one(2,1,300,200));t.onTouchEvent(one(1,1,300,200));kinds(0,5,11,12,19,11,12,19,6,7);
         advance(700);assert queue.isEmpty();clear();
 
         // Physical contacts occupy different cells; 1-2px primary jitter keeps a long hold alive.
@@ -346,10 +351,10 @@ public class TouchControlsCheck {
         t.onTouchEvent(two(5,1,17,202,199,31,500,300));kinds(0,5,11);
         near(events.get(2).x,500f/1280);near(events.get(2).y,300f/800);
         advance(70);t.onTouchEvent(two(2,0,17,201,201,31,502,299));kinds(0,5,11);
-        advance(40);t.onTouchEvent(two(6,1,17,201,201,31,501,302));kinds(0,5,11,12);
+        advance(40);t.onTouchEvent(two(6,1,17,201,201,31,501,302));kinds(0,5,11,12,19);
         near(events.get(3).x,501f/1280);near(events.get(3).y,302f/800);
         assert t.holding && !t.panning;
-        t.onTouchEvent(one(1,17,201,201));kinds(0,5,11,12,7);
+        t.onTouchEvent(one(1,17,201,201));kinds(0,5,11,12,19,7);
         advance(700);assert queue.isEmpty();clear();
 
         // The real hold->drag stream preserves HOLD_BEGIN before HOLD_DRAG and a separate secondary point.
@@ -359,17 +364,17 @@ public class TouchControlsCheck {
         near(events.get(2).x,240f/1280);near(events.get(2).dx,40f/1280);
         t.onTouchEvent(two(5,1,17,240,200,31,500,300));kinds(0,5,6,11);
         near(events.get(3).x,500f/1280);near(events.get(3).y,300f/800);
-        advance(90);t.onTouchEvent(two(6,1,17,240,200,31,502,301));kinds(0,5,6,11,12);
+        advance(90);t.onTouchEvent(two(6,1,17,240,200,31,502,301));kinds(0,5,6,11,12,19);
         near(events.get(4).x,502f/1280);near(events.get(4).y,301f/800);
         assert t.holding && t.panning;
-        t.onTouchEvent(one(1,17,240,200));kinds(0,5,6,11,12,7);
-        near(events.get(5).x,240f/1280);advance(700);assert queue.isEmpty();clear();
+        t.onTouchEvent(one(1,17,240,200));kinds(0,5,6,11,12,19,7);
+        near(events.get(6).x,240f/1280);advance(700);assert queue.isEmpty();clear();
 
         // A stationary secondary hold is distinct from fast split and retains the primary.
         t.onTouchEvent(one(0,1,200,200));advance(600);
         t.onTouchEvent(two(5,1,1,200,200,2,500,300));advance(599);kinds(0,5,11);
         advance(1);kinds(0,5,11,13);
-        t.onTouchEvent(two(6,1,1,200,200,2,500,300));t.onTouchEvent(one(1,1,200,200));kinds(0,5,11,13,7);clear();
+        t.onTouchEvent(two(6,1,1,200,200,2,500,300));t.onTouchEvent(one(1,1,200,200));kinds(0,5,11,13,19,7);clear();
 
         // An immediate primary drag can own a native troop; secondary motion promotes to a camera set.
         t.onTouchEvent(one(0,1,200,200));t.onTouchEvent(one(2,1,240,200));
@@ -380,11 +385,36 @@ public class TouchControlsCheck {
         advance(700);kinds(0,3,11,3,8,4);t.cancelGesture();clear();
         t.onTouchEvent(one(0,1,200,200));advance(600);
         t.onTouchEvent(two(5,1,1,200,200,2,500,300));
-        t.onTouchEvent(two(6,0,1,200,200,2,500,300));kinds(0,5,11,10);
-        t.onTouchEvent(one(1,2,500,300));advance(700);kinds(0,5,11,10);clear();
+        t.onTouchEvent(two(6,0,1,200,200,2,500,300));kinds(0,5,11,20);
+        t.onTouchEvent(one(1,2,500,300));advance(700);kinds(0,5,11,20,19,10);clear();
         t.onTouchEvent(one(0,1,200,200));advance(600);
         t.onTouchEvent(two(5,1,1,200,200,2,500,300));t.cancelGesture();advance(700);
         kinds(0,5,11,10);assert queue.isEmpty();clear();
+
+        // Every engine hears the resting second finger lift (19, after its tap or hold) and the
+        // first finger lifting past it (20 at its point); then only the second finger's own lift
+        // ends the gesture (19, then the abort).
+        TouchLayer toe=new TouchLayer(new Context());
+        toe.onTouchEvent(one(0,1,200,200));advance(600);
+        toe.onTouchEvent(two(5,1,1,200,200,2,500,300));kinds(0,5,11);
+        advance(50);toe.onTouchEvent(two(6,1,1,200,200,2,500,300));kinds(0,5,11,12,19);
+        toe.onTouchEvent(two(5,1,1,200,200,3,550,300));advance(600);kinds(0,5,11,12,19,11,13);
+        toe.onTouchEvent(two(6,1,1,200,200,3,550,300));kinds(0,5,11,12,19,11,13,19);
+        assert toe.holding && !toe.panning;
+        toe.onTouchEvent(one(1,1,200,200));kinds(0,5,11,12,19,11,13,19,7);advance(700);assert queue.isEmpty();clear();
+        toe.onTouchEvent(one(0,1,200,200));advance(600);
+        toe.onTouchEvent(two(5,1,1,200,200,2,500,300));
+        toe.onTouchEvent(two(6,0,1,210,205,2,500,300));kinds(0,5,11,20);
+        near(events.get(3).x,210f/1280);near(events.get(3).y,205f/800);
+        toe.onTouchEvent(one(2,2,520,310));advance(700);kinds(0,5,11,20);assert queue.isEmpty();
+        toe.onTouchEvent(one(1,2,520,310));kinds(0,5,11,20,19,10);clear();
+        // A dragged first finger likewise; a contact joining afterwards changes nothing.
+        toe.onTouchEvent(one(0,1,200,200));toe.onTouchEvent(one(2,1,240,200));
+        toe.onTouchEvent(two(5,1,1,240,200,2,500,300));kinds(0,3,11);
+        toe.onTouchEvent(two(6,0,1,260,210,2,500,300));kinds(0,3,11,20);
+        toe.onTouchEvent(two(5,1,2,500,300,4,800,300));kinds(0,3,11,20);
+        toe.onTouchEvent(two(6,0,2,500,300,4,800,300));kinds(0,3,11,20,19,10);
+        toe.onTouchEvent(one(1,4,800,300));kinds(0,3,11,20,19,10);advance(700);assert queue.isEmpty();clear();
 
         // OS cancellation, focus loss and pause abort, with no delayed action.
         t.onTouchEvent(one(0,55,200,200));
@@ -406,8 +436,33 @@ public class TouchControlsCheck {
         clear(); t.onTouchEvent(one(0,1,300,300));
         t.onSizeChanged(1600,900,1280,800); kinds(0,10);
         advance(700); assert queue.isEmpty();
+        // ToE: an unmoved two-contact chord lifted inside the chord time is a two-finger tap (21, not 9);
+        // a slow pair stays the resting pair (9); a finger added 200 ms or later is a second finger (11).
+        clear();edition = "toe";
+        TouchLayer tap=new TouchLayer(new Context());
+        tap.onTouchEvent(one(0,1,300,300));advance(40);
+        tap.onTouchEvent(two(5,1,1,300,300,2,500,320));kinds(0,8);advance(120);
+        tap.onTouchEvent(two(6,1,1,300,300,2,500,320));advance(40);
+        tap.onTouchEvent(one(1,1,300,300));kinds(0,8,21,7);advance(700);assert queue.isEmpty();clear();
+        tap.onTouchEvent(one(0,1,300,300));advance(40);
+        tap.onTouchEvent(two(5,1,1,300,300,2,500,320));advance(400);
+        tap.onTouchEvent(two(6,1,1,300,300,2,500,320));tap.onTouchEvent(one(1,1,300,300));kinds(0,8,9,7);clear();
+        tap.onTouchEvent(one(0,1,300,300));advance(40);
+        tap.onTouchEvent(two(5,1,1,300,300,2,500,320));
+        tap.onTouchEvent(two(2,0,1,340,300,2,560,320));advance(40);
+        tap.onTouchEvent(two(6,1,1,340,300,2,560,320));tap.onTouchEvent(one(1,1,340,300));
+        assert events.get(events.size()-2).kind!=21 : "a moved pair is no tap";clear();advance(700);
+        tap.onTouchEvent(one(0,1,300,300));advance(250);
+        tap.onTouchEvent(two(5,1,1,300,300,2,500,320));kinds(0,11);
+        tap.onTouchEvent(two(6,1,1,300,300,2,500,320));kinds(0,11,12,19);
+        tap.onTouchEvent(one(1,1,300,300));advance(700);assert queue.isEmpty();clear();
+        edition = "vanilla";   // legacy engines keep the 450 ms hold rule and never get kind 21
+        tap.onTouchEvent(one(0,1,300,300));advance(250);
+        tap.onTouchEvent(two(5,1,1,300,300,2,500,320));kinds(0,8);advance(40);
+        tap.onTouchEvent(two(6,1,1,300,300,2,500,320));tap.onTouchEvent(one(1,1,300,300));kinds(0,8,9,7);
+        advance(700);assert queue.isEmpty();clear();
         System.out.println("PASS actual touch classifier: immediate tap/double, three-finger chord, hold/drag, re-based multi-finger "
-            + "transform and tilt, pointer IDs, abort, full Surface");
+            + "transform and tilt, pointer IDs, abort, full Surface, ToE two-finger tap and early second finger");
     }
     public static void main(String[] args) { new TouchControlsCheck().check(); }
     /* ACTUAL_TOUCH_LAYER */

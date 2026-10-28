@@ -9,7 +9,10 @@
 #include "com.h"
 #include <errno.h>
 #include <math.h>
+#include <sched.h>
+#include <sys/resource.h>
 #include <time.h>
+#include <unistd.h>
 
 #define DS_OK 0u
 #define DSERR_INVALIDPARAM 0x80070057u
@@ -26,6 +29,7 @@
 
 #define MIX_RATE 48000
 #define MIX_CHUNK 480                  /* 10 ms */
+#define MIX_CATCHUP 8                  /* extra chunks per wake that refill the output queue */
 
 static const uint8_t IID_IUnknown[16] = {0,0,0,0,0,0,0,0,0xC0,0,0,0,0,0,0,0x46};
 static const uint8_t IID_IDirectSound8[16] = {0x93,0x7E,0x0A,0xC5,0x95,0xF3,0x34,0x48,0x9E,0xF6,0x7F,0xA9,0x9D,0xE5,0x09,0x66};   /* {C50A7E93-F395-4834-9EF6-7FA99DE50966} */
@@ -38,6 +42,18 @@ static const uint8_t IID_IDirectSoundNotify[16] = {0x83,0x07,0x21,0xB0,0xCD,0x89
 
 typedef struct dsbuf dsbuf_t;
 typedef struct { void_com_object com; dsbuf_t *owner; } facet_t;
+
+/* Kaiser-windowed sinc for buffers at another rate (FMOD mixes at 44.1 kHz):
+ * cutoff 0.92 of the source Nyquist, beta 9, linear between 256 phases. At
+ * 44.1 -> 48 kHz every tone up to 18 kHz keeps 94-110 dB SINAD (-0.3 dB at
+ * 18 kHz); repeating the nearest frame left a 5 kHz tone at 14 dB. Higher
+ * rates are not band-limited to the output (no game buffer uses one). */
+#define RS_TAPS 32u
+#define RS_HALF 16u
+#define RS_MASK 31u
+#define RS_PHASES 256u
+#define RS_CUTOFF 0.92
+#define RS_BETA 9.0
 
 struct dsbuf {
     void_com_object com;
@@ -59,7 +75,16 @@ struct dsbuf {
     float pos[3], min_distance, max_distance;
     uint32_t mode3d;
     dsbuf_t *next;
+    /* Interpolation window: frames rs_frame-15 .. rs_frame+16, each read once
+     * while still ahead of the play cursor, because the application may
+     * refill the PCM behind the cursor at any time. */
+    float rs_window[2][RS_TAPS];
+    uint32_t rs_frame, rs_head;
+    int rs_valid;
 };
+
+static float rs_table[RS_PHASES + 1][RS_TAPS];
+static int rs_ready;
 
 static pthread_mutex_t mix_lock = PTHREAD_MUTEX_INITIALIZER;
 static dsbuf_t *buffers;
@@ -73,8 +98,9 @@ static int mixer_running;
 static int dstrace;
 #define DSTRACE(...) do { if (dstrace) void_log("[dsound] " __VA_ARGS__); } while (0)
 
-/* Audio backend hook (null by default): receives interleaved stereo int16. */
-__attribute__((weak)) void void_audio_output(const int16_t *frames, uint32_t count) { (void)frames; (void)count; }
+/* Audio backend hook (null by default): receives interleaved stereo int16 and
+ * returns how many frames its device queue could take at once. */
+__attribute__((weak)) uint32_t void_audio_output(const int16_t *frames, uint32_t count) { (void)frames; (void)count; return 0; }
 
 static void signal_event(uint32_t handle)
 {
@@ -91,6 +117,88 @@ static float sample_at(dsbuf_t *b, uint32_t frame, uint32_t c)
     return ((float)MEM8(b->data + offset) - 128.0f) / 128.0f;
 }
 
+static double bessel_i0(double x)
+{
+    double sum = 1.0, term = 1.0;
+    for (int k = 1; k < 64 && term > sum * 1e-12; ++k) {
+        double half = x / (2.0 * k);
+        term *= half * half;
+        sum += term;
+    }
+    return sum;
+}
+
+static void rs_build(void)
+{
+    const double pi = 3.14159265358979323846;
+    for (uint32_t p = 0; p <= RS_PHASES; ++p) {
+        double t = (double)p / RS_PHASES, h[RS_TAPS], sum = 0.0;
+        for (uint32_t k = 0; k < RS_TAPS; ++k) {
+            double x = (double)k - (double)(RS_HALF - 1) - t, u = x / RS_HALF;
+            double w = u * u < 1.0 ? bessel_i0(RS_BETA * sqrt(1.0 - u * u)) / bessel_i0(RS_BETA) : 0.0;
+            double s = x == 0.0 ? 1.0 : sin(pi * RS_CUTOFF * x) / (pi * RS_CUTOFF * x);
+            h[k] = RS_CUTOFF * s * w;
+            sum += h[k];
+        }
+        for (uint32_t k = 0; k < RS_TAPS; ++k) rs_table[p][k] = (float)(h[k] / sum);
+    }
+}
+
+/* Frame g of a buffer of total frames: a looping buffer continues from its
+ * start, a one-shot buffer is silent past its end. */
+static float rs_source(dsbuf_t *b, uint32_t g, uint32_t total, uint32_t c)
+{
+    if (g >= total) {
+        if (!b->looping) return 0.0f;
+        g %= total;
+    }
+    return sample_at(b, g, c);
+}
+
+/* Bring the window centre to frame f: slide it by up to a window, otherwise
+ * refill it (silence before f, as at a fresh start). */
+static void rs_seek(dsbuf_t *b, uint32_t f, uint32_t total)
+{
+    uint32_t distance = !b->rs_valid ? RS_TAPS + 1 : f >= b->rs_frame ? f - b->rs_frame : f + total - b->rs_frame;
+    if (distance > RS_TAPS) {
+        b->rs_frame = f;
+        b->rs_head = 0;
+        for (uint32_t k = 0; k < RS_TAPS; ++k) {
+            /* Slot k holds frame f + k for k <= 16 and f + k - 32 above. */
+            int offset = k <= RS_HALF ? (int)k : (int)k - (int)RS_TAPS;
+            for (uint32_t c = 0; c < 2; ++c)
+                b->rs_window[c][k] = offset < 0 ? 0.0f : rs_source(b, f + (uint32_t)offset, total, c);
+        }
+        b->rs_valid = 1;
+        return;
+    }
+    while (distance--) {
+        b->rs_frame = b->rs_frame + 1 < total ? b->rs_frame + 1 : 0;
+        b->rs_head = (b->rs_head + 1) & RS_MASK;
+        uint32_t slot = (b->rs_head + RS_HALF) & RS_MASK;
+        for (uint32_t c = 0; c < 2; ++c)
+            b->rs_window[c][slot] = rs_source(b, b->rs_frame + RS_HALF, total, c);
+    }
+}
+
+/* Output at fractional position t past the window centre. */
+static void rs_frame_at(const dsbuf_t *b, float t, float *l, float *r)
+{
+    float position = t * (float)RS_PHASES;
+    uint32_t phase = (uint32_t)position;
+    if (phase >= RS_PHASES) phase = RS_PHASES - 1;
+    float a = position - (float)phase, sl = 0.0f, sr = 0.0f;
+    const float *h0 = rs_table[phase], *h1 = rs_table[phase + 1];
+    for (uint32_t k = 0; k < RS_TAPS; ++k) {
+        float h = h0[k] + a * (h1[k] - h0[k]);
+        uint32_t slot = (b->rs_head + k + 1 - RS_HALF) & RS_MASK;   /* frame rs_frame + k - 15 */
+        sl += h * b->rs_window[0][slot];
+        sr += h * b->rs_window[1][slot];
+    }
+    *l = sl;
+    *r = sr;
+}
+
 static void notify_passed(dsbuf_t *b, uint32_t from, uint32_t to, int wrapped)
 {
     for (uint32_t i = 0; i < b->notify_count; ++i) {
@@ -104,6 +212,10 @@ static void notify_passed(dsbuf_t *b, uint32_t from, uint32_t to, int wrapped)
 static void mix_chunk(float *mix, uint32_t frames)
 {
     memset(mix, 0, sizeof(float) * 2 * frames);
+    if (!rs_ready) {
+        rs_build();
+        rs_ready = 1;
+    }
     for (dsbuf_t *b = buffers; b; b = b->next) {
         if (b->primary || !b->playing || !b->size || !b->block) continue;
         float vol = b->volume <= -10000 ? 0.0f : powf(10.0f, (float)b->volume / 2000.0f);
@@ -138,13 +250,22 @@ static void mix_chunk(float *mix, uint32_t frames)
         uint32_t start = b->play_pos;
         double frame = (double)(b->play_pos / b->block) + b->frac;
         int wrapped = 0, stopped = 0;
+        int resample = step != 1.0;
+        if (!resample) b->rs_valid = 0;
         for (uint32_t i = 0; i < frames; ++i) {
             uint32_t f = (uint32_t)frame;
             if (f >= total) {
                 if (!b->looping) { stopped = 1; break; }
                 frame -= total; f = (uint32_t)frame; wrapped = 1;
             }
-            float l = sample_at(b, f, 0), r = b->channels > 1 ? sample_at(b, f, 1) : l;
+            float l, r;
+            if (resample) {
+                rs_seek(b, f, total);
+                rs_frame_at(b, (float)(frame - (double)f), &l, &r);
+            } else {
+                l = sample_at(b, f, 0);
+                r = b->channels > 1 ? sample_at(b, f, 1) : l;
+            }
             mix[2 * i] += l * gl;
             mix[2 * i + 1] += r * gr;
             frame += step;
@@ -174,10 +295,30 @@ static void mix_chunk(float *mix, uint32_t frames)
             b->playing = 0;
             b->play_pos = 0;
             b->frac = 0;
+            b->rs_valid = 0;
             for (uint32_t k = 0; k < b->notify_count; ++k) if (b->notify_offset[k] == 0xFFFFFFFFu) signal_event(b->notify_event[k]);
         }
         notify_passed(b, start, stopped ? b->size : b->play_pos, wrapped);
     }
+}
+
+/* The mixer inherits a guest thread's big-core mask, and Android left it at
+ * nice 4 under normal output (P smart), below the game threads' -10. Ask for
+ * the audio priority (-16, granted only to some apps), else the game's own
+ * THREAD_PRIORITY_VIDEO (-10), on any core; re-asserted every second. */
+static void mixer_priority(void)
+{
+    int nice = getpriority(PRIO_PROCESS, 0);
+    if (nice > -16 && setpriority(PRIO_PROCESS, 0, -16) && nice > -10) setpriority(PRIO_PROCESS, 0, -10);
+}
+
+static void mixer_cores(void)
+{
+    cpu_set_t all;
+    CPU_ZERO(&all);
+    long cores = sysconf(_SC_NPROCESSORS_CONF);
+    for (long i = 0; i < cores && i < CPU_SETSIZE; ++i) CPU_SET(i, &all);
+    if (cores > 0) sched_setaffinity(0, sizeof all, &all);
 }
 
 static void *mixer_main(void *arg)
@@ -186,9 +327,11 @@ static void *mixer_main(void *arg)
     float mix[2 * MIX_CHUNK];
     int16_t out[2 * MIX_CHUNK];
     struct timespec next;
-    uint32_t ticks = 0;
+    uint32_t ticks = 0, wakes = 0;
+    mixer_cores();
     clock_gettime(CLOCK_MONOTONIC, &next);
     while (mixer_running) {
+        if (wakes++ % 100 == 0) mixer_priority();
         next.tv_nsec += 10000000L;
         if (next.tv_nsec >= 1000000000L) { next.tv_nsec -= 1000000000L; next.tv_sec++; }
         while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL) == EINTR) {}
@@ -199,20 +342,27 @@ static void *mixer_main(void *arg)
         int64_t late = ((int64_t)now.tv_sec - (int64_t)next.tv_sec) * 1000000000LL + now.tv_nsec - next.tv_nsec;
         if (late >= 10000000LL)
             next = now;
-        pthread_mutex_lock(&mix_lock);
-        mix_chunk(mix, MIX_CHUNK);
-        if (dstrace && ++ticks % 500 == 0)
-            for (dsbuf_t *b = buffers; b; b = b->next)
-                if (b->playing) DSTRACE("tick %u: buffer %08X at %u of %u, %u Hz x %u bytes, ring %.3f s, unlocks %u live %u unchanged-laps %u max-refill %.1f ms",
-                    ticks, b->com.guest, b->play_pos, b->size, b->frequency, b->block,
-                    b->frequency && b->block ? b->size / ((double)b->frequency * b->block) : 0.0,
-                    b->unlocks, b->live_unlocks, b->unchanged_wraps, (double)b->max_refill_ns / 1000000.0);
-        pthread_mutex_unlock(&mix_lock);
-        for (int i = 0; i < 2 * MIX_CHUNK; ++i) {
-            float v = mix[i] * 32767.0f;
-            out[i] = (int16_t)(v > 32767.0f ? 32767 : v < -32768.0f ? -32768 : (int)v);
+        /* A late wake or an output underrun leaves the device queue short of
+         * its buffer, and pacing alone never refills it: later wakes would
+         * underrun again. The output reports the shortfall; mix it at once
+         * (bounded), so the next late wake finds a cushion. */
+        uint32_t wanted = MIX_CHUNK;
+        for (unsigned chunk = 0; chunk <= MIX_CATCHUP && wanted >= MIX_CHUNK && mixer_running; ++chunk) {
+            pthread_mutex_lock(&mix_lock);
+            mix_chunk(mix, MIX_CHUNK);
+            if (dstrace && ++ticks % 500 == 0)
+                for (dsbuf_t *b = buffers; b; b = b->next)
+                    if (b->playing) DSTRACE("tick %u: buffer %08X at %u of %u, %u Hz x %u bytes, ring %.3f s, unlocks %u live %u unchanged-laps %u max-refill %.1f ms",
+                        ticks, b->com.guest, b->play_pos, b->size, b->frequency, b->block,
+                        b->frequency && b->block ? b->size / ((double)b->frequency * b->block) : 0.0,
+                        b->unlocks, b->live_unlocks, b->unchanged_wraps, (double)b->max_refill_ns / 1000000.0);
+            pthread_mutex_unlock(&mix_lock);
+            for (int i = 0; i < 2 * MIX_CHUNK; ++i) {
+                float v = mix[i] * 32767.0f;
+                out[i] = (int16_t)(v > 32767.0f ? 32767 : v < -32768.0f ? -32768 : (int)v);
+            }
+            wanted = void_audio_output(out, MIX_CHUNK);
         }
-        void_audio_output(out, MIX_CHUNK);
     }
     return NULL;
 }
@@ -221,7 +371,7 @@ static void start_mixer(void)
 {
     if (mixer_running) return;
     mixer_running = 1;
-    pthread_create(&mixer_thread, NULL, mixer_main, NULL);
+    if (!pthread_create(&mixer_thread, NULL, mixer_main, NULL)) pthread_setname_np(mixer_thread, "dsound mixer");
 }
 
 /* ------------------------------------------------------------- buffers */
@@ -359,7 +509,10 @@ COM_METHOD(dsb, Play, 4)
 {
     dsbuf_t *b = BUFF;
     pthread_mutex_lock(&mix_lock);
-    if (!b->playing) b->wrap_seen = 0;
+    if (!b->playing) {
+        b->wrap_seen = 0;
+        b->rs_valid = 0;
+    }
     b->playing = 1;
     b->looping = (ARG(3) & DSBPLAY_LOOPING) != 0;
     pthread_mutex_unlock(&mix_lock);
@@ -374,6 +527,7 @@ COM_METHOD(dsb, SetCurrentPosition, 2)
     b->play_pos = b->size ? (ARG(1) % b->size) / (b->block ? b->block : 1) * (b->block ? b->block : 1) : 0;
     b->frac = 0;
     b->wrap_seen = 0;
+    b->rs_valid = 0;
     pthread_mutex_unlock(&mix_lock);
     DSTRACE("buffer %08X position %u", b->com.guest, ARG(1));
     return DS_OK;
@@ -593,7 +747,7 @@ COM_METHOD(ds, DuplicateSoundBuffer, 3)
     memset(&b->com, 0, sizeof b->com);
     memset(&b->f3d, 0, sizeof b->f3d);
     memset(&b->notify, 0, sizeof b->notify);
-    b->playing = 0; b->play_pos = 0; b->frac = 0; b->notify_count = 0;
+    b->playing = 0; b->play_pos = 0; b->frac = 0; b->notify_count = 0; b->rs_valid = 0;
     b->unlocks = b->live_unlocks = b->wrap_unlocks = b->unchanged_wraps = b->wrap_seen = 0;
     b->lock_ns = b->max_refill_ns = 0;
     /* A duplicate shares the PCM in D3D; copy it so lifetimes stay simple. */

@@ -18,6 +18,17 @@ typedef struct {
      * combat_aim: one finger in combat is the cursor, released into an order. */
     int info, world_hover, combat_aim, second_info, inspecting;
     float inspect_x, inspect_y;
+    int details;   /* a still hold on the world (or a combat control): 1 waits for its tooltip, 2 asked for the details card */
+    int card;   /* a second finger rests while the first aims in combat (2: the first lifted, no order) */
+    /* ToE: a second-finger tap keeps the card until the first finger lifts (no order); later taps
+     * switch the card and the effects ("status") panel. card_mode: 1 card, 2 effects. */
+    int card_sticky, card_mode, card_retries;
+    uint64_t card_frame;
+    int atb;   /* ToE: the touch began on the selected initiative portrait and keeps its point */
+    int melee;   /* ToE: a drag from the active shooter attacks in melee (Ctrl held, as Ctrl+click) */
+    /* ToE: a slider dragged from its lever's centre (logical lever, logical finger start). */
+    int slider;
+    float slider_x, slider_y, slider_fx, slider_fy;
 } touch_gesture;
 static touch_gesture gesture;
 static uint32_t scratch;
@@ -322,8 +333,19 @@ void sub_008863A0_lifted(void);
 void sub_006B92E0_lifted(void);
 static uint32_t object_method(uint32_t object, unsigned offset);
 
+#ifndef HOMM5_LEGACY_UI
+/* ToE: a tapped initiative bar portrait (combat screen +494, 0x0055DC40) stays selected, hovered as by a
+ * resting mouse; a second tap on it shows its card as the right button does (0x00669E60: UI root +70) and
+ * holds it without a finger, and each later tap switches card and effects. A touch elsewhere ends it: on
+ * another portrait that one is selected, beside an open card the touch only closes the card. */
+static struct { uint32_t screen, root, controller, unit; float x, y; int card, mode, retries; uint64_t frame; } atb;
+#endif
+
 static int tooltip_held(void)
 {
+#ifndef HOMM5_LEGACY_UI
+    if (atb.card) return 1;   /* an open initiative bar card holds like a resting finger */
+#endif
     return gesture.active && gesture.held && !gesture.cancelled;
 }
 
@@ -357,6 +379,41 @@ void sub_006B92E0(void)
     g_eax = 0x7FFFFFFFu;
     g_esp += 4;
 }
+
+#ifndef HOMM5_LEGACY_UI
+/* Held modifier keys the original reads through its bindings (screen +0x54 Ctrl, +0x5C Alt): a
+ * two-finger tap toggles the adventure map's object highlight (Alt held, 0x00669420); a drag from
+ * the active shooter holds Ctrl (0x00669410) for the melee attack Ctrl+click gives. */
+static uint32_t alt_screen;
+static int ctrl_held;
+
+static void alt_latch(uint32_t screen)
+{
+    if (!alt_screen == !screen) return;
+    void_input_key(0x12, screen != 0);
+    alt_screen = screen;
+    VLOG("[touch] object highlight %s", screen ? "on" : "off");
+}
+
+static void ctrl_latch(int on)
+{
+    if (!ctrl_held == !on) return;
+    void_input_key(0x11, on);
+    ctrl_held = on;
+}
+
+/* The adventure controller's mode 3 (0x00603370) is a hero on the move; the left-button-down
+ * handler 0x00592730 then queues NWorld::CCancelActionCmd through 0x00604D60. */
+static int adventure_stop(void)
+{
+    uint32_t controller = gesture.controller, three = 3;
+    if (gesture.kind != SCREEN_ADVENTURE || !controller || !same_screen()) return 0;
+    if (!(void_call_guest_this(0x00603370u, controller, 1, &three) & 0xFFu)) return 0;
+    void_call_guest_this(0x00604D60u, controller, 0, NULL);
+    VLOG("[touch] hero movement stopped");
+    return 1;
+}
+#endif
 
 /* The world's right-click info at the finger: the original right-button-down
  * handlers (adventure 0x0058C910, combat 0x0053F010, town 0x00619280) force
@@ -392,6 +449,36 @@ static void world_tooltip(void)
     const uint32_t args[] = {1, read32(0x00FDD12Cu)};
     void_call_guest_this(0x006B89D0u, controller, 2, args);
     VLOG("[touch] world-info screen=%08X kind=%d", screen, gesture.kind);
+}
+
+/* With Options.Tooltips.RightClickEnabled (0x00F39CA0) the world's right button follows its
+ * tooltip with the details card (3.1: adventure 0x0058C910, combat 0x0053F010 and town 0x00619280
+ * all end in 0x00669E60: UI root +70 with the point, forced, +6C in 1.6/2.1; 0x00487A80 repicks
+ * the source and asks its tooltip provider): asked once the tooltip the held finger raised, over an
+ * object, a creature or a combat control such as the initiative bar, is on screen (UI root +8). */
+static void world_details_request(int waited);
+
+static void world_details(void)
+{
+    world_details_request(1);
+}
+
+/* waited 0 (ToE): ask at once, as the right button does, instead of after the tooltip. */
+static void world_details_request(int waited)
+{
+    uint32_t method = object_method(gesture.root, 0x70);
+    if ((waited && !read32(gesture.root + 8)) || !same_screen()) return;
+    if (gesture.kind == SCREEN_COMBAT && read32(gesture.screen + 0x2D4)) return;   /* a window owns combat input */
+    gesture.details = 2;
+    uint32_t point = logical_point(gesture.x, gesture.y);
+    if (!method || !point || !void_vm_readable(0x00F39CA0u, 1) || !MEM8(0x00F39CA0u)) return;
+    const uint32_t args[] = {point, 1};
+    void_call_guest_this(method, gesture.root, 2, args);
+#ifndef HOMM5_LEGACY_UI
+    gesture.card_mode = 1;
+#endif
+    VLOG("[touch] world-details screen=%08X kind=%d point=%.1f,%.1f shown=%08X", gesture.screen, gesture.kind,
+         gesture.x, gesture.y, read32(gesture.root + 8));
 }
 
 static uint32_t ui_method(uint32_t screen, unsigned offset)
@@ -558,9 +645,10 @@ static void ui_release(int outside)
     if (same_screen()) ui_hover(-1.0f, -1.0f);
 }
 
-static void spellbook_activate(float x, float y)
+/* The book's part under the point: its descriptor (borrowed from the book, never kept), 0 for none. */
+static uint32_t book_part(float x, float y)
 {
-    if (!gesture.book || !same_screen() || spellbook_kind(gesture.screen) != gesture.book) return;
+    if (!gesture.book || !same_screen() || spellbook_kind(gesture.screen) != gesture.book) return 0;
     uint32_t picker = gesture.book == 1 ? 0x00683450u : 0x0067BAB0u;
     unsigned vector = gesture.book == 1 ? 0x1B4 : 0x1A8;
     unsigned stride = gesture.book == 1 ? 36 : 40;
@@ -568,19 +656,72 @@ static void spellbook_activate(float x, float y)
     unsigned closing = gesture.book == 1 ? 0x1ED : 0x1D4;
     if (!void_vm_readable(gesture.screen, closing + 1) || MEM8(gesture.screen + closing) ||
         !void_vm_readable(read32(gesture.screen + scene), 4) ||
-        !void_dispatch_find(picker) || !void_dispatch_find(0x00493ED0u)) return;
+        !void_dispatch_find(picker) || !void_dispatch_find(0x00493ED0u)) return 0;
     uint32_t point = logical_point(x, y);
-    if (!point) return;
+    if (!point) return 0;
     /* The book's icons/tabs are mesh parts, resolved by its own camera and scene. */
     const uint32_t args[] = {point, 0, 0, 1};
     uint32_t descriptor = void_call_guest_this(picker, gesture.screen, 4, args);
-    if (!same_screen() || spellbook_kind(gesture.screen) != gesture.book || MEM8(gesture.screen + closing)) return;
+    if (!same_screen() || spellbook_kind(gesture.screen) != gesture.book || MEM8(gesture.screen + closing)) return 0;
     uint32_t begin = read32(gesture.screen + vector), end = read32(gesture.screen + vector + 4);
     if (!begin || end < begin || (end - begin) % stride || descriptor < begin ||
         (uint64_t)descriptor + stride > end || (descriptor - begin) % stride ||
-        !void_vm_readable(descriptor, stride)) return;
+        !void_vm_readable(descriptor, stride)) return 0;
     uint32_t text = read32(descriptor + 4), text_end = read32(descriptor + 8);
-    if (!text || text_end <= text || text_end - text > 128 || !void_vm_readable(text, text_end - text)) return;
+    if (!text || text_end <= text || text_end - text > 128 || !void_vm_readable(text, text_end - text)) return 0;
+    return descriptor;
+}
+
+#ifndef HOMM5_LEGACY_UI
+/* A bookmark (school, combat or adventure tab) is a narrow strip of the mesh whose part sends
+ * "MB_Button_School" (its hover 0x00683F8E compares the same text): a tap that hits no part takes the
+ * nearest bookmark within reach, rings of 8 probes outwards. */
+static uint32_t book_bookmark_near(float x, float y)
+{
+    int width, height;
+    void_input_screen_size(&width, &height);
+    float reach = 0.07f * (float)(width < height ? width : height);
+    for (int ring = 1; ring <= 3 && same_screen(); ++ring)
+        for (int i = 0; i < 8; ++i) {
+            float radius = reach * (float)ring / 3.0f, angle = (float)i * 0.78539816f;
+            uint32_t descriptor = book_part(x + radius * cosf(angle), y + radius * sinf(angle));
+            uint32_t text = descriptor ? read32(descriptor + 4) : 0;
+            if (text && read32(descriptor + 8) - text == 16 && !memcmp((const void *)ADDR(text), "MB_Button_School", 16)) return descriptor;
+        }
+    return 0;
+}
+
+/* A swipe across the book turns its page, left for the next one, and up or down steps its bookmark, as the
+ * keys of its input section do (CSpellBook input_next_page / input_previous_page 0x00686020 / 0x00686080,
+ * input_bookmark_up / input_bookmark_down 0x006860C0 / 0x006860E0; the orcish book's pages 0x0067E2E0 /
+ * 0x0067E320 and its input_tab 0x0067E2A0). Thiscall message handlers, RET 4; they read no message. */
+static int book_swipe(float x, float y)
+{
+    int width, height;
+    void_input_screen_size(&width, &height);
+    float dx = x - gesture.start_x, dy = y - gesture.start_y, reach = 0.08f * (float)(width < height ? width : height);
+    int across = fabsf(dx) >= reach && fabsf(dx) >= 1.5f * fabsf(dy), along = fabsf(dy) >= reach && fabsf(dy) >= 1.5f * fabsf(dx);
+    unsigned closing = gesture.book == 1 ? 0x1ED : 0x1D4;
+    if ((!across && !along) || !same_screen() || spellbook_kind(gesture.screen) != gesture.book ||
+        ui_pick(gesture.screen, gesture.start_x, gesture.start_y) || !same_screen() ||
+        !void_vm_readable(gesture.screen, closing + 1) || MEM8(gesture.screen + closing)) return 0;
+    uint32_t action = gesture.book == 1 ? (across ? (dx < 0 ? 0x00686020u : 0x00686080u) : (dy < 0 ? 0x006860C0u : 0x006860E0u))
+                                        : (across ? (dx < 0 ? 0x0067E2E0u : 0x0067E320u) : 0x0067E2A0u), unused = 0;
+    if (!void_dispatch_find(action)) return 0;
+    void_call_guest_this(action, gesture.screen, 1, &unused);
+    VLOG("[touch] book-swipe screen=%08X book=%d %s", gesture.screen, gesture.book,
+         across ? (dx < 0 ? "next page" : "previous page") : dy < 0 ? "bookmark up" : "bookmark down");
+    return 1;
+}
+#endif
+
+static void spellbook_activate(float x, float y)
+{
+    uint32_t descriptor = book_part(x, y);
+#ifndef HOMM5_LEGACY_UI
+    if (!descriptor && same_screen()) descriptor = book_bookmark_near(x, y);
+#endif
+    if (!descriptor || !same_screen()) return;
     uint32_t argument = read32(descriptor + 0x10), zero = 0;
     VLOG("[touch] book-action screen=%08X book=%d part=%u argument=%u", gesture.screen,
          gesture.book, read32(descriptor), argument);
@@ -1096,6 +1237,180 @@ static int tooltip_target_at(float x, float y)
     return same_screen() && ui_pick(gesture.screen,x,y) && same_screen();
 }
 
+#ifndef HOMM5_LEGACY_UI
+/* A held combat control (initiative bar portrait, stack info) takes the second finger anywhere. */
+static int combat_ui_hold(void)
+{
+    return gesture.ui && gesture.kind == SCREEN_COMBAT && gesture.held && !gesture.dnd && !gesture.combo &&
+           !gesture.placement;
+}
+
+static uint32_t window_placement(uint32_t window);
+
+/* What the card shows (verbose): UI root +8 and its placement's name (+58/+5C). */
+static void card_trace(uint32_t root, int mode)
+{
+    uint32_t shown = read32(root + 8), placement = shown ? window_placement(shown) : 0;
+    uint32_t name = placement ? read32(placement + 0x58) : 0, end = placement ? read32(placement + 0x5C) : 0;
+    int length = name && end > name && end - name < 64 && void_vm_readable(name, end - name) ? (int)(end - name) : 0;
+    VLOG("[touch] combat-card %s shown=%08X %.*s", mode == 2 ? "effects" : "card", shown, length,
+         length ? (const char *)ADDR(name) : "");
+}
+
+/* One switch of the combat details card at the point between the card and the effects panel. Each UI
+ * root +70 request steps its source's tooltip (short info, card, effects, then round again), so the card
+ * comes back from the effects with two. mode: 0 short info, 1 card, 2 effects; returns the new mode. */
+static int card_step(uint32_t root, float x, float y, int mode)
+{
+    uint32_t method = object_method(root, 0x70);
+    for (int step = mode == 2 ? 2 : 1; method && step > 0 && same_screen(); --step) {
+        uint32_t point = logical_point(x, y);
+        if (!point) break;
+        const uint32_t args[] = {point, 1};
+        void_call_guest_this(method, root, 2, args);
+    }
+    mode = mode == 1 ? 2 : 1;
+    if (void_verbose && same_screen()) card_trace(root, mode);
+    return mode;
+}
+
+/* The unit whose initiative bar portrait is under the point (0x0055DC40 on combat screen +494, as the
+ * right button and the combat pick ask), 0 for none. */
+static uint32_t atb_unit_at(uint32_t screen, float x, float y)
+{
+    uint32_t bar = read32(screen + 0x494), point;
+    if (read32(screen) != 0x00E1DA84u || !void_vm_readable(bar, 0x28) || !(point = logical_point(x, y))) return 0;
+    return void_call_guest_this(0x0055DC40u, bar, 1, &point);
+}
+
+/* The selection ends: its card and hover leave as from a mouse moved away (the next touch has its own). */
+static void atb_clear(void)
+{
+    if (!atb.unit) return;
+    uint32_t screen = atb.screen, point;
+    int current = current_screen() == screen && read32(screen + 0xA0) == atb.root;
+    memset(&atb, 0, sizeof atb);
+    if (current && !gesture.active && (point = logical_point(-1, -1))) ui_point_call(screen, 0x24, point, 0);
+    if (!gesture.active) publish_point(-1, -1);
+    VLOG("[touch] initiative portrait released");
+}
+
+/* The second tap on the selected portrait: its card, asked at once as the right button does. */
+static void atb_card_show(float x, float y)
+{
+    uint32_t method = object_method(gesture.root, 0x70), point = logical_point(x, y);
+    if (!method || !point || !void_vm_readable(0x00F39CA0u, 1) || !MEM8(0x00F39CA0u)) return;
+    atb.x = x; atb.y = y;
+    publish_point(x, y);
+    const uint32_t args[] = {point, 1};
+    void_call_guest_this(method, gesture.root, 2, args);
+    if (!same_screen()) return;
+    atb.card = atb.mode = 1; atb.frame = touch_frame; atb.retries = 0;
+    if (void_verbose) card_trace(gesture.root, 1);
+}
+
+/* A tap in combat: 1 when it showed or switched the selected portrait's card (no click); a first tap on
+ * a portrait selects it and clicks it as before. */
+static int atb_tap(float x, float y)
+{
+    uint32_t unit = atb_unit_at(gesture.screen, x, y);
+    if (!same_screen()) return 1;
+    if (unit && unit == atb.unit && atb.screen == gesture.screen && atb.root == gesture.root) {
+        if (atb.card) atb.mode = card_step(gesture.root, atb.x, atb.y, atb.mode);
+        else atb_card_show(x, y);
+        return 1;
+    }
+    atb_clear();
+    if (!unit) return 0;
+    atb.screen = gesture.screen; atb.root = gesture.root; atb.controller = gesture.controller;
+    atb.unit = unit; atb.x = x; atb.y = y;
+    VLOG("[touch] initiative portrait selected unit=%08X point=%.1f,%.1f", unit, x, y);
+    return 0;
+}
+
+/* A touch with a portrait selected: on it, the touch takes the card's point (the card holds still);
+ * elsewhere the selection ends. Returns 1 for a touch beside an open card, which only closes it. */
+static int atb_begin(float x, float y)
+{
+    if (!atb.unit) return 0;
+    int same = gesture.kind == SCREEN_COMBAT && gesture.screen == atb.screen && gesture.root == atb.root;
+    uint32_t unit = same ? atb_unit_at(gesture.screen, x, y) : 0;
+    if (same && unit == atb.unit) { gesture.atb = 1; return 0; }
+    int closes = atb.card && same && !unit;
+    atb_clear();
+    return closes;
+}
+
+/* Between touches the selected portrait stays hovered and its open card held, until the bar or the
+ * screen changes under it. */
+static void atb_pump(void)
+{
+    uint32_t screen = current_screen(), point;
+    if (screen != atb.screen || read32(screen + 0xA0) != atb.root || read32(screen + 0x2B4) != atb.controller ||
+        atb_unit_at(screen, atb.x, atb.y) != atb.unit) { atb_clear(); return; }
+    publish_point(atb.x, atb.y);
+    if ((point = logical_point(atb.x, atb.y))) ui_point_call(screen, 0x24, point, 0);
+    /* A card that did not appear: ask again, a few times. */
+    if (atb.card && !read32(atb.root + 8) && atb.retries < 3 && touch_frame > atb.frame + 4) {
+        uint32_t method = object_method(atb.root, 0x70);
+        atb.frame = touch_frame; ++atb.retries;
+        if (method && (point = logical_point(atb.x, atb.y))) {
+            const uint32_t args[] = {point, 1};
+            void_call_guest_this(method, atb.root, 2, args);
+        }
+    }
+}
+
+/* The adventure screen's minimap (NUI::CAdvMinimap, RTTI 0x00F34164, vtable 0x00E23B50) under the point. */
+static int minimap_at(float x, float y)
+{
+    uint32_t window = ui_pick(gesture.screen, x, y);
+    for (unsigned depth = 0; window && depth < 16 && same_screen(); ++depth) {
+        const uint32_t cast[] = {window, 0, 0x00F2DAF4u, 0x00F34164u, 0};
+        uint32_t minimap = void_call_guest(0x00D119FCu, 5, cast, 0);
+        if (minimap && read32(minimap) == 0x00E23B50u) return 1;
+        uint32_t parent = object_query(window, 0xD8);
+        if (parent == window) break;
+        window = parent;
+    }
+    return 0;
+}
+
+/* A minimap tap clicks once no second tap can follow it (GameActivity's MULTI_TAP_MS, 300 ms, and
+ * a frame's delivery), so that a double tap toggles the object highlight without the camera move of
+ * a first click. Another touch elsewhere clicks it at once. */
+#define MINIMAP_TAP_WAIT_NS UINT64_C(400000000)
+static struct { uint32_t screen, root; float x, y; uint64_t due, retire; } minimap_tap;
+
+static void minimap_click(void)
+{
+    uint32_t screen = minimap_tap.screen, root = minimap_tap.root, point;
+    float x = minimap_tap.x, y = minimap_tap.y;
+    minimap_tap.due = 0;
+    if (current_screen() != screen || read32(screen + 0xA0) != root) return;
+    publish_point(x, y);
+    /* The click a tap gives: hover, press, release (the hover leaves after its frame). */
+    for (unsigned step = 0; step < 3; ++step) {
+        if (current_screen() != screen || !(point = logical_point(x, y))) return;
+        ui_point_call(screen, step == 0 ? 0x24 : step == 1 ? 0x18 : 0x1C, point, step != 0);
+    }
+    minimap_tap.retire = touch_frame + 1;
+    VLOG("[touch] minimap click point=%.1f,%.1f", x, y);
+}
+
+static void minimap_pump(void)
+{
+    uint32_t point;
+    if (minimap_tap.due && !gesture.active && void_perf_now_ns() >= minimap_tap.due) minimap_click();
+    if (minimap_tap.retire && touch_frame >= minimap_tap.retire && !gesture.active) {
+        if (current_screen() == minimap_tap.screen && (point = logical_point(-1, -1)))
+            ui_point_call(minimap_tap.screen, 0x24, point, 0);
+        if (!atb.unit) publish_point(-1, -1);
+        minimap_tap.retire = 0;
+    }
+}
+#endif
+
 static void troop_second(const void_touch_event *event)
 {
     if (!same_screen() || gesture.cancelled) return;
@@ -1118,18 +1433,37 @@ static void troop_second(const void_touch_event *event)
         gesture.second_troop=gesture.second_troop && dnd_identity(gesture.dnd) && dnd_held(gesture.dnd);
         VLOG("[touch] troop-second screen=%08X claimed=%d held=%d",gesture.screen,gesture.second_troop,
              dnd_identity(gesture.dnd) && dnd_held(gesture.dnd));
+#ifndef HOMM5_LEGACY_UI
+        gesture.second_info = !gesture.combo && !gesture.second_troop && gesture.held &&
+                              object_method(gesture.root, 0x70) &&
+                              (combat_ui_hold() || tooltip_target_at(event->x,event->y));
+#else
         gesture.second_info = !gesture.combo && !gesture.second_troop && gesture.held &&
                               object_method(gesture.root, 0x70) && tooltip_target_at(event->x,event->y);
+#endif
         if (!gesture.second_troop && !gesture.second_info && gesture.ui) {dnd_cancel();ui_release(1);gesture.panning=1;}
     } else if (gesture.second_troop) troop_split(event->x,event->y,event->kind==TOUCH_SECOND_HOLD);
     else if (gesture.second_info && gesture.held && same_screen()) {
         uint32_t point=logical_point(gesture.x,gesture.y),method=object_method(gesture.root,0x70);
+#ifndef HOMM5_LEGACY_UI
+        if (point && method && (combat_ui_hold() || tooltip_target_at(event->x,event->y)) && same_screen()) {
+#else
         if (point && method && tooltip_target_at(event->x,event->y) && same_screen()) {
+#endif
             point=logical_point(gesture.x,gesture.y);
             const uint32_t args[]={point,1};
             /* 487A80 -> 8867D0 repicks the source before asking its tooltip provider
                for details. Keep the held source point; the second finger only triggers it. */
             publish_point(gesture.x,gesture.y);
+#ifndef HOMM5_LEGACY_UI
+            /* In combat each tap switches the card and the effects once (the hold's details wait no more). */
+            if (gesture.kind==SCREEN_COMBAT) {
+                float card_x=gesture.inspecting?gesture.inspect_x:gesture.x,card_y=gesture.inspecting?gesture.inspect_y:gesture.y;
+                publish_point(card_x,card_y);
+                gesture.card_mode=card_step(gesture.root,card_x,card_y,gesture.card_mode);
+                gesture.details=2;
+            } else
+#endif
             void_call_guest_this(method,gesture.root,2,args);
             if (same_screen()) {
                 gesture.inspecting=1;gesture.inspect_x=gesture.x;gesture.inspect_y=gesture.y;
@@ -1276,6 +1610,66 @@ static int ghost_point(float x, float y, int activate)
     return 1;
 }
 
+#ifndef HOMM5_LEGACY_UI
+static uint32_t window_placement(uint32_t window);
+
+/* The slider (CWindowSlider) under the point and its lever's centre in logical UI coordinates:
+ * the lever is the CWindowMSButton the slider's layout caches at +134, placed at +64/+68. */
+static int slider_lever_at(float x, float y, float *lx, float *ly)
+{
+    uint32_t window = ui_pick(gesture.screen, x, y);
+    for (unsigned depth = 0; window && depth < 16 && same_screen(); ++depth) {
+        const uint32_t cast[] = {window, 0, 0x00F2DAF4u, 0x00F2DC80u, 0};
+        uint32_t slider = void_call_guest(0x00D119FCu, 5, cast, 0);
+        if (read32(slider) == 0x00E13F2Cu && void_vm_readable(slider, 0x138)) {
+            uint32_t lever = MEM32(slider + 0x134), placement = lever ? window_placement(lever) : 0;
+            if (!placement || !void_vm_readable(lever + 0x64, 8)) return 0;
+            *lx = MEMF(lever + 0x64) + MEMF(placement + 0xA4) * 0.5f;
+            *ly = MEMF(lever + 0x68) + MEMF(placement + 0xA8) * 0.5f;
+            return isfinite(*lx) && isfinite(*ly);
+        }
+        uint32_t parent = object_query(window, 0xD8);
+        if (parent == window) break;
+        window = parent;
+    }
+    return 0;
+}
+
+/* The lever's point for the finger at (x, y): it moves by the finger's travel from its start. */
+static uint32_t slider_point(float x, float y)
+{
+    uint32_t point = logical_point(x, y);
+    if (!point) return 0;
+    MEMF(point) = gesture.slider_x + MEMF(point) - gesture.slider_fx;
+    MEMF(point + 4) = gesture.slider_y + MEMF(point + 4) - gesture.slider_fy;
+    memcpy((void *)ADDR(scratch + 480), (const void *)ADDR(point), 8);   /* the cursor the slider reads too */
+    return point;
+}
+
+/* The combobox under the point opened through its normal click (disabled ones stay shut). */
+static int combo_open(float x, float y)
+{
+    uint32_t window = ui_pick(gesture.screen, x, y);
+    for (unsigned depth = 0; window && depth < 16 && same_screen(); ++depth) {
+        const uint32_t cast[] = {window, 0, 0x00F2DAF4u, 0x00F786F0u, 0};
+        uint32_t combo = void_call_guest(0x00D119FCu, 5, cast, 0);
+        if (read32(combo) == 0x00E8603Cu && void_vm_readable(combo, 0x168)) {
+            uint32_t point = logical_point(x, y);
+            if (!point) return 0;
+            ui_point_call(gesture.screen, 0x18, point, 1);
+            if (same_screen()) ui_point_call(gesture.screen, 0x1C, point, 1);
+            if (same_screen() && read32(combo) == 0x00E8603Cu) gesture.combo = combo;
+            VLOG("[touch] combobox opened by a swipe %08X", combo);
+            return gesture.combo != 0;
+        }
+        uint32_t parent = object_query(window, 0xD8);
+        if (parent == window) break;
+        window = parent;
+    }
+    return 0;
+}
+#endif
+
 static void ui_event(const void_touch_event *event)
 {
     gesture.x = event->x; gesture.y = event->y;
@@ -1286,6 +1680,26 @@ static void ui_event(const void_touch_event *event)
     case TOUCH_TAP:
     case TOUCH_DOUBLE_TAP: {
         if (gesture.committed || gesture.held || gesture.panning) break;
+#ifndef HOMM5_LEGACY_UI
+        if (gesture.kind == SCREEN_COMBAT && atb_tap(event->x, event->y)) { gesture.committed = 1; break; }
+        /* A double tap on the minimap toggles the map's object highlight, as Alt held; its single taps
+           click once no second one can follow (minimap_tap), so the double tap leaves the camera. */
+        if (gesture.kind == SCREEN_ADVENTURE && minimap_at(event->x, event->y)) {
+            if (!same_screen()) break;
+            if (event->kind == TOUCH_DOUBLE_TAP) {
+                minimap_tap.due = 0;
+                alt_latch(alt_screen ? 0 : gesture.screen);
+            } else {
+                if (minimap_tap.due) minimap_click();   /* an earlier tap, followed too late */
+                minimap_tap.screen = gesture.screen; minimap_tap.root = gesture.root;
+                minimap_tap.x = event->x; minimap_tap.y = event->y;
+                minimap_tap.due = void_perf_now_ns() + MINIMAP_TAP_WAIT_NS;
+            }
+            gesture.committed = 1;
+            break;
+        }
+        if (!same_screen()) break;
+#endif
         int consumed = adventure_announcement(event->x, event->y, 1);
         if (consumed || gesture.announcement) {
             gesture.committed = 1;
@@ -1295,6 +1709,12 @@ static void ui_event(const void_touch_event *event)
         if (gesture.dnd && !gesture.dnd_claim) { dnd_cancel(); if (!same_screen()) break; }
         uint32_t point = logical_point(event->x, event->y);
         if (!point) break;
+#ifndef HOMM5_LEGACY_UI
+        float lever_x, lever_y;
+        if (slider_lever_at(event->x, event->y, &lever_x, &lever_y)) { gesture.committed = 1; break; }   /* a swipe moves it */
+        point = logical_point(event->x, event->y);
+        if (!point) break;
+#endif
         ui_point_call(gesture.screen, 0x24, point, 0);
         if (!same_screen()) break;
         uint32_t child = ui_pick(gesture.screen, event->x, event->y);
@@ -1323,7 +1743,11 @@ static void ui_event(const void_touch_event *event)
     }
     case TOUCH_HOLD_BEGIN:
     case TOUCH_HOLD_DRAG:
+#ifdef HOMM5_LEGACY_UI
         if (event->kind == TOUCH_HOLD_BEGIN && !gesture.dnd && !gesture.committed) {
+#else
+        if (0) {
+#endif
             uint32_t window = ui_pick(gesture.screen, gesture.start_x, gesture.start_y);
             for (unsigned depth = 0; window && depth < 16 && same_screen(); ++depth) {
                 const uint32_t cast[] = {window, 0, 0x00F2DAF4u, 0x00F786F0u, 0};
@@ -1385,6 +1809,36 @@ static void ui_event(const void_touch_event *event)
             if (!ui_pick(gesture.screen, gesture.start_x, gesture.start_y)) { ui_hover(event->x, event->y); break; }
         }
         if (gesture.held || gesture.announcement) { ui_hover(event->x, event->y); break; }
+#ifndef HOMM5_LEGACY_UI
+        if (gesture.slider) {
+            uint32_t point = slider_point(event->x, event->y);
+            if (point) ui_point_call(gesture.screen, 0x24, point, 0);
+            break;
+        }
+        /* A swipe that starts on a slider takes its lever where it is and moves it by the finger's travel. */
+        float lever_x, lever_y;
+        if (!gesture.pressed && !gesture.dnd && slider_lever_at(gesture.start_x, gesture.start_y, &lever_x, &lever_y)) {
+            uint32_t start = logical_point(gesture.start_x, gesture.start_y);
+            if (!start) break;
+            gesture.slider = gesture.pressed = 1;
+            gesture.slider_x = lever_x; gesture.slider_y = lever_y;
+            gesture.slider_fx = MEMF(start); gesture.slider_fy = MEMF(start + 4);
+            uint32_t point = slider_point(gesture.start_x, gesture.start_y);
+            if (point) ui_point_call(gesture.screen, 0x24, point, 0);
+            point = slider_point(gesture.start_x, gesture.start_y);
+            if (point && same_screen()) ui_point_call(gesture.screen, 0x18, point, 1);
+            point = slider_point(event->x, event->y);
+            if (point && same_screen()) ui_point_call(gesture.screen, 0x24, point, 0);
+            VLOG("[touch] slider swipe lever=%.1f,%.1f", lever_x, lever_y);
+            break;
+        }
+        /* A swipe that starts on a combobox opens it and the release picks the item under the finger. */
+        if (!gesture.pressed && !gesture.dnd && combo_open(gesture.start_x, gesture.start_y)) {
+            gesture.held = 1;
+            ui_hover(event->x, event->y);
+            break;
+        }
+#endif
         if (!gesture.pressed && ui_scroll(event)) break;
         if (!gesture.pressed) {
             uint32_t point = logical_point(gesture.start_x, gesture.start_y);
@@ -1414,6 +1868,14 @@ static void ui_event(const void_touch_event *event)
         gesture.cancelled = 1;
         break;
     case TOUCH_END:
+#ifndef HOMM5_LEGACY_UI
+        if (gesture.book && gesture.panning && !gesture.held && !gesture.pressed && !gesture.dnd_pressed &&
+            book_swipe(event->x, event->y)) {
+            gesture.committed = 1;
+            ui_release(0);
+            break;
+        }
+#endif
         if (gesture.combo) {
             uint32_t popup = read32(gesture.combo + 0x134);
             uint32_t vb = read32(popup + 0x10);
@@ -1433,6 +1895,16 @@ static void ui_event(const void_touch_event *event)
             } else ui_release(0);
             break;
         }
+#ifndef HOMM5_LEGACY_UI
+        if (gesture.slider) {
+            uint32_t point = slider_point(event->x, event->y);
+            if (point) ui_point_call(gesture.screen, 0x1C, point, 1);
+            gesture.slider = gesture.pressed = 0;
+            gesture.committed = 1;
+            ui_release(0);
+            break;
+        }
+#endif
         if (troop_drop(event->x,event->y)) { ui_release(1);break; }
         if (gesture.dnd_pressed) {
             if (dnd_claim_at(gesture.dnd, event->x, event->y)) dnd_point(0x2C, event->x, event->y);
@@ -1490,11 +1962,28 @@ void void_touch_ui_pump(void)
     if (gesture.retiring) {
         int current = same_screen();
         if (!current || touch_frame != gesture.release_frame) {
-            if (current) ui_hover(-1, -1);
-            if (!drag_owner.helper) publish_point(-1, -1);
+            int keep = 0;
+#ifndef HOMM5_LEGACY_UI
+            keep = atb.unit != 0;   /* the selected initiative portrait keeps the cursor (atb_pump) */
+#endif
+            if (current && !keep) ui_hover(-1, -1);
+            if (!drag_owner.helper && !keep) publish_point(-1, -1);
             gesture.retiring = 0;
         }
     }
+    if (gesture.details == 1 && gesture.active && gesture.held && !gesture.cancelled && same_screen()) world_details();
+#ifndef HOMM5_LEGACY_UI
+    if (atb.unit && !gesture.active) atb_pump();
+    minimap_pump();
+    /* A card that did not appear (its source was still being picked): ask again, a few times. */
+    if (gesture.card && gesture.active && !read32(gesture.root + 8) && gesture.card_retries < 3 &&
+        touch_frame > gesture.card_frame + 4 && same_screen()) {
+        gesture.card_frame = touch_frame; ++gesture.card_retries;
+        world_details_request(0);
+    }
+    if (alt_screen && current_screen() != alt_screen) alt_latch(0);
+    if (ctrl_held && !gesture.active) ctrl_latch(0);
+#endif
     /* A held finger hovers like the resting mouse: UI tooltips, and the world
        information its screen's tooltip controller hands to the UI root. */
     if (gesture.active && gesture.held && (gesture.ui || gesture.world_hover) && !gesture.cancelled) {
@@ -1625,6 +2114,38 @@ static int combat_double(float x, float y)
     return 1;
 }
 
+#ifndef HOMM5_LEGACY_UI
+/* A window's placement (IWindow +8 is `mov eax, [ecx+offset]; ret`), as touch_scale.c reads it. */
+static uint32_t window_placement(uint32_t window)
+{
+    uint32_t table = read32(window), getter = table ? read32(table + 8) : 0;
+    if (!getter || !void_vm_readable(getter, 7)) return 0;
+    const uint8_t *code = (const uint8_t *)ADDR(getter);
+    if (code[0] != 0x8B || code[1] != 0x81 || code[6] != 0xC3) return 0;
+    uint32_t offset;
+    memcpy(&offset, code + 2, 4);
+    if (offset > 0x1000 || !void_vm_readable(window + offset, 4)) return 0;
+    uint32_t placement = MEM32(window + offset);
+    return void_vm_readable(placement, 0xC4) ? placement : 0;
+}
+
+/* The dragged stack's portrait hangs from its top-left corner, which 0x008126E0 puts at the point:
+ * over the reserve the finger seemed to point with that corner, while on the field the stack stands
+ * under the finger. Centre the portrait on the finger (helper +84: shown +10, window +C). */
+static void placement_icon_center(uint32_t placement, float x, float y)
+{
+    uint32_t helper = read32(placement + 0x84);
+    if (!helper || !void_vm_readable(helper, 0x14) || !MEM8(helper + 0x10)) return;
+    uint32_t icon = window_placement(read32(helper + 0xC)), point;
+    if (!icon) return;
+    float width = MEMF(icon + 0xA4), height = MEMF(icon + 0xA8);
+    if (!(width > 0 && height > 0 && width < 512 && height < 512) || !(point = logical_point(x, y))) return;
+    MEMF(point) -= width * 0.5f;
+    MEMF(point + 4) -= height * 0.5f;
+    void_call_guest_this(0x008126E0u, helper, 1, &point);
+}
+#endif
+
 static void placement_point(float x, float y, int phase)
 {
     uint32_t point = logical_point(x, y), placement = read32(gesture.screen + 0x488);
@@ -1636,12 +2157,88 @@ static void placement_point(float x, float y, int phase)
     if (phase == 1) {
         const uint32_t args[] = {point, pick + 0x10};
         void_call_guest_this(0x005767A0u, placement, 2, args);
+#ifndef HOMM5_LEGACY_UI
+        placement_icon_center(placement, x, y);
+#endif
     } else {
         uint32_t player = void_call_guest_this(0x00669430u, gesture.screen, 0, NULL);
         const uint32_t args[] = {point, pick + 0x10, player};
         void_call_guest_this(phase == 0 ? 0x005779D0u : 0x00577DC0u, placement, 3, args);
     }
     void_call_guest_this(0x0054E030u, pick, 0, NULL);
+}
+
+/* The tactics reserve slot under the point, -1 for none: the placement controller's own
+ * hit test over its PlacementBar slots (+2C..+30), thiscall (point), RET 4. */
+static int placement_reserve_slot(float x, float y)
+{
+    uint32_t placement = read32(gesture.screen + 0x488), point = logical_point(x, y);
+    if (!placement || !point || !void_vm_readable(placement + 0x2C, 8)) return -1;
+    return (int)void_call_guest_this(0x005764A0u, placement, 1, &point);
+}
+
+/* Combat: a second finger resting while the first one aims asks about what the aiming finger
+ * is on, as the right button does (its tooltip, then the details card), and keeps the aim. Its lift
+ * hides the card and the aim goes on; the first finger lifted while it rests gives no order, and the
+ * card stays until the second one lifts too. */
+#ifndef HOMM5_LEGACY_UI
+static void combat_card_toggle(void)
+{
+    if (same_screen()) gesture.card_mode = card_step(gesture.root, gesture.inspect_x, gesture.inspect_y, gesture.card_mode);
+}
+#endif
+
+static int combat_card_event(int kind)
+{
+#ifndef HOMM5_LEGACY_UI
+    if (gesture.card && kind == TOUCH_SECOND_TAP) {
+        /* A tap (not a resting finger): the card stays until the first finger lifts, without an order. */
+        gesture.card_sticky = gesture.committed = 1;
+        return 1;
+    }
+    if (gesture.card && kind == TOUCH_SECOND_BEGIN && gesture.card_sticky) {
+        combat_card_toggle();
+        return 1;
+    }
+#endif
+    if (kind != TOUCH_SECOND_BEGIN) return gesture.card;   /* its tap or hold: nothing more */
+    if (gesture.ui || gesture.kind != SCREEN_COMBAT || gesture.placement || gesture.cancelled ||
+        gesture.committed || !(gesture.combat_aim || gesture.aiming)) return 0;
+    gesture.card = 1;
+    gesture.held = gesture.world_hover = gesture.details = 1;
+    publish_point(gesture.x, gesture.y);
+    world_tooltip();
+#ifndef HOMM5_LEGACY_UI
+    /* The card at once, at the point the first finger had (the aim and camera hold still). */
+    gesture.inspecting = 1; gesture.inspect_x = gesture.x; gesture.inspect_y = gesture.y;
+    gesture.card_mode = 1; gesture.card_frame = touch_frame; gesture.card_retries = 0;
+    world_details_request(0);
+#endif
+    VLOG("[touch] combat-card point=%.1f,%.1f", gesture.x, gesture.y);
+    return 1;
+}
+
+/* The hover ends with the card: while a finger counts as held, the tooltip tracker keeps showing
+ * the card (sub_008863A0), so the first finger's own hold information goes too. */
+static void combat_card_end(void)
+{
+    if (!gesture.card) return;
+    gesture.card = gesture.details = 0;
+    gesture.held = gesture.world_hover = 0;
+#ifndef HOMM5_LEGACY_UI
+    gesture.inspecting = gesture.card_sticky = gesture.card_mode = 0;
+#endif
+    if (same_screen()) ui_hover(-1, -1);
+}
+
+/* Controller state after a touch step: +38 picked entry, +6C dragging, +9C command mode. */
+static void placement_trace(const char *what, float x, float y)
+{
+    uint32_t placement = read32(gesture.screen + 0x488);
+    if (!void_verbose || !void_vm_readable(placement + 0x38, 0x68)) return;
+    VLOG("[touch] placement %s point=%.1f,%.1f reserve=%d picked=%d drag=%u commands=%u",
+         what, x, y, placement_reserve_slot(x, y), (int)MEM32(placement + 0x38),
+         MEM8(placement + 0x6C), MEM8(placement + 0x9C));
 }
 
 /* ------------------------------------------------- combat taps and camera */
@@ -1838,6 +2435,10 @@ void void_touch_engine_init(void)
     memset(&drag_owner, 0, sizeof drag_owner);
     memset(&combat_home, 0, sizeof combat_home);
     memset(&army_batch, 0, sizeof army_batch);
+#ifndef HOMM5_LEGACY_UI
+    memset(&atb, 0, sizeof atb);
+    memset(&minimap_tap, 0, sizeof minimap_tap);
+#endif
     touch_mode = 0;
     cursor_started_ns = void_perf_now_ns();
     if (!original_cursor) {
@@ -1880,7 +2481,7 @@ void void_touch_engine_event(const void_touch_event *event)
     void_touch_event shifted = *event;
     if (event->kind != TOUCH_ABORT && event->kind != TOUCH_POINTER && event->kind != TOUCH_POINTER_CLICK &&
         event->kind != TOUCH_PAD_CAMERA && event->kind != TOUCH_TRANSFORM && event->kind != TOUCH_TILT &&
-        event->kind != TOUCH_THREE_FINGER_TAP &&
+        event->kind != TOUCH_THREE_FINGER_TAP && event->kind != TOUCH_TWO_FINGER_TAP &&
         event->kind != TOUCH_TWO_FINGER_BEGIN && event->kind != TOUCH_TWO_FINGER_CANCEL && event->x >= 0 && event->y >= 0) {
         float ox = void_port_cursor_offset(0), oy = void_port_cursor_offset(1);
         if (ox != 0 || oy != 0) {
@@ -1891,6 +2492,12 @@ void void_touch_engine_event(const void_touch_event *event)
             shifted.y = cursor_axis(event->y, height, oy * side);
         }
     }
+#ifndef HOMM5_LEGACY_UI
+    /* A touch on the selected initiative portrait keeps its card's point: the card holds still. */
+    if (gesture.active && gesture.atb && event->kind != TOUCH_BEGIN && event->x >= 0 && event->y >= 0) {
+        shifted.x = atb.x; shifted.y = atb.y;
+    }
+#endif
     event = &shifted;
     if (event->kind == TOUCH_POINTER_CLICK) {
         pointer_text.screen = current_screen();
@@ -1901,6 +2508,10 @@ void void_touch_engine_event(const void_touch_event *event)
     if (event->kind == TOUCH_POINTER) {
         void_touch_event abort = {TOUCH_ABORT, 0, 0, 0, 0, 1, 0};
         void_touch_engine_event(&abort);
+#ifndef HOMM5_LEGACY_UI
+        atb_clear();   /* the mouse owns the cursor again */
+        memset(&minimap_tap, 0, sizeof minimap_tap);
+#endif
         touch_mode = 0;
         return;
     }
@@ -1941,6 +2552,21 @@ void void_touch_engine_event(const void_touch_event *event)
         if (!gesture.root || !ui_method(gesture.screen, 0x28)) return;
         gesture.controller = (gesture.kind == SCREEN_MENU || gesture.kind == SCREEN_TOWN) ? 0 :
                              read32(gesture.screen + (gesture.kind == SCREEN_ADVENTURE ? 0x5F4 : 0x2B4));
+#ifndef HOMM5_LEGACY_UI
+        if (atb_begin(event->x, event->y)) {
+            /* Beside the open card: the touch closes it and does nothing else. */
+            gesture.active = gesture.committed = gesture.cancelled = 1;
+            touch_mode = 1;
+            publish_point(-1, -1);
+            return;
+        }
+        if (gesture.atb) {
+            shifted.x = gesture.start_x = gesture.x = atb.x;
+            shifted.y = gesture.start_y = gesture.y = atb.y;
+        }
+        /* A waiting minimap tap is clicked before a touch anywhere but the minimap. */
+        if (minimap_tap.due && (gesture.kind != SCREEN_ADVENTURE || !minimap_at(event->x, event->y))) minimap_click();
+#endif
         gesture.announcement = adventure_announcement(event->x, event->y, 0);
         gesture.ui = gesture.announcement || gesture.kind == SCREEN_MENU ||
                      ui_pick(gesture.screen, event->x, event->y) != 0;
@@ -1957,6 +2583,14 @@ void void_touch_engine_event(const void_touch_event *event)
         gesture.aiming = !gesture.ui && target_armed();
         gesture.placement = !gesture.ui && gesture.kind == SCREEN_COMBAT &&
                             read32(gesture.screen + 0x2E0) == 0x1000;
+        /* The tactics reserve (CombatArena PlacementBar) is interface, yet the original hands
+           every arena press to the placement controller, which tests the reserve slots itself:
+           a stack is picked up from there, not clicked as a button. */
+        if (gesture.ui && !gesture.announcement && !gesture.dnd_claim && gesture.kind == SCREEN_COMBAT &&
+            read32(gesture.screen + 0x2E0) == 0x1000 && placement_reserve_slot(event->x, event->y) >= 0) {
+            gesture.ui = 0;
+            gesture.placement = 1;
+        }
         if (gesture.placement) gesture.aiming = 1;
         gesture.active = 1;
         if (!publish_point(event->x, event->y)) { gesture.active = 0; return; }
@@ -1973,7 +2607,14 @@ void void_touch_engine_event(const void_touch_event *event)
             combat_home_capture();
             gesture.combat_aim = 1;
             combat_point(event->x, event->y, 0);
+#ifndef HOMM5_LEGACY_UI
+            /* Pressed on the acting stack (+2F4 under the cursor, +2AC acting) that can shoot (+1E0). */
+            uint32_t acting = read32(gesture.screen + 0x2AC), shoots = acting ? object_method(acting, 0x1E0) : 0;
+            gesture.melee = acting && read32(gesture.screen + 0x2F4) == acting && shoots &&
+                            (void_call_guest_this(shoots, acting, 0, NULL) & 0xFFu);
+#endif
         }
+        if (gesture.placement) placement_trace("down", event->x, event->y);
         return;
     }
     if (!gesture.active) {
@@ -1986,6 +2627,32 @@ void void_touch_engine_event(const void_touch_event *event)
         return;
     }
     int kind = event->kind;
+#ifndef HOMM5_LEGACY_UI
+    if (gesture.card && (kind == TOUCH_TWO_FINGER_BEGIN || kind == TOUCH_TRANSFORM || kind == TOUCH_TILT ||
+                         kind == TOUCH_TWO_FINGER_CANCEL || kind == TOUCH_TWO_FINGER_TAP)) {
+        /* The card holds the view still: a drifting second finger is no camera gesture. */
+        gesture.committed = 1;
+        return;
+    }
+    /* A tapped card ends with the first finger, which Java reports as a tap once the second finger
+       cancelled its hold: no order (TOUCH_END follows and hides the card). */
+    if (gesture.card_sticky && (kind == TOUCH_TAP || kind == TOUCH_DOUBLE_TAP)) return;
+    if (kind == TOUCH_TWO_FINGER_TAP) {
+        /* On the map it cancels the aim or stops the hero; on the minimap it toggles the object highlight
+           (the map's own two-finger taps were too often a camera gesture's start). */
+        if (gesture.kind == SCREEN_ADVENTURE && same_screen() && (!gesture.ui || minimap_at(gesture.start_x, gesture.start_y))) {
+            if (gesture.ui) alt_latch(alt_screen ? 0 : gesture.screen);
+            else if (gesture.aiming && !gesture.cancelled) adventure_cancel();
+            else adventure_stop();
+            gesture.committed = gesture.cancelled = 1;
+            publish_point(-1, -1);
+            return;
+        }
+        kind = TOUCH_TWO_FINGER_CANCEL;   /* elsewhere it is the resting pair it always was */
+    }
+    /* Fingers added on the selected portrait's open card change nothing (its taps switch it). */
+    if (gesture.atb && atb.card && (kind == TOUCH_SECOND_BEGIN || kind == TOUCH_SECOND_TAP || kind == TOUCH_SECOND_HOLD)) return;
+#endif
     if (kind == TOUCH_THREE_FINGER_TAP) {
         if (same_screen() && camera_world() && !gesture.cancelled) {
             if (gesture.kind == SCREEN_ADVENTURE) adventure_camera_home();
@@ -2002,6 +2669,7 @@ void void_touch_engine_event(const void_touch_event *event)
         return;
     }
     if (kind == TOUCH_SECOND_BEGIN || kind == TOUCH_SECOND_TAP || kind == TOUCH_SECOND_HOLD) {
+        if (same_screen() && combat_card_event(kind)) return;
         if (!same_screen()) {
             gesture.active = 0;
             publish_point(-1, -1);
@@ -2012,6 +2680,29 @@ void void_touch_engine_event(const void_touch_event *event)
             if (gesture.kind == SCREEN_ADVENTURE) adventure_cancel();
             else if (gesture.kind == SCREEN_COMBAT) combat_cancel();
             gesture.cancelled = 1; publish_point(-1, -1);
+        }
+        return;
+    }
+    if (kind == TOUCH_FIRST_END) {
+        /* The first finger lifted while the second rests. Under a combat card: no order, the card
+           stays with the resting finger; any other gesture ends here, as it always did. */
+        if (gesture.card) { gesture.card = 2; return; }
+        void_touch_event abort = {TOUCH_ABORT, 0, 0, 0, 0, 1, 0};
+        void_touch_engine_event(&abort);
+        return;
+    }
+    if (kind == TOUCH_SECOND_END) {
+        int released = gesture.card == 2;
+#ifndef HOMM5_LEGACY_UI
+        if (gesture.card_sticky && !released) return;   /* a tapped card stays with the first finger */
+#endif
+        combat_card_end();
+        if (released) {
+            /* Both fingers are up and no order was given: the gesture is over (its ABORT follows). */
+            if (gesture.world_hover && same_screen()) ui_hover(-1, -1);
+            gesture.world_hover = 0;
+            gesture.active = 0;
+            if (!gesture.retiring && !drag_owner.helper) publish_point(-1, -1);
         }
         return;
     }
@@ -2030,6 +2721,10 @@ void void_touch_engine_event(const void_touch_event *event)
              gesture.screen, gesture.kind, gesture.ui, gesture.aiming, event->x, event->y);
     refresh_target_mode();
     if (kind == TOUCH_ABORT) {
+#ifndef HOMM5_LEGACY_UI
+        ctrl_latch(0);
+        combat_card_end();
+#endif
         if (gesture.ui) ui_event(event);
         else if (gesture.aiming && !gesture.cancelled) {
             if (gesture.kind == SCREEN_ADVENTURE) adventure_cancel();
@@ -2040,6 +2735,8 @@ void void_touch_engine_event(const void_touch_event *event)
         publish_point(-1, -1);
         return;
     }
+    /* The resting finger moved: a camera gesture, with no information under it. */
+    if (kind == TOUCH_TWO_FINGER_BEGIN) combat_card_end();
     if (kind == TOUCH_TWO_FINGER_BEGIN && !gesture.ui && gesture.combat_aim && !gesture.aiming) {
         /* Two fingers on the battlefield move the camera: no order at release. */
         gesture.combat_aim = 0;
@@ -2059,6 +2756,12 @@ void void_touch_engine_event(const void_touch_event *event)
     }
     if (gesture.ui) {
         ui_event(event);
+        /* A held combat control (initiative bar, portraits) shows its details too; not a drag source. */
+        if (kind == TOUCH_HOLD_BEGIN && gesture.kind == SCREEN_COMBAT && gesture.held && !gesture.dnd && !gesture.combo &&
+#ifndef HOMM5_LEGACY_UI
+            !(gesture.atb && atb.card) &&   /* a held open card stays as it is */
+#endif
+            !gesture.placement && same_screen()) gesture.details = 1;
     } else if (kind == TOUCH_TWO_FINGER_CANCEL) {
         if (gesture.kind == SCREEN_ADVENTURE) adventure_cancel();
             else if (gesture.kind == SCREEN_COMBAT) combat_cancel();
@@ -2072,6 +2775,9 @@ void void_touch_engine_event(const void_touch_event *event)
                                event->dy);
     } else if (kind == TOUCH_PAN && combat_world()) {
         gesture.combat_aim = 1;
+#ifndef HOMM5_LEGACY_UI
+        if (gesture.melee) ctrl_latch(1);   /* dragged off the shooter: its melee attack, as Ctrl+click */
+#endif
         combat_point(event->x, event->y, 0);
     } else if (kind == TOUCH_PAN || kind == TOUCH_TRANSFORM) {
         if (gesture.placement) placement_point(event->x, event->y, 1);
@@ -2100,6 +2806,7 @@ void void_touch_engine_event(const void_touch_event *event)
             /* Map and town objects: their information while held, no action. */
             gesture.held = gesture.info = gesture.world_hover = 1;
             world_tooltip();
+            gesture.details = 1;
         }
     } else if (kind == TOUCH_HOLD_DRAG) {
         if (gesture.placement) placement_point(event->x, event->y, 1);
@@ -2124,14 +2831,24 @@ void void_touch_engine_event(const void_touch_event *event)
                 if (kind != TOUCH_DOUBLE_TAP || !combat_double(event->x, event->y))
                     combat_point(event->x, event->y, 1);
             } else if (gesture.kind == SCREEN_TOWN) town_activate(event->x, event->y);
+            if (gesture.placement) placement_trace("drop", event->x, event->y);
             gesture.committed = 1;
         } else if (gesture.placement) {
             uint32_t placement = read32(gesture.screen + 0x488);
+            /* Released over the reserve: the original drops there as well, into that slot. */
+            if (placement_reserve_slot(event->x, event->y) >= 0) {
+                placement_point(event->x, event->y, 2);
+                placement_trace("drop-reserve", event->x, event->y);
+            } else
             if (placement) void_call_guest_this(0x00576260u, placement, 0, NULL);
             gesture.cancelled = 1;
         }
     }
     if (kind == TOUCH_END) {
+#ifndef HOMM5_LEGACY_UI
+        ctrl_latch(0);
+        combat_card_end();
+#endif
         if (gesture.world_hover && same_screen()) ui_hover(-1, -1);   /* the information leaves with the finger */
         gesture.world_hover = 0;
         gesture.active = 0;

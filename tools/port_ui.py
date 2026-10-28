@@ -64,6 +64,28 @@ OPTIONS = (
      "Выкл.", "Вкл.", (0.0, 1.0), 0),
 )
 
+# ToE draws these options with the original widgets (Vanilla/HoF keep scrollers, TECHDEBT-LEGACY.md):
+# render and interface scale as comboboxes of the same values, the touch cursor as a checkbox, and
+# the frame rate like the original resolution combobox: its items are port_fps_items, the display's
+# own rates, and the chosen item's text is port_fps_choice (android/host/port_settings.c).
+TOE_KINDS = {"port_render_scale": "combo", "port_ui_scale": "combo", "port_fps_limit": "rates",
+             "port_touch_cursor": "check"}
+# ToE-only options, same fields as OPTIONS.
+TOE_OPTIONS = (
+    ("port_lan_vpn", "port_lan_vpn", "port_touch_cursor",
+     "LAN через Tailscale/VPN",
+     "Сетевая игра между устройствами, соединёнными Tailscale или другой VPN: поиск игр уходит также на "
+     "адреса, заданные в лаунчере, а игра сообщает другим свой адрес VPN. Включайте только когда все "
+     "игроки подключаются через VPN.",
+     "Выкл.", "Вкл.", (0.0, 1.0), 0),
+)
+TOE_KINDS["port_lan_vpn"] = "check"
+COMBO_TEMPLATE = "UI/GameOptions/Templates/ComboBox/Combo.(WindowComboBox).xdb"
+
+
+def options(edition="toe"):
+    return OPTIONS + (TOE_OPTIONS if edition == "toe" else ())
+
 
 def utf16(text):
     return b"\xff\xfe" + text.encode("utf-16-le")
@@ -73,37 +95,54 @@ def percent(value):
     return f"{round(value * 100)}%"
 
 
-def option_xml(option, indent="\t\t\t\t\t\t\t"):
+def option_xml(option, indent="\t\t\t\t\t\t\t", kind="scroller"):
     identifier, variable, _, _, _, _, _, values, default = option
     folder = f"{TEXTS}/Port_{identifier}"
     t = indent
+    widget = {"scroller": "OPTION_SCROLLER", "combo": "OPTION_COMBO_BOX", "rates": "OPTION_COMBO_BOX",
+              "check": "OPTION_CHECK_BOX"}[kind]
     lines = [f"{t}<Item>",
              f"{t}\t<ID>{identifier}</ID>",
-             f"{t}\t<Type>OPTION_SCROLLER</Type>",
+             f"{t}\t<Type>{widget}</Type>",
              f'{t}\t<NameFileRef href="{folder}/Name.txt"/>',
-             f'{t}\t<TooltipFileRef href="{folder}/Tooltip.txt"/>',
-             f"{t}\t<Items>"]
-    for index, value in enumerate(values):
-        lines += [f"{t}\t\t<Item>",
-                  f'{t}\t\t\t<NameFileRef href="{folder}/Item{index:02d}.txt"/>',
-                  f"{t}\t\t\t<Value>{value:g}</Value>",
-                  f"{t}\t\t</Item>"]
-    lines += [f"{t}\t</Items>",
-              f"{t}\t<ItemsGlobalVar/>",
-              f"{t}\t<UseItemNameAsValue>false</UseItemNameAsValue>",
-              f"{t}\t<GlobalVar1>{variable}</GlobalVar1>",
-              f"{t}\t<GlobalVar2/>",
+             f'{t}\t<TooltipFileRef href="{folder}/Tooltip.txt"/>']
+    if kind in ("scroller", "combo"):
+        lines.append(f"{t}\t<Items>")
+        for index, value in enumerate(values):
+            lines += [f"{t}\t\t<Item>",
+                      f'{t}\t\t\t<NameFileRef href="{folder}/Item{index:02d}.txt"/>',
+                      f"{t}\t\t\t<Value>{value:g}</Value>",
+                      f"{t}\t\t</Item>"]
+        lines.append(f"{t}\t</Items>")
+    else:
+        lines.append(f"{t}\t<Items/>")
+    if kind == "rates":
+        # "30;60;...": the default item index 1 is 60.
+        lines += [f"{t}\t<ItemsGlobalVar>port_fps_items</ItemsGlobalVar>",
+                  f"{t}\t<UseItemNameAsValue>true</UseItemNameAsValue>",
+                  f"{t}\t<GlobalVar1>port_fps_choice</GlobalVar1>"]
+        default = 1
+    else:
+        lines += [f"{t}\t<ItemsGlobalVar/>",
+                  f"{t}\t<UseItemNameAsValue>false</UseItemNameAsValue>",
+                  f"{t}\t<GlobalVar1>{variable}</GlobalVar1>"]
+        if kind == "check":
+            default = int(values[default])
+    lines += [f"{t}\t<GlobalVar2/>",
               f"{t}\t<DefaultValue1>{default}</DefaultValue1>",
               f"{t}\t<DefaultValue2>0</DefaultValue2>",
               f"{t}\t<OptionToDisableID/>",
               f"{t}\t<OptionDisableByValue1>0</OptionDisableByValue1>",
               f"{t}\t<OptionToDisableValue1>0</OptionToDisableValue1>",
-              f"{t}\t<DisableByCodeGlobalVar/>",
-              f"{t}\t<LabelsFileRef>",
-              f'{t}\t\t<Item href="{folder}/Label00.txt"/>',
-              f'{t}\t\t<Item href="{folder}/Label01.txt"/>',
-              f"{t}\t</LabelsFileRef>",
-              f"{t}\t<Hide>false</Hide>",
+              f"{t}\t<DisableByCodeGlobalVar/>"]
+    if kind == "scroller":
+        lines += [f"{t}\t<LabelsFileRef>",
+                  f'{t}\t\t<Item href="{folder}/Label00.txt"/>',
+                  f'{t}\t\t<Item href="{folder}/Label01.txt"/>',
+                  f"{t}\t</LabelsFileRef>"]
+    else:
+        lines.append(f"{t}\t<LabelsFileRef/>")
+    lines += [f"{t}\t<Hide>false</Hide>",
               f"{t}\t<Global>false</Global>",
               f"{t}\t<Group/>",
               f"{t}\t<Preview>false</Preview>",
@@ -111,8 +150,8 @@ def option_xml(option, indent="\t\t\t\t\t\t\t"):
     return ("\r\n".join(lines) + "\r\n").encode("utf-8")
 
 
-def patch_uiconsts(data):
-    for option in OPTIONS:
+def patch_uiconsts(data, edition="toe"):
+    for option in options(edition):
         if f"<ID>{option[0]}</ID>".encode() in data:
             raise ValueError(f"uiconsts already has {option[0]}")
     end = data.index(b"</Categories>", data.index(b"<GameOptions>"))
@@ -122,11 +161,15 @@ def patch_uiconsts(data):
       <NameFileRef href="Consts/GameOptions/PortAdditional.txt"/>
       <TooltipFileRef href="Consts/GameOptions/PortAdditionalTooltip.txt"/>
       <Pages>'''
-    for identifier, name, options in (("port_video", "PortVideo", OPTIONS[:3]),
-                                      ("port_controls", "PortControls", OPTIONS[3:])):
+    # The native template lays out two pages; ToE's network switch closes the controls page.
+    pages = [("port_video", "PortVideo", OPTIONS[:3]),
+             ("port_controls", "PortControls", OPTIONS[3:] + (TOE_OPTIONS if edition == "toe" else ()))]
+    kinds = TOE_KINDS if edition == "toe" else {}
+    for identifier, name, page in pages:
         category += (f'<Item><ID>{identifier}</ID><NameFileRef href="Consts/GameOptions/{name}.txt"/>'
                      '<TooltipFileRef href="Consts/GameOptions/PortAdditionalTooltip.txt"/><Options>').encode()
-        category += b"".join(option_xml(option) for option in options) + b"</Options></Item>"
+        category += b"".join(option_xml(option, kind=kinds.get(option[0], "scroller")) for option in page)
+        category += b"</Options></Item>"
     category += b"</Pages><Enabled>true</Enabled></Item>"
     data = data[:end] + category + data[end:]
     # The tooltip delay's Standard value: instant (item 0, value 0).
@@ -138,16 +181,28 @@ def patch_uiconsts(data):
     return data[:match.start()] + b"<DefaultValue1>0</DefaultValue1>" + data[match.end():]
 
 
-def texts():
+def combo_rows(game_dir, edition="toe"):
+    """Every port combobox (eight render scales) without a scrolling list."""
+    if edition != "toe":
+        return {}
+    window = ET.fromstring(source_resource(game_dir, COMBO_TEMPLATE, edition)[0])
+    rows = window.find("MaxVisibleRows")
+    if rows is None:
+        raise ValueError("combobox template lacks MaxVisibleRows")
+    rows.text = str(max(int(rows.text), *(len(option[7]) for option in OPTIONS if TOE_KINDS.get(option[0]) == "combo")))
+    return {COMBO_TEMPLATE: ET.tostring(window, encoding="utf-8", xml_declaration=True)}
+
+
+def texts(edition="toe"):
     out = {f"UI/{TEXTS}/PortAdditional.txt": utf16("Дополнительные"),
            f"UI/{TEXTS}/PortVideo.txt": utf16("Изображение"),
-           f"UI/{TEXTS}/PortControls.txt": utf16("Управление"),
+           f"UI/{TEXTS}/PortControls.txt": utf16("Управление и сеть" if edition == "toe" else "Управление"),
            f"UI/{TEXTS}/PortAdditionalTooltip.txt": utf16("Настройки Android-порта и переход в лаунчер."),
            "UI/PortLauncher.txt": utf16("В лаунчер"),
            "UI/PortLauncherTooltip.txt": utf16("Завершить игру и открыть лаунчер. Сначала сохраните игру."),
            "UI/ExitGameQuestion/Header.txt": utf16("Выход из игры"),
            "UI/ExitGameQuestion/Question.txt": utf16("Завершить игру? Несохранённый прогресс будет потерян.")}
-    for identifier, _, _, name, tooltip, low, high, values, _ in OPTIONS:
+    for identifier, _, _, name, tooltip, low, high, values, _ in options(edition):
         folder = f"UI/{TEXTS}/Port_{identifier}"
         out[f"{folder}/Name.txt"] = utf16(name)
         out[f"{folder}/Tooltip.txt"] = utf16(tooltip)
@@ -156,7 +211,7 @@ def texts():
         for index, value in enumerate(values):
             if identifier == "port_fps_limit":
                 label = f"{value:g} кадров/с" if value else "Частота экрана"
-            elif identifier == "port_touch_cursor":
+            elif identifier in ("port_touch_cursor", "port_lan_vpn"):
                 label = "Вкл." if value else "Выкл."
             else:
                 label = percent(value)
@@ -219,6 +274,10 @@ def loading_logo(game_dir, edition="toe"):
             node = ET.fromstring(source_resource(game_dir, path, edition)[0])
             placement = node.find("Placement")
             is_root = path.startswith("UI/PWLScreen.")
+            fill = node.find("Background")
+            if path.endswith("Shared).xdb") and is_root and fill is not None and not fill.get("href"):
+                # 2.1 replaced the gradient of 1.6/3.1 with its full-screen logo, now a thumbnail.
+                fill.set("href", "pwlscreen/Back.(BackgroundSimpleScallingTexture).xdb#xpointer(/BackgroundSimpleScallingTexture)")
             placement.find("HorAllign/First").text = "EPA_MARGIN" if is_root else "ERA_CENTER"
             placement.find("HorAllign/Second").text = "true"
             for margin in ("LowerMargin", "UpperMargin"):
@@ -610,6 +669,19 @@ def legacy_widescreen(game_dir, reference_dir, edition, members):
         migrate("UI/TownScreen/BuildingDesc.(WindowStaticText).xdb", (1024, 768), set(), [1, 0])
         # UIGameRoot creates this five-button hero dial separately from the screen's children.
         migrate("UI/Common/JogDial/JogDial.xdb", (1024, 768), set())
+        # The same goes for the fade messages (new day and week, tactics: FadeParams) and UIGameRoot's
+        # announcement boxes, turn timer, edit dial, Fort on the Hill, objectives and enemy hero panel:
+        # their parent is the full-span screen root, so 1.6/2.1 kept them at 1024x768 positions.
+        fades = [name for key, (name, _) in sorted(originals.items())
+                 if key.startswith("ui/adventurescreen/fademessage/") and key.endswith(".(windowsimple).xdb")]
+        for name in fades + ["UI/Announcement/Announcement_WindowSimple.xdb",
+                             "UI/Announcement/Announcement_Wide.(WindowSimple).xdb",
+                             "UI/AdventureScreen/TurnTimeNotify/Timer.(WindowSimple).xdb",
+                             "UI/Common/JogDial/EditJogDial.(WindowSimple).xdb",
+                             "UI/FortHill/FortHill.(WindowSimple).xdb",
+                             "UI/MissionObjectives/Main.(WindowSimple).xdb",
+                             "UI/CombatArena-Heavy/TripleRotatorRight.(WindowSimple).xdb"]:
+            migrate(name, (1024, 768), set())
     return changed
 
 
@@ -620,9 +692,9 @@ def build_port_ui_override(root=ROOT, game_dir=None, edition="toe"):
         game_dir = game_directory(edition, root)
     game_dir = root / game_dir
     original, source = source_resource(game_dir, UICONSTS, edition)
-    patched = patch_uiconsts(original)
-    members = {UICONSTS: patched, **texts(), **loading_logo(game_dir, edition), **launcher_buttons(game_dir, edition),
-               **gamepad_button(game_dir, edition)}
+    patched = patch_uiconsts(original, edition)
+    members = {UICONSTS: patched, **texts(edition), **loading_logo(game_dir, edition), **launcher_buttons(game_dir, edition),
+               **gamepad_button(game_dir, edition), **combo_rows(game_dir, edition)}
     if edition != "toe":
         from editions import game_directory
         members.update(legacy_widescreen(game_dir, game_directory("toe", root), edition, members))
@@ -645,7 +717,7 @@ def build_port_ui_override(root=ROOT, game_dir=None, edition="toe"):
         "pak": PAK_NAME, "sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
         "size": output.stat().st_size, "source": source,
         "source_sha256": hashlib.sha256(original).hexdigest(),
-        "options": [option[0] for option in OPTIONS],
+        "options": [option[0] for option in options(edition)],
     }
     (output.parent / (PAK_NAME[:-4] + ".json")).write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     return output, receipt

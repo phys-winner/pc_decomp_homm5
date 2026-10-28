@@ -314,7 +314,7 @@ class BufferSparseTests(unittest.TestCase):
         fixture = (ROOT / "tests/fixtures/sparse_map_probe.c").read_text(encoding="utf8")
         for name, old, new in (
             ("wrap", "++sparse_map_generation > SPARSE_GENERATION_MAX", "!++sparse_map_generation"),
-            ("dense", "uint32_t dense = *e - generation", "uint32_t dense = *e"),
+            ("dense", "dense = map[slot] - generation", "dense = map[slot]"),
         ):
             with self.subTest(name=name), self.assertRaisesRegex(AssertionError, "Assertion failed"):
                 self.assertIn(old, direct_map)
@@ -334,7 +334,8 @@ class BufferSparseTests(unittest.TestCase):
 
     def test_missing_base_static_gather_or_remapped_ib_is_rejected(self):
         source = (ROOT / "android/host/d3d9_gl.c").read_text(encoding="utf8")
-        changes = [("(int64_t)raw + (int32_t)base", "(int64_t)raw + ((int32_t)base & 0)", (0, 1)),
+        changes = [("(uint32_t)((int32_t)base - (int64_t)first)", "(uint32_t)(0 - (int64_t)first)", (0, 1)),
+                   ("high = (int64_t)last - (int32_t)base", "high = (int64_t)last", (0, 1)),
                    ("b->dirty_pages || (sparse_count && !instanced)", "b->dirty_pages", (0, 1)),
                    ("int i32 = sparse_count || ib->format == 102;", "int i32 = ib->format == 102;", (0, 1)),
                    ("first_vertex - base_vertex", "first_vertex - draw_base", (0, 1)),

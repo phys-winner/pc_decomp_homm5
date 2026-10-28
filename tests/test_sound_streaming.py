@@ -25,6 +25,7 @@ static unsigned char memory[0x40000];
 #define DSBCAPS_CTRL3D 0x10u
 #define MIX_RATE 48000
 #define MIX_CHUNK 480
+#define MIX_CATCHUP 8
 #define CLOCK_MONOTONIC 1
 #define TIMER_ABSTIME 1
 #define DSTRACE(...) ((void)0)
@@ -48,6 +49,9 @@ static void void_log(const char *format,...) {(void)format;}
 static int64_t now_ns,last_output_ns;
 static unsigned sleeps,outputs;
 static int simulate_lateness;
+static unsigned priority_calls;
+static void mixer_priority(void) {++priority_calls;}
+static void mixer_cores(void) {}
 static int clock_gettime(int clock,struct timespec *out) {
     assert(clock==CLOCK_MONOTONIC);out->tv_sec=(time_t)(now_ns/1000000000);
     out->tv_nsec=(long)(now_ns%1000000000);return 0;
@@ -62,7 +66,7 @@ static int clock_nanosleep(int clock,int flags,const struct timespec *target,voi
     if(simulate_lateness==2) now_ns+=100000;
     return 0;
 }
-static void void_audio_output(const int16_t *frames,uint32_t count) {
+static uint32_t void_audio_output(const int16_t *frames,uint32_t count) {
     assert(!lock_depth && count==480 && outputs<4);
     if(outputs) assert(now_ns-last_output_ns>=10000000);
     assert(abs(frames[0]-(1000+(int)outputs*480))<=1);
@@ -70,6 +74,7 @@ static void void_audio_output(const int16_t *frames,uint32_t count) {
     last_output_ns=now_ns;
     if(++outputs==4) mixer_running=0;
     if(simulate_lateness==1 && outputs==2) now_ns+=45000000;
+    return 0;
 }
 #include "sound_functions.h"
 static void setup(void) {
@@ -149,6 +154,114 @@ int main(void) {
 }
 '''
 
+DS_REFILL_HARNESS = r'''
+static int64_t output_at[64];
+static unsigned output_count,stop_after;
+static uint32_t script[16];
+static unsigned script_count,script_index;
+static uint32_t void_audio_output(const int16_t *frames,uint32_t count) {
+    (void)frames;
+    assert(!lock_depth && count==480 && output_count<64);
+    output_at[output_count++]=now_ns;
+    if(output_count==stop_after) mixer_running=0;
+    return script_index<script_count?script[script_index++]:0;
+}
+#include "sound_functions.h"
+static void setup(void) {
+    memset(memory,0,sizeof memory);memset(&buffer,0,sizeof buffer);
+    buffer.data=0x10000;buffer.size=4096;buffer.channels=2;
+    buffer.rate=buffer.frequency=48000;buffer.bits=16;buffer.block=4;
+    buffer.playing=buffer.looping=1;buffers=&buffer;
+}
+static void refill_catchup(void) {
+    static const uint32_t replies[]={0,1500,1020,540,60,100000,100000,100000,100000,100000,100000,100000,100000,100000,0};
+    setup();memcpy(script,replies,sizeof replies);script_count=sizeof replies/sizeof replies[0];script_index=0;
+    now_ns=0;sleeps=0;output_count=0;simulate_lateness=0;stop_after=15;mixer_running=1;
+    mixer_main(NULL);
+    assert(output_count==15 && sleeps==4 && output_at[0]==10000000);
+    for(unsigned i=1;i<5;i++) assert(output_at[i]==20000000);   /* shortfall mixed at once */
+    for(unsigned i=5;i<14;i++) assert(output_at[i]==30000000);  /* at most MIX_CATCHUP extra chunks */
+    assert(output_at[14]==40000000);                              /* the clock keeps its schedule */
+    assert(buffer.play_pos==(15u*480u*4u)%4096u && !lock_depth);
+}
+static double tone_sinad(double freq) {
+    const double pi=3.14159265358979323846;
+    static float mix[960];
+    setup();buffer.rate=buffer.frequency=44100;buffer.size=4410*4;   /* whole periods per lap */
+    for(unsigned i=0;i<4410;i++) {
+        int16_t v=(int16_t)floor(16384.0*sin(2*pi*freq*i/44100.0)+0.5);
+        MEM16(buffer.data+4*i)=(uint16_t)v;MEM16(buffer.data+4*i+2)=(uint16_t)v;
+    }
+    double ss=0,sc=0,cc=0,ys=0,yc=0,yy=0;
+    for(unsigned chunk=0;chunk<24;chunk++) {
+        mix_chunk(mix,480);
+        if(chunk<2) continue;   /* window filled from silence at the start */
+        for(unsigned i=0;i<480;i++) {
+            double position=(double)(chunk*480+i)*44100.0/48000.0;
+            double w=2*pi*freq*position/44100.0,sw=sin(w),cw=cos(w),y=mix[2*i];
+            assert(mix[2*i]==mix[2*i+1]);
+            ss+=sw*sw;sc+=sw*cw;cc+=cw*cw;ys+=y*sw;yc+=y*cw;yy+=y*y;
+        }
+    }
+    double det=ss*cc-sc*sc,a=(ys*cc-yc*sc)/det,b=(yc*ss-ys*sc)/det;
+    double fit=a*a*ss+2*a*b*sc+b*b*cc,residual=yy-2*(a*ys+b*yc)+fit;
+    assert(fabs(sqrt(a*a+b*b)-0.5)<0.01);   /* flat passband */
+    return 10*log10(fit/residual);
+}
+static void refill_behind_cursor(void) {
+    static float first[960],reference[960],mix[960];
+    for(int run=0;run<2;run++) {
+        setup();buffer.rate=buffer.frequency=44100;buffer.size=4096*4;
+        for(unsigned i=0;i<4096;i++) {
+            int16_t v=(int16_t)((int)(i*7919u%20000u)-10000);
+            MEM16(buffer.data+4*i)=(uint16_t)v;MEM16(buffer.data+4*i+2)=(uint16_t)v;
+        }
+        mix_chunk(first,480);
+        uint32_t play=buffer.play_pos/4;
+        assert(play>=440 && play<=441);
+        /* DirectSound lets the application refill everything behind the play cursor. */
+        if(run) for(uint32_t i=play-32;i<play;i++) MEM16(buffer.data+4*i)=MEM16(buffer.data+4*i+2)=0x7FFF;
+        mix_chunk(run?mix:reference,480);
+    }
+    assert(!memcmp(mix,reference,sizeof mix));
+    args[1]=0;assert(dsb_SetCurrentPosition()==DS_OK && !buffer.rs_valid && !lock_depth);
+}
+int main(void) {
+    refill_catchup();
+    double s1=tone_sinad(1000),s5=tone_sinad(5000),s12=tone_sinad(12000);
+    printf("44.1->48 kHz SINAD: 1 kHz %.1f dB, 5 kHz %.1f dB, 12 kHz %.1f dB\n",s1,s5,s12);
+    assert(s1>=80 && s5>=80 && s12>=75);
+    refill_behind_cursor();
+    puts("PASS DirectSound refill: bounded immediate shortfall, schedule kept, band-limited 44.1 kHz, no re-read behind the cursor");
+    return 0;
+}
+'''
+
+AAUDIO_WANTED_MAIN = r'''
+int main(void) {
+    int16_t frames[960]={0};
+    reset_script(frames);uint32_t wanted=void_audio_output(frames,480);
+    assert(stream && stream->size==960 && stream->written==960 && !wanted);
+    assert(stream->mode==AAUDIO_PERFORMANCE_MODE_NONE && selected_mode==AAUDIO_PERFORMANCE_MODE_NONE);   /* normal output by default */
+    stream->read=600;reset_script(frames);wanted=void_audio_output(frames,480);
+    assert(stream->written==1440 && wanted==120);   /* 960 - (1440 - 600) */
+    stream->read=1440;reset_script(frames);wanted=void_audio_output(frames,480);
+    assert(wanted==480);                            /* only this chunk is queued */
+    stream->read=stream->written+576;reset_script(frames);wanted=void_audio_output(frames,480);
+    assert(!wanted);                                /* inconsistent position: no refill */
+    /* A partial write, a paused or a failed output asks for nothing. */
+    stream->read=stream->written+480;
+    reset_script(frames);memset(results,0,sizeof results);results[0]=100;result_count=128;
+    wanted=void_audio_output(frames,480);
+    assert(!wanted && audio_dropped_frames==380);
+    audio_paused=1;reset_script(frames);assert(!void_audio_output(frames,480) && !stream);
+    audio_paused=0;reset_script(frames);results[0]=-899;result_count=1;
+    assert(!void_audio_output(frames,480) && !stream && !lock_depth);
+    puts("PASS AAudio refill: normal output by default, shortfall below the buffer size; nothing when full, inconsistent, partial, paused or failed");
+    return 0;
+}
+'''
+
 AAUDIO_HARNESS = r'''
 #include <assert.h>
 #include <stdint.h>
@@ -167,7 +280,7 @@ AAUDIO_HARNESS = r'''
 #define PTHREAD_MUTEX_INITIALIZER 0
 typedef int pthread_mutex_t;
 typedef int32_t aaudio_result_t;
-typedef struct {int closed,started,paused,prefilled,mode,size,capacity,burst,xruns;} AAudioStream;
+typedef struct {int closed,started,paused,prefilled,mode,size,capacity,burst,xruns;int64_t written,read;} AAudioStream;
 typedef struct {int unused;} AAudioStreamBuilder;
 static int lock_depth,audio_paused,opens,closes,starts,stops,builder_deletes;
 static uint64_t pause_generation;
@@ -230,6 +343,8 @@ static aaudio_result_t AAudioStream_requestStop(AAudioStream *s) {
     assert(lock_depth==1 && s && !s->closed);stops++;return 0;
 }
 static int32_t AAudioStream_getXRunCount(AAudioStream *s) {assert(s && !s->closed);return s->xruns;}
+static int64_t AAudioStream_getFramesWritten(AAudioStream *s) {assert(s && !s->closed);return s->written;}
+static int64_t AAudioStream_getFramesRead(AAudioStream *s) {assert(s && !s->closed);return s->read;}
 static int32_t AAudioStream_getBufferSizeInFrames(AAudioStream *s) {assert(s && !s->closed);return s->size;}
 static int32_t AAudioStream_getBufferCapacityInFrames(AAudioStream *s) {assert(s && !s->closed);return s->capacity;}
 static int32_t AAudioStream_getFramesPerBurst(AAudioStream *s) {assert(s && !s->closed);return s->burst;}
@@ -249,7 +364,7 @@ static aaudio_result_t AAudioStream_write(AAudioStream *s,const void *data,int32
         ++prime_calls;now_ns+=1000000;
         if(change_generation_in_prime) pause_generation+=4;
         int32_t result=prime_result<frames?prime_result:frames;
-        if(result>0) s->prefilled+=result;
+        if(result>0) {s->prefilled+=result;s->written+=result;}
         return result;
     }
     assert(data==chunk_base+chunk_offset*2);
@@ -258,7 +373,7 @@ static aaudio_result_t AAudioStream_write(AAudioStream *s,const void *data,int32
     if(result>0) {
         assert(result<=frames && accepted_count+(unsigned)result*2<=16384);
         memcpy(accepted+accepted_count,data,(size_t)result*2*sizeof(int16_t));
-        accepted_count+=(unsigned)result*2;chunk_offset+=(unsigned)result;
+        accepted_count+=(unsigned)result*2;chunk_offset+=(unsigned)result;s->written+=result;
     }
     if(change_generation_after_write==write_calls) pause_generation+=4;
     return result;
@@ -330,15 +445,27 @@ int main(void) {
 '''
 
 
+def directsound_headers():
+    source = (ROOT / "android/host/dsound.c").read_text(encoding="utf8")
+    types = source[source.index("typedef struct dsbuf"):source.index("static pthread_mutex_t mix_lock")]
+    functions = "\n".join(function(source, signature) for signature in (
+        "static float sample_at(", "static double bessel_i0(", "static void rs_build(", "static float rs_source(",
+        "static void rs_seek(", "static void rs_frame_at(", "static void notify_passed(", "static void mix_chunk(",
+        "static void *mixer_main(", "static uint32_t buffer_write_cursor(", "COM_METHOD(dsb, GetCurrentPosition,",
+        "COM_METHOD(dsb, Lock,", "COM_METHOD(dsb, SetCurrentPosition,", "COM_METHOD(dsb, Unlock,"))
+    return {"buffer_type.h": types, "sound_functions.h": functions}
+
+
 class SoundStreamingTest(unittest.TestCase):
     def test_aaudio_recovers_underruns_even_when_every_write_succeeds(self):
         source = (ROOT / "android/host/android_main.c").read_text(encoding="utf8")
         globals_ = source[source.index("static AAudioStream *stream;"):source.index("static void audio_close_stream(")]
         functions = "\n".join(function(source, signature) for signature in (
             "static void audio_close_stream(", "static void audio_close_failed(",
-            "static uint32_t audio_write_frames(", "void void_audio_output("))
+            "static uint32_t audio_write_frames(", "uint32_t void_audio_output("))
         harness = AAUDIO_HARNESS[:AAUDIO_HARNESS.index("int main(void) {")] + r'''
 int main(void) {
+    audio_normal_output=0;   /* the low-latency recovery a build can start with */
     int16_t frames[960]={0};
     reset_script(frames);void_audio_output(frames,480);
     assert(requested_capacity==1920 && stream->size==960 && accepted_count==960);
@@ -389,13 +516,14 @@ int main(void) {
         globals_ = source[source.index("static AAudioStream *stream;"):source.index("static void audio_close_stream(")]
         functions = "\n".join(function(source, signature) for signature in (
             "static void audio_close_stream(", "static void audio_close_failed(",
-            "static uint32_t audio_write_frames(", "void void_audio_output("))
+            "static uint32_t audio_write_frames(", "uint32_t void_audio_output("))
         harness = AAUDIO_HARNESS[:AAUDIO_HARNESS.index("int main(void) {")] + r'''
 static void zero_chunk(const int16_t *frames) {
     reset_script(frames);memset(results,0,sizeof results);result_count=128;
     void_audio_output(frames,480);
 }
 int main(void) {
+    audio_normal_output=0;   /* the low-latency recovery a build can start with */
     int16_t old[960],fresh[960];
     for(int i=0;i<960;i++) {old[i]=(int16_t)(i-480);fresh[i]=(int16_t)(12000+i);}
     reset_script(old);void_audio_output(old,480);
@@ -441,7 +569,7 @@ int main(void) {
         globals_ = source[source.index("static AAudioStream *stream;"):source.index("static void audio_close_stream(")]
         functions = "\n".join(function(source, signature) for signature in (
             "static void audio_close_stream(", "static void audio_close_failed(",
-            "static uint32_t audio_write_frames(", "void void_audio_output("))
+            "static uint32_t audio_write_frames(", "uint32_t void_audio_output("))
         harness = AAUDIO_HARNESS[:AAUDIO_HARNESS.index("int main(void) {")] + r'''
 int main(void) {
     int16_t frames[960];for(int i=0;i<960;i++) frames[i]=(int16_t)(i-480);
@@ -515,21 +643,27 @@ int main(void) {
                       compiler_override=CLANG, extra_flags=("/clang:--target=x86_64-pc-windows-msvc",))
 
     def test_directsound_cursor_refill_and_late_worker(self):
-        source = (ROOT / "android/host/dsound.c").read_text(encoding="utf8")
-        types = source[source.index("typedef struct dsbuf"):source.index("static pthread_mutex_t mix_lock")]
-        helper = function(source, "static uint32_t buffer_write_cursor(") if "static uint32_t buffer_write_cursor(" in source else ""
-        functions = helper + "\n".join(function(source, signature) for signature in (
-            "static float sample_at(", "static void notify_passed(", "static void mix_chunk(",
-            "static void *mixer_main(", "COM_METHOD(dsb, GetCurrentPosition,", "COM_METHOD(dsb, Lock,",
-            "COM_METHOD(dsb, SetCurrentPosition,", "COM_METHOD(dsb, Unlock,"))
-        compile_probe("sound-streaming", DS_HARNESS, {"buffer_type.h": types, "sound_functions.h": functions})
+        compile_probe("sound-streaming", DS_HARNESS, directsound_headers())
+
+    def test_directsound_refill_catchup_and_bandlimited_resampling(self):
+        harness = DS_HARNESS[:DS_HARNESS.index("static uint32_t void_audio_output(")] + DS_REFILL_HARNESS
+        compile_probe("sound-refill-resample", harness, directsound_headers())
+
+    def test_aaudio_reports_queue_shortfall(self):
+        source = (ROOT / "android/host/android_main.c").read_text(encoding="utf8")
+        globals_ = source[source.index("static AAudioStream *stream;"):source.index("static void audio_close_stream(")]
+        functions = "\n".join(function(source, signature) for signature in (
+            "static void audio_close_stream(", "static void audio_close_failed(",
+            "static uint32_t audio_write_frames(", "uint32_t void_audio_output("))
+        harness = AAUDIO_HARNESS[:AAUDIO_HARNESS.index("int main(void) {")] + AAUDIO_WANTED_MAIN
+        compile_probe("aaudio-queue-shortfall", harness, {"android_audio.h": globals_ + functions})
 
     def test_aaudio_partial_writes_and_lifecycle(self):
         source = (ROOT / "android/host/android_main.c").read_text(encoding="utf8")
         globals_ = source[source.index("static AAudioStream *stream;"):source.index("static void audio_close_stream(")]
         functions = "\n".join(function(source, signature) for signature in (
             "static void audio_close_stream(", "static void audio_close_failed(",
-            "static uint32_t audio_write_frames(", "void void_audio_output("))
+            "static uint32_t audio_write_frames(", "uint32_t void_audio_output("))
         compile_probe("aaudio-streaming", AAUDIO_HARNESS, {"android_audio.h": globals_ + functions})
 
 

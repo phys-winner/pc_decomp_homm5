@@ -83,5 +83,74 @@
     "directory": "reference/zlib",
     "license": "Zlib",
     "note": "Vendored inflate/CRC subset for desktop texture tests; Android links the NDK libz."
+  },
+  "dxvk": {
+    "url": "https://github.com/doitsujin/dxvk",
+    "version": "2.4.1",
+    "revision": "0cf05780abd7250c2cd713b7749cf32180157cf5",
+    "directory": "reference/dxvk",
+    "license": "Zlib; the MinGW-w64 DirectX headers are LGPL-2.1-or-later (data structure definitions only, see their README)",
+    "note": "libdxvk_d3d9.so is reused unchanged from the sibling ut3 port (its tools/build_dxvk.py: DXVK Native D3D9 only, NDK 27.2 for android29, an Android WSI, BC features enabled as the GPU has them, small PowerVR occlusion pools, SUBOPTIMAL swapchains kept, embedding hooks exported as ut3_dxvk_set_callbacks_v2/ut3_dxvk_set_vulkan_loader). It reads only DXVK_* variables. tools/build_dxvk.py imports it and the header subset below after checking these hashes; nothing is committed.",
+    "runtime": {
+      "libdxvk_d3d9.so": "034384d5636eeb3f02b8e2d2daee4307c60bff1b981cb15b9e3d0c91a34cb0ec"
+    },
+    "headers": {
+      "LICENSE": "8221f636c9298344a6a98a4aa38c15b616d62126d2b0cf40ddc0ba50a57f1f3c",
+      "include/native/directx/d3d9.h": "628aafd341f8e5cc119a7e43f28bffb55822d334b00fc539767cac5000bbe504",
+      "include/native/directx/d3d9types.h": "cd4cc74b7f4bd5e791b539078915326ecaa6c8c0ba80ecd540b681abf33155fe",
+      "include/native/directx/d3d9caps.h": "7ce341311cd37273810811c54650337deaf5a82cda9c18c68803093f430d8911",
+      "include/native/directx/COPYING.MinGW-w64.txt": "8b5b2c7c74842122f7a2479653dc612aa8e1c313bfec63808f90517ae13af40a",
+      "include/native/directx/README.md": "445bcf725a8ce2f07555249ebc90ea5bdc0dcf2c0b84deb8ec92eb23d5743be2",
+      "include/native/windows/oaidl.h": "34dc9b5705bff6c4a913caa7dc19010885ca909d10008468483b0bc2471ae082",
+      "include/native/windows/objbase.h": "34dc9b5705bff6c4a913caa7dc19010885ca909d10008468483b0bc2471ae082",
+      "include/native/windows/ocidl.h": "34dc9b5705bff6c4a913caa7dc19010885ca909d10008468483b0bc2471ae082",
+      "include/native/windows/ole2.h": "34dc9b5705bff6c4a913caa7dc19010885ca909d10008468483b0bc2471ae082",
+      "include/native/windows/poppack.h": "292244ac5c42c183cf0e2a1fab705bc856e4db7e41e68e2515bacdded98f63f3",
+      "include/native/windows/pshpack4.h": "a17dad266b7e62384c256b8f72197ce0dfa9cfffd5b1dcd50046381d26f42e09",
+      "include/native/windows/rpc.h": "34dc9b5705bff6c4a913caa7dc19010885ca909d10008468483b0bc2471ae082",
+      "include/native/windows/rpcndr.h": "34dc9b5705bff6c4a913caa7dc19010885ca909d10008468483b0bc2471ae082",
+      "include/native/windows/unknwn.h": "ab09d54e39a2c83a46745988bb80820530a99159d1d281b9f072d6705800a716",
+      "include/native/windows/windows.h": "79bfaa87f4a46e0306e6dee8ec79b1781a81bc0945df4a4b692a51fec7cb7a20",
+      "include/native/windows/windows_base.h": "bc7d1a35f957b83eb2340e48610341233f20da4fc2afda9ebfb39ce84f452651"
+    }
+  },
+  "adrenotools": {
+    "url": "https://github.com/bylaws/libadrenotools",
+    "revision": "8fae8ce254dfc1344527e05301e43f37dea2df80",
+    "linkernsbypass_revision": "aa3975893d83ef1bc84c321ec60c65fbf1287887",
+    "license": "BSD-2-Clause",
+    "note": "Helper and hooks built from source by the ut3 port's tools/build_turnip.py (NDK 27.2, android-30, c++_shared, 16 KiB pages) and reused unchanged. They load the Turnip driver in a linker namespace of their own; the system Vulkan driver is not replaced.",
+    "runtime": {
+      "libadrenotools.so": "48b5306c651eb9be7c2ff264fc0b5abd8fda5c10dbe415946f2a1d11230e8181",
+      "libhook_impl.so": "68d1ba47a9ee1477a916d7856b95116b3c55645afe590f33c61b7dfe608c8b46",
+      "libmain_hook.so": "c30c77db8bbe74ee110bb4b83ed2aba676ac11247e36d8e16a58d84f2d9dd97b",
+      "libfile_redirect_hook.so": "bf2f3ae26e991bb22f75956b53e96a603d6e1bfbdafe4868c9e16526ceccadbf",
+      "libgsl_alloc_hook.so": "451a5ffbb90b21738deb7216d677639f5e6c53e481c94aaa076ac8e5064f0d3d"
+    },
+    "licenses": {
+      "adrenotools.BSD-2-Clause.txt": "25adc710d81a37eb90a453aec3217eda016407ff4cf9616356ec1d9a10b36098",
+      "linkernsbypass.BSD-2-Clause.txt": "25adc710d81a37eb90a453aec3217eda016407ff4cf9616356ec1d9a10b36098"
+    }
+  },
+  "turnip": {
+    "url": "https://github.com/K11MCH1/AdrenoToolsDrivers/releases/tag/v26.0.0-rc08",
+    "version": "Mesa Turnip 26.0.0 R8 (Turnip_v26.0.0_R8.zip, vulkan.ad07xx.so; Adreno 6xx/7xx, not the A8xx variant; device API 1.3.335)",
+    "asset_sha256": "e634db0f929e2205e95511c769071817d0390180ec72c8e690bc76375e813715",
+    "license": "MIT for Mesa's core; some Mesa components differ. The community build carries no complete license manifest.",
+    "note": "Packaged as lib/arm64-v8a/libh5turnip.so (the installer extracts only lib*.so). The ut3 port verified Vulkan 1.3, BC1-5 and precise occlusion on an Adreno 650 with it. Review its provenance and license manifest before a public release.",
+    "runtime": {
+      "libh5turnip.so": "fdd378520022f88b0363dd1f77f6989332730271712621523075fe4eb4de2a09"
+    },
+    "licenses": {
+      "Turnip-LICENSE-NOTE.txt": "99b28b946c1d4fd3470f6f10f072c91eb9f547abdc178f21c375eb94b8ce556f"
+    }
+  },
+  "libcxx_shared": {
+    "source": "Android NDK 27.2.12479018, sysroot/usr/lib/aarch64-linux-android/libc++_shared.so",
+    "license": "Apache-2.0 WITH LLVM-exception",
+    "note": "The C++ runtime of libh5dxvk.so and the adrenotools libraries (libdxvk_d3d9.so links its own statically).",
+    "runtime": {
+      "libc++_shared.so": "f9992c4ba6b7c5a716e3a202fceb1ce029d6a2b0605838ac6b3219f489dd7970"
+    }
   }
 }

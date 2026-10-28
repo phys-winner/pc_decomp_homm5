@@ -25,6 +25,17 @@ EDITIONS = json.loads((ROOT / "config/editions.json").read_text(encoding="utf-8"
 # tools/port_ui.py, which needs the installed game); here they are distinct stand-ins.
 OVERRIDES = {"town_music": ("build_town_music_override", "z_homm5_android_town_music.pak", b"music-override"),
              "port_ui": ("build_port_ui_override", "z_homm5_android_ui.pak", b"ui-override")}
+# Tribes of the East's DXVK renderer as tools/build_dxvk.py stages it (build/dxvk and its receipt).
+DXVK_RUNTIME = {"libdxvk_d3d9.so": b"dxvk-d3d9", "libh5dxvk.so": b"dxvk-bridge", "libh5turnip.so": b"turnip-driver"}
+DXVK_LICENSES = {"dxvk.txt": b"dxvk zlib notice", "turnip-mesa.txt": b"mesa note"}
+DXVK_SOURCE = b"bridge source"
+
+
+def dxvk_receipt():
+    digest = lambda data: hashlib.sha256(data).hexdigest()
+    return json.dumps({"sources": {"android/dxvk/bridge.cpp": digest(DXVK_SOURCE)},
+                       "runtime": [{"name": n, "sha256": digest(d)} for n, d in DXVK_RUNTIME.items()],
+                       "licenses": [{"name": n, "sha256": digest(d)} for n, d in DXVK_LICENSES.items()]}).encode()
 
 
 def resource_name(name):
@@ -58,6 +69,10 @@ class ApkPGORoutingTest(unittest.TestCase):
                 "config/video/intro_a1.xml": b"<Base><Movies/></Base>",
                 "android/app/src/Example.java": b"class Example {}",
                 "build/android/debug.keystore": b"fake-debug-key",
+                "android/dxvk/bridge.cpp": DXVK_SOURCE,
+                "build/dxvk/build-receipt.json": dxvk_receipt(),
+                **{"build/dxvk/runtime/" + name: data for name, data in DXVK_RUNTIME.items()},
+                **{"build/dxvk/licenses/" + name: data for name, data in DXVK_LICENSES.items()},
             }
             for edition, row in EDITIONS.items():
                 if edition == "toe":
@@ -224,6 +239,8 @@ class ApkPGORoutingTest(unittest.TestCase):
             # The launcher's texture converter ships beside the game library.
             self.assertEqual(archive.read("lib/arm64-v8a/libtexconv.so"), TEXCONV)
             self.assertEqual(archive.read("lib/arm64-v8a/libhomm5xz.so"), b"native-xz-decoder")
+            # DXVK/Turnip support is commented out: its libraries come only with --dxvk.
+            self.assertFalse([name for name in archive.namelist() if name.endswith(tuple(DXVK_RUNTIME))])
             original = lzma.decompress(archive.read("assets/native/libhomm5.so.xz"))
             for edition in ("vanilla", "hof"):
                 self.assertEqual(lzma.decompress(archive.read("assets/native/lib" + EDITIONS[edition]["library"] + ".so.xz")), original + edition.encode())
@@ -292,6 +309,44 @@ class ApkPGORoutingTest(unittest.TestCase):
                                  "assets/overlay-intro" + suffix + "/" + ("intro.xml" if edition == "vanilla" else "intro_a1.xml"): b"<Base><Movies/></Base>"})
                 self.assertEqual(receipts[edition]["overlay"], {"edition": edition, "mandatory": True})
             self.assertEqual(files, expected)
+
+    def test_dxvk_is_packaged_only_on_request(self):
+        with self.fixture() as (module, root, out, native, sdk, removed):
+            self.library(root, "arm64", b"ordinary-library")
+            self.invoke(module, ["--skip-native", "--dxvk"])
+            with zipfile.ZipFile(out / "heroes-v.apk") as archive:
+                # DXVK's libraries are extracted by the installer like the converter's.
+                for name, data in DXVK_RUNTIME.items():
+                    self.assertEqual(archive.read("lib/arm64-v8a/" + name), data)
+                for name, data in DXVK_LICENSES.items():
+                    self.assertEqual(archive.read("assets/licenses/" + name), data)
+        with self.fixture() as (module, root, out, native, sdk, removed):
+            self.library(root, "arm64", b"ordinary-library")
+            (root / "build/dxvk/build-receipt.json").unlink()
+            with self.assertRaises(SystemExit) as failure:
+                self.invoke(module, ["--skip-native", "--dxvk"])
+            self.assertIn("tools/build_dxvk.py", str(failure.exception))
+            self.assertEqual((out / "keep-until-valid-library").read_bytes(), b"previous-apk")
+            self.assertEqual((native, sdk, removed), ([], [], []))
+            for args in (["--skip-native"], ["--skip-native", "--no-dxvk"]):
+                self.invoke(module, args)
+                with zipfile.ZipFile(out / "heroes-v.apk") as archive:
+                    names = archive.namelist()
+                self.assertFalse([name for name in names if name.endswith(tuple(DXVK_RUNTIME)) or name.endswith(tuple(DXVK_LICENSES))])
+                self.assertIn("lib/arm64-v8a/libtexconv.so", names)
+
+    def test_stale_or_changed_dxvk_stage_stops_packaging(self):
+        for defect in ("source", "library", "license"):
+            with self.subTest(defect=defect), self.fixture() as (module, root, out, native, sdk, removed):
+                self.library(root, "arm64", b"ordinary-library")
+                changed = {"source": "android/dxvk/bridge.cpp", "library": "build/dxvk/runtime/libh5dxvk.so",
+                           "license": "build/dxvk/licenses/dxvk.txt"}[defect]
+                (root / changed).write_bytes(b"edited after tools/build_dxvk.py")
+                with self.assertRaises(SystemExit) as failure:
+                    self.invoke(module, ["--skip-native", "--dxvk"])
+                self.assertIn("DXVK", str(failure.exception))
+                self.assertEqual((out / "keep-until-valid-library").read_bytes(), b"previous-apk")
+                self.assertEqual((native, sdk, removed), ([], [], []))
 
     def test_texture_converter_failure_preserves_previous_apk_directory(self):
         for skip in (False, True):

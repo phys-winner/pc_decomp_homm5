@@ -32,8 +32,9 @@ final class Zip implements Closeable {
         final String name;   /* '/' between folders, a folder's ends with one */
         final int method, flags;
         final long crc, packedSize, size, header;
+        final long time;     /* last modification, ms since 1970; 0 unknown */
 
-        Entry(String name, int method, int flags, long crc, long packedSize, long size, long header) {
+        Entry(String name, int method, int flags, long crc, long packedSize, long size, long header, long time) {
             this.name = name;
             this.method = method;
             this.flags = flags;
@@ -41,6 +42,7 @@ final class Zip implements Closeable {
             this.packedSize = packedSize;
             this.size = size;
             this.header = header;
+            this.time = time;
         }
 
         boolean directory() { return name.endsWith("/"); }
@@ -109,6 +111,7 @@ final class Zip implements Closeable {
         for (long i = 0; i < count; ++i) {
             if (p + 46 > d.limit() || d.getInt(p) != 0x02014b50) throw notZip();
             int flags = d.getShort(p + 8) & 0xFFFF, method = d.getShort(p + 10) & 0xFFFF;
+            long time = dosTime(d.getShort(p + 14) & 0xFFFF, d.getShort(p + 12) & 0xFFFF);
             long crc = d.getInt(p + 16) & 0xFFFFFFFFL;
             long packed = d.getInt(p + 20) & 0xFFFFFFFFL, full = d.getInt(p + 24) & 0xFFFFFFFFL;
             int nameLength = d.getShort(p + 28) & 0xFFFF, extraLength = d.getShort(p + 30) & 0xFFFF;
@@ -131,6 +134,13 @@ final class Zip implements Closeable {
                     if (packed == 0xFFFFFFFFL && q + 8 <= qEnd) { packed = d.getLong(q); q += 8; }
                     if (header == 0xFFFFFFFFL && q + 8 <= qEnd) { header = d.getLong(q); q += 8; }
                     if (startDisk == 0xFFFF && q + 4 <= qEnd) startDisk = d.getInt(q) & 0xFFFFFFFFL;
+                } else if (id == 0x5455 && n >= 5 && (d.get(v) & 1) != 0) {
+                    /* Extended timestamp: modification time in UTC seconds. */
+                    time = (d.getInt(v + 1) & 0xFFFFFFFFL) * 1000;
+                } else if (id == 0x000A && n >= 32 && (d.getShort(v + 4) & 0xFFFF) == 1 && (d.getShort(v + 6) & 0xFFFF) >= 24) {
+                    /* NTFS times (7-Zip, WinRAR): 100 ns since 1601. */
+                    long ntfs = d.getLong(v + 8);
+                    if (ntfs > 116444736000000000L) time = (ntfs - 116444736000000000L) / 10000;
                 } else if (id == 0x7075 && n > 5 && d.get(v) == 1) {
                     /* Info-ZIP's UTF-8 name, valid while it matches the name's CRC. */
                     CRC32 c = new CRC32();
@@ -146,15 +156,16 @@ final class Zip implements Closeable {
             }
             if (startDisk != 0) throw new Unpacker.Failure(Unpacker.SPLIT, null);
             if (packed < 0 || full < 0 || header < 0) throw notZip();
-            String name = unicode != null ? unicode : decode(raw, (flags & 0x800) != 0);
-            list.add(new Entry(name.replace('\\', '/'), method, flags, crc, packed, full, header + shift));
+            String name = unicode != null ? unicode : decode(raw, (flags & 0x800) != 0, d.get(p + 5) & 0xFF);
+            list.add(new Entry(name.replace('\\', '/'), method, flags, crc, packed, full, header + shift, time));
             p = next;
         }
         return Collections.unmodifiableList(list);
     }
 
     /* Names without the UTF-8 flag: Info-ZIP on Linux and macOS's Archive
-     * Utility write UTF-8 all the same, Windows its OEM code page. */
+     * Utility write UTF-8 all the same, Windows its OEM code page: 866 on the
+     * Russian systems the supported game comes from, 437 on most others. */
     private static final Charset DOS = dosCharset();
 
     private static Charset dosCharset() {
@@ -165,14 +176,41 @@ final class Zip implements Closeable {
         }
     }
 
-    static String decode(byte[] raw, boolean utf8) {
+    /** host: the "made by" system; Windows archivers (MS-DOS/FAT 0, NTFS 11, VFAT 14) write the OEM
+     *  code page, where Cyrillic CP866 bytes can also happen to form valid UTF-8. */
+    static String decode(byte[] raw, boolean utf8, int host) {
         if (utf8) return new String(raw, StandardCharsets.UTF_8);
+        String cyrillic = cp866(raw);
+        if (cyrillic != null && (host == 0 || host == 11 || host == 14)) return cyrillic;
         try {
             return StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
                 .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(raw)).toString();
         } catch (CharacterCodingException e) {
-            return new String(raw, DOS);
+            return cyrillic != null ? cyrillic : new String(raw, DOS);
         }
+    }
+
+    /** A name whose every byte above ASCII is a CP866 letter (А–я, Ё/ё, Є/є, Ї/ї, Ў/ў), else null. */
+    static String cp866(byte[] raw) {
+        StringBuilder out = new StringBuilder(raw.length);
+        for (byte b : raw) {
+            int c = b & 0xFF;
+            if (c < 0x80) out.append((char) c);
+            else if (c <= 0xAF) out.append((char) (0x0410 + c - 0x80));
+            else if (c >= 0xE0 && c <= 0xEF) out.append((char) (0x0440 + c - 0xE0));
+            else if (c >= 0xF0 && c <= 0xF7) out.append("ЁёЄєЇїЎў".charAt(c - 0xF0));
+            else return null;
+        }
+        return out.toString();
+    }
+
+    /** An MS-DOS date and time (local time, two-second steps) in ms since 1970; 0 if invalid. */
+    static long dosTime(int date, int time) {
+        int year = 1980 + (date >> 9), month = (date >> 5) & 15, day = date & 31;
+        int hour = time >> 11, minute = (time >> 5) & 63, second = (time & 31) * 2;
+        if (month < 1 || month > 12 || day < 1 || hour > 23 || minute > 59 || second > 59) return 0;
+        java.util.Calendar calendar = new java.util.GregorianCalendar(year, month - 1, day, hour, minute, second);
+        return calendar.getTimeInMillis();
     }
 
     static String methodName(int method) {

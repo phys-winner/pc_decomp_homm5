@@ -17,6 +17,26 @@ does not grant rights to original game code or data.
 | zlib | 1.3.1 inflate/CRC subset for desktop tests | Zlib | [Upstream](https://github.com/madler/zlib), [LICENSE](reference/zlib/LICENSE) |
 | XZ Embedded | `ae63ae3a36ed01724674e8f3d750dc47bf125410` decoder subset | 0BSD | [Upstream](https://github.com/tukaani-project/xz-embedded), [COPYING](reference/xz-embedded/COPYING) |
 
+## Binary runtime of the ToE DXVK renderer
+
+The DXVK renderer is disabled for now: the default APK contains none of these
+binaries. Only an APK built with `tools/build_game_apk.py --dxvk` carries them:
+`tools/build_dxvk.py` stages these unchanged binaries for `lib/arm64-v8a`,
+checked against their hashes in [`dependencies.json`](dependencies.json), and their
+license texts are then copied into the APK's `assets/licenses`.
+
+| Component | Version or revision | License | Source |
+| --- | --- | --- | --- |
+| DXVK Native, D3D9 only (`libdxvk_d3d9.so`) | 2.4.1, `0cf05780abd7250c2cd713b7749cf32180157cf5`, Android WSI and fixes of the sibling ut3 port | Zlib | [Upstream](https://github.com/doitsujin/dxvk) |
+| MinGW-w64 DirectX headers, compiled into `libh5dxvk.so` | as bundled with that DXVK revision | LGPL-2.1-or-later, data structure definitions only | [DXVK `include/native/directx`](https://github.com/doitsujin/dxvk/tree/v2.4.1/include/native/directx) |
+| adrenotools and hooks | `8fae8ce254dfc1344527e05301e43f37dea2df80` | BSD-2-Clause | [Upstream](https://github.com/bylaws/libadrenotools) |
+| linkernsbypass, inside adrenotools | `aa3975893d83ef1bc84c321ec60c65fbf1287887` | BSD-2-Clause | [Upstream](https://github.com/bylaws/liblinkernsbypass) |
+| Mesa Turnip (`libh5turnip.so`) | community build 26.0.0 R8 | MIT for Mesa's core; some components differ | [Release](https://github.com/K11MCH1/AdrenoToolsDrivers/releases/tag/v26.0.0-rc08), [Mesa licenses](https://docs.mesa3d.org/license.html) |
+| LLVM libc++ (`libc++_shared.so`) | Android NDK 27.2.12479018 | Apache-2.0 WITH LLVM-exception | [LLVM](https://github.com/llvm/llvm-project/blob/main/libcxx/LICENSE.TXT) |
+
+The Turnip binary is a community build without a complete license manifest.
+Review its provenance and licensing before any public release.
+
 The pcrecomp MIT notice also applies to portions of the project's lifter,
 register model and runtime derived from it. Project adaptations are in `tools/`
 and `android/runtime/`. The Win32 compatibility host was adapted from the

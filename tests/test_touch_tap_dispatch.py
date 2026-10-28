@@ -16,7 +16,7 @@ HARNESS = r'''
 #include "touch.h"
 enum {SCREEN_MENU,SCREEN_ADVENTURE,SCREEN_COMBAT,SCREEN_TOWN};
 static struct {int kind,ui,aiming,placement,committed,combat_aim,cancelled;uint32_t screen;} gesture;
-static int orders,doubles,homes,blocked,shortcut,announcements,placements,aborts;
+static int orders,doubles,homes,blocked,shortcut,announcements,placements,aborts,cancels,reserve=-1;
 static int same_screen(void) {return 1;}
 static int camera_world(void) {return !gesture.ui&&!gesture.aiming&&!gesture.placement&&
  (gesture.kind==SCREEN_ADVENTURE||gesture.kind==SCREEN_COMBAT);}
@@ -32,16 +32,21 @@ static void adventure_double(float x,float y) {assert(x==41&&y==59);++doubles;}
 static void combat_point(float x,float y,int commit) {assert(x==41&&y==59&&commit);++orders;}
 static int combat_double(float x,float y) {assert(x==41&&y==59);++doubles;return shortcut;}
 static void town_activate(float x,float y) {assert(x==41&&y==59);++orders;}
-static uint32_t read32(uint32_t address) {(void)address;return 0;}
+static uint32_t read32(uint32_t address) {(void)address;return 0x8500;}
+/* The only guest call of this dispatch: the placement controller's cancel (edition-mapped address). */
 static uint32_t void_call_guest_this(uint32_t va,uint32_t self,int count,const uint32_t *args) {
- (void)va;(void)self;(void)count;(void)args;assert(0);return 0;
+ (void)va;assert(self==0x8500&&!count&&!args&&gesture.placement);++cancels;return 0;
 }
+/* The tactics reserve slot under the point (-1: none) and its diagnostics. */
+static int placement_reserve_slot(float x,float y) {assert(x==41&&y==59);return reserve;}
+static void placement_trace(const char *what,float x,float y) {(void)what;assert(x==41&&y==59);}
 #include "dispatch.h"
 static void reset(int kind) {
  memset(&gesture,0,sizeof gesture);gesture.kind=kind;gesture.screen=0x1000;
- orders=doubles=homes=blocked=shortcut=announcements=placements=aborts=0;
+ orders=doubles=homes=blocked=shortcut=announcements=placements=aborts=cancels=0;reserve=-1;
 }
 int main(void) {
+ (void)placement_reserve_slot;(void)placement_trace;
  void_touch_event tap={TOUCH_TAP,41,59,0,0,1,0},end={TOUCH_END,41,59,0,0,1,0};
  void_touch_event dbl={TOUCH_DOUBLE_TAP,41,59,0,0,1,0},home={TOUCH_THREE_FINGER_TAP,41,59,0,0,1,0};
  for(int kind=SCREEN_ADVENTURE;kind<=SCREEN_COMBAT;++kind) {
@@ -62,6 +67,11 @@ int main(void) {
  reset(SCREEN_ADVENTURE);gesture.aiming=1;tap_dispatch(&dbl);assert(orders==1&&!doubles);
  reset(SCREEN_COMBAT);tap_dispatch(&dbl);assert(doubles==1&&orders==1);
  reset(SCREEN_COMBAT);gesture.placement=1;tap_dispatch(&tap);assert(placements==1&&!orders);
+ /* Released over interface: cancelled, unless it is a tactics reserve slot, where it drops. */
+ reset(SCREEN_COMBAT);gesture.placement=1;blocked=1;tap_dispatch(&tap);
+ assert(!placements&&cancels==1&&gesture.cancelled&&!orders);
+ reset(SCREEN_COMBAT);gesture.placement=1;blocked=1;reserve=2;tap_dispatch(&tap);
+ assert(placements==1&&!cancels&&gesture.cancelled&&!orders);
  reset(SCREEN_TOWN);tap_dispatch(&tap);assert(orders==1);
  reset(SCREEN_MENU);home_dispatch(&home);assert(!homes&&!orders&&gesture.cancelled);
  puts("PASS actual per-edition tap dispatch: immediate single/double, no release replay, chord home and UI/aim guards");

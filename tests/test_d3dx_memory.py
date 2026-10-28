@@ -55,9 +55,13 @@ static object_class surface_class={"IDirect3DSurface9"};
 static d3d_surface surface;
 static void *void_com_host(uint32_t address) { assert(address==0x100); return &surface; }
 static void surface_upload_rect(d3d_surface *s, uint32_t mem, const uint32_t *rect) { (void)s; (void)mem; (void)rect; assert(0); }
+/* No DXVK surface here (android/host/d3d9_dxvk.c): the GLES branch is the one under test. */
+static void *void_dxvk_native(uint32_t guest) { (void)guest; return NULL; }
+static uint32_t void_dxvk_surface_desc(void *s, uint32_t desc[5]) { (void)s; (void)desc; assert(0); return 0; }
 /* REAL_CODE */
 static int fail_alloc;
 static void *checked_malloc(size_t n) { return fail_alloc ? NULL : malloc(n); }
+static int dxvk_write_rgba(void *s, const d3d_format *f, const uint32_t *rect, const float *rgba) { (void)s; (void)f; (void)rect; (void)rgba; assert(0); return 0; }
 #define malloc checked_malloc
 /* REAL_EXPORT */
 #undef malloc

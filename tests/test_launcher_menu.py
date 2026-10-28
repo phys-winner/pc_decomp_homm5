@@ -131,8 +131,12 @@ class LauncherMenuTest(unittest.TestCase):
         android = "{http://schemas.android.com/apk/res/android}"
         launcher = next(a for a in app.findall("activity") if a.get(android + "name") == ".Launcher")
         self.assertEqual(launcher.get(android + "process"), ":launcher")
-        for service in app.findall("service"):
-            self.assertEqual(service.get(android + "process"), launcher.get(android + "process"))
+        processes = {service.get(android + "name"): service.get(android + "process") for service in app.findall("service")}
+        # The unpack and texture jobs live in the launcher's memory (Unpacker.current, Textures.current).
+        for name in (".UnpackService", ".TextureService"):
+            self.assertEqual(processes.pop(name), launcher.get(android + "process"))
+        # The renderer's driver check (a process of its own) is commented out with DXVK/Turnip support.
+        self.assertEqual(processes, {})
 
     def test_native_menu(self):
         source = (ROOT / "android/host/touch_engine.c").read_text(encoding="utf8")

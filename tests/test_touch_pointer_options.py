@@ -62,34 +62,35 @@ int main(void) {
     show_touch_cursor=1;event(TOUCH_TWO_FINGER_BEGIN,500,400);
     event(TOUCH_TRANSFORM,510,410);assert(gesture.x==510 && gesture.y==410 && gesture.panning);
     cursor_draws=0;g_esp=1000;touch_cursor_draw();assert(!cursor_draws);
-    /* Hold opens once; release over its own popup chooses with an ordinary native click. */
+    /* ToE: a swipe that starts on a combobox opens it once; the release over its own popup chooses
+       with an ordinary native click. A hold alone opens nothing (it shows the tooltip). */
     reset_combo();
-    event(TOUCH_BEGIN,100,200);event(TOUCH_HOLD_BEGIN,100,200);
+    event(TOUCH_BEGIN,100,200);event(TOUCH_PAN,100,230);
     assert(gesture.combo==0x6684 && downs==1 && ups==1);
-    ui_overlay=1;event(TOUCH_HOLD_DRAG,100,300);event(TOUCH_END,100,300);
+    ui_overlay=1;event(TOUCH_PAN,100,300);event(TOUCH_END,100,300);
     assert(downs==2 && ups==2 && gesture.committed && gesture.retiring && !gesture.active);
     reset_combo();combo_child=1;
-    event(TOUCH_BEGIN,100,200);event(TOUCH_HOLD_BEGIN,100,200);
+    event(TOUCH_BEGIN,100,200);event(TOUCH_PAN,100,230);
     assert(gesture.combo==0x6684 && downs==1 && ups==1);
-    ui_overlay=1;event(TOUCH_HOLD_DRAG,100,300);event(TOUCH_END,100,300);
+    ui_overlay=1;event(TOUCH_PAN,100,300);event(TOUCH_END,100,300);
     assert(downs==2 && ups==2 && gesture.committed);
-    /* A hold without drag opens the popup; a drag released outside cannot select anything. */
     reset_combo();
     event(TOUCH_BEGIN,100,200);event(TOUCH_HOLD_BEGIN,100,200);event(TOUCH_END,100,200);
-    assert(downs==1 && ups==1 && !gesture.committed);
+    assert(!gesture.combo && downs==0 && ups==0 && !gesture.committed);
+    /* A swipe released outside the popup selects nothing; an abort or a second finger cancels. */
     reset_combo();
-    event(TOUCH_BEGIN,100,200);event(TOUCH_HOLD_BEGIN,100,200);
-    event(TOUCH_HOLD_DRAG,400,300);event(TOUCH_END,400,300);assert(downs==1 && ups==1);
+    event(TOUCH_BEGIN,100,200);event(TOUCH_PAN,100,230);
+    event(TOUCH_PAN,400,300);event(TOUCH_END,400,300);assert(downs==1 && ups==1);
     reset_combo();
-    event(TOUCH_BEGIN,100,200);event(TOUCH_HOLD_BEGIN,100,200);
-    ui_overlay=1;event(TOUCH_HOLD_DRAG,100,300);event(TOUCH_ABORT,0,0);assert(downs==1 && ups==1);
+    event(TOUCH_BEGIN,100,200);event(TOUCH_PAN,100,230);
+    ui_overlay=1;event(TOUCH_PAN,100,300);event(TOUCH_ABORT,0,0);assert(downs==1 && ups==1);
     reset_combo();
-    event(TOUCH_BEGIN,100,200);event(TOUCH_HOLD_BEGIN,100,200);
+    event(TOUCH_BEGIN,100,200);event(TOUCH_PAN,100,230);
     MEM32(0x6000)=0x94000;MEM32(0x94070)=0x487A80;
-    ui_overlay=1;event(TOUCH_HOLD_DRAG,100,300);event(TOUCH_SECOND_BEGIN,100,300);
-    assert(!gesture.combo && !gesture.second_info);event(TOUCH_SECOND_TAP,100,300);event(TOUCH_END,100,300);
+    ui_overlay=1;event(TOUCH_PAN,100,300);event(TOUCH_TWO_FINGER_BEGIN,100,300);
+    assert(!gesture.combo);event(TOUCH_END,100,300);
     assert(downs==1 && ups==1 && !gesture.committed);
-    puts("PASS cursor offsets at begin/hold/drag/end, smooth edge coverage/monotonicity, actual cursor coordinates/visibility, camera exclusion, combo hold/drag/release and cancellation");
+    puts("PASS cursor offsets at begin/hold/drag/end, smooth edge coverage/monotonicity, actual cursor coordinates/visibility, camera exclusion, combo swipe/release, no hold opening and cancellation");
     return 0;
 }
 '''

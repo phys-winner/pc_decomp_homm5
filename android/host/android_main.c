@@ -143,6 +143,20 @@ void void_android_window_ack(uint32_t serial)
     pthread_mutex_unlock(&window_lock);
 }
 
+#ifndef HOMM5_LEGACY_UI
+/* The DXVK renderer (d3d9_dxvk.c): the current window with a reference of its own, taken
+ * before nativeSurface can release it; a device keeps presenting into it across a swap. */
+void *void_android_window_acquire(uint32_t *serial)
+{
+    pthread_mutex_lock(&window_lock);
+    ANativeWindow *w = window;
+    if (w) ANativeWindow_acquire(w);
+    *serial = window_serial;
+    pthread_mutex_unlock(&window_lock);
+    return w;
+}
+#endif
+
 static void *game_main(void *arg)
 {
     (void)arg;
@@ -402,6 +416,19 @@ JNIEXPORT void JNICALL Java_org_homm5_port_GameActivity_nativeCameraSensitivity(
     void_port_set_default(2, value);
 }
 
+#ifndef HOMM5_LEGACY_UI
+/* ToE's frame-rate combobox items: the display's refresh rates. */
+JNIEXPORT void JNICALL Java_org_homm5_port_GameActivity_nativeRefreshRates(JNIEnv *env, jobject self, jfloatArray rates)
+{
+    (void)self;
+    float values[32];
+    jsize count = rates ? (*env)->GetArrayLength(env, rates) : 0;
+    if (count > 32) count = 32;
+    if (count > 0) (*env)->GetFloatArrayRegion(env, rates, 0, count, values);
+    void_port_set_refresh_rates(values, (int)count);
+}
+#endif
+
 JNIEXPORT jboolean JNICALL Java_org_homm5_port_GameActivity_nativeText(JNIEnv *env, jobject self,
     jint generation, jstring text)
 {
@@ -511,8 +538,12 @@ static uint64_t audio_short_writes, audio_dropped_frames, audio_errors;
 static unsigned audio_zero_chunks;
 static int32_t audio_last_xruns;
 static unsigned audio_bad_chunks;
-/* shortcut: retry low latency only after process restart; revisit for route-aware retries. */
-static int audio_normal_output;
+/* Normal (server-mixed) output from the start: a turn-based game gains nothing
+ * audible from low latency, while every low-latency MMAP stream tested
+ * underran (Pixel Bluetooth stall, Pixel successful-write xruns, P smart under
+ * load and after lifecycle rounds) and normal output kept ~40 ms on the server
+ * side. The low-latency recovery below stays for a build that starts with 0. */
+static int audio_normal_output = 1;
 
 static void audio_close_stream(void)
 {
@@ -560,7 +591,7 @@ static uint32_t audio_write_frames(const int16_t *frames, uint32_t count)
     return written;
 }
 
-void void_audio_output(const int16_t *frames, uint32_t count)
+uint32_t void_audio_output(const int16_t *frames, uint32_t count)
 {
     pthread_mutex_lock(&audio_lock);
     uint64_t pause = void_audio_pause_state();
@@ -569,7 +600,7 @@ void void_audio_output(const int16_t *frames, uint32_t count)
     if (pause & 1u) {
         /* mixer_main already paces every chunk, including in the background. */
         pthread_mutex_unlock(&audio_lock);
-        return;
+        return 0;
     }
     if (!stream) {
         AAudioStreamBuilder *b = NULL;
@@ -606,7 +637,7 @@ void void_audio_output(const int16_t *frames, uint32_t count)
         if (!stream) {
             if (void_audio_pause_state() == pause) audio_dropped_frames += count;
             pthread_mutex_unlock(&audio_lock);
-            return;
+            return 0;
         }
     }
     uint32_t written = audio_write_frames(frames, count);
@@ -661,6 +692,16 @@ void void_audio_output(const int16_t *frames, uint32_t count)
         level_sum = 0;
         level_peak = 0;
     }
+    /* The mixer only paces chunks, so a queue drained by a late wake or an
+     * underrun (MMAP restarts writing at the read position) never refills
+     * by itself and every later hiccup underruns: ask for the shortfall. */
+    uint32_t wanted = 0;
+    if (stream && written == count && void_audio_pause_state() == pause) {
+        int64_t queued = AAudioStream_getFramesWritten(stream) - AAudioStream_getFramesRead(stream);
+        int32_t size = AAudioStream_getBufferSizeInFrames(stream);
+        if (queued >= 0 && size > 0 && queued < size) wanted = (uint32_t)(size - queued);
+    }
     pthread_mutex_unlock(&audio_lock);
+    return wanted;
 }
 #endif

@@ -36,6 +36,8 @@ public class AutoLaunchCheck extends Context {
     }
     static class Assets { static boolean images=true; static boolean runtimeAvailable(Context c, File base, String id) { return images; } }
     static File chosenGame(Context c, Intent i, String id) { return ((AutoLaunchCheck)c).selected; }
+    static String stamp="3:100";
+    static String buildStamp(Context c) { return stamp; }
     void play() { assert game!=null && permission; ++launches; }
     /* ACTUAL */
     public static void main(String[] args) throws Exception {
@@ -44,6 +46,8 @@ public class AutoLaunchCheck extends Context {
         File marker=startupMarker(c); if(marker.exists()) assert marker.delete();
         assert !c.autoLaunch() && c.launches==0;
         assert marker.createNewFile();
+        assert !c.autoLaunch() && c.launches==0;   // a marker without this build's stamp
+        markStarted(c, "toe");
         assert c.autoLaunch() && c.launches==1;
         c.intent.exited=true; assert !c.autoLaunch(); c.intent.exited=false;
         c.intent.show=true; assert !c.autoLaunch(); c.intent.show=false;
@@ -57,6 +61,8 @@ public class AutoLaunchCheck extends Context {
         // A new process/context sees the file without a stale SharedPreferences instance.
         AutoLaunchCheck next=new AutoLaunchCheck();next.files=c.files;next.base=c.base;next.selected=c.selected;
         assert next.autoLaunch() && next.launches==1;
+        stamp="3:200"; assert !next.autoLaunch();   // updated since the last successful start
+        markStarted(next, "toe"); assert next.autoLaunch() && next.launches==2;
         assert marker.delete(); assert !next.autoLaunch();
         // A switch is explicit and may start an installed game before its first successful boot.
         c.intent.exited=true; c.intent.requested="hof";c.intent.source=c.selected.getAbsolutePath();
@@ -71,8 +77,8 @@ public class AutoLaunchCheck extends Context {
         assert c.launches==2;
         // A rejected explicit request must not silently fall back to the previous autolaunch.
         c.intent.requested="unknown";c.intent.exited=false;c.edition="toe";
-        assert marker.createNewFile();assert !c.autoLaunch();assert marker.delete();
-        System.out.println("PASS actual autolaunch: first start, persistent success, explicit launcher return, permissions, files and active jobs");
+        markStarted(c, "toe");assert !c.autoLaunch();assert marker.delete();
+        System.out.println("PASS actual autolaunch: first start, persistent success, build stamp, explicit launcher return, permissions, files and active jobs");
     }
 }
 '''
@@ -81,7 +87,9 @@ public class AutoLaunchCheck extends Context {
 class AutoLaunchTest(unittest.TestCase):
     def test_actual_launcher_routing(self):
         source = (ROOT / "android/app/src/org/homm5/port/Launcher.java").read_text(encoding="utf8")
-        methods = function(source, "static File startupMarker(") + function(source, "static File startupMarker(Context context, String edition)") + function(source, "private boolean autoLaunch(") + function(source, "private boolean launchRequestedGame(")
+        methods = (function(source, "static File startupMarker(") + function(source, "static File startupMarker(Context context, String edition)")
+                   + function(source, "static void markStarted(") + function(source, "static boolean startedWithThisBuild(")
+                   + function(source, "private boolean autoLaunch(") + function(source, "private boolean launchRequestedGame("))
         out = ROOT / "build/tests/autolaunch"
         out.mkdir(parents=True, exist_ok=True)
         java = out / "AutoLaunchCheck.java"
@@ -92,8 +100,10 @@ class AutoLaunchTest(unittest.TestCase):
         self.assertLess(create.index("if (autoLaunch()) return;"), create.index("build();"))
         activity = (ROOT / "android/app/src/org/homm5/port/GameActivity.java").read_text(encoding="utf8")
         ready = activity[activity.index("            if (ready) {"):activity.index("                View done = loading;")]
-        self.assertIn("Launcher.startupMarker(GameActivity.this, gameEdition()).createNewFile();", ready)
+        self.assertIn("Launcher.markStarted(GameActivity.this, gameEdition());", ready)
         self.assertIn("catch (java.io.IOException", ready)
+        start = function(activity, "private void startGame(")
+        self.assertLess(start.index("Launcher.startupMarker(this, gameEdition()).delete()"), start.index("nativeStart("))
 
 
 if __name__ == "__main__":

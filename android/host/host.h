@@ -31,6 +31,9 @@ void void_perf_add(int kind, uint64_t ns, uint64_t bytes);
 void void_perf_frame_end(uint32_t frame);
 uint64_t void_perf_calls(int kind);
 float void_port_fps_limit(void);
+/* ToE: LAN discovery also to the launcher's VPN peers (port_settings.c, network.c). */
+int void_port_lan_vpn(void);
+void void_port_set_refresh_rates(const float *rates, int count);
 /* The first game screen is up: the APK's loading screen goes (android_main.c). */
 void void_android_load_ready(void);
 void void_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));

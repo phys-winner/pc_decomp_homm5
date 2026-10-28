@@ -25,11 +25,15 @@ import android.provider.OpenableColumns;
 import android.system.Os;
 import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
+import android.widget.AdapterView;
+import android.widget.ArrayAdapter;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
+import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 import java.io.File;
@@ -39,6 +43,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -77,7 +82,7 @@ public final class Launcher extends Activity {
     private ProgressBar progress;
     private View progressBox, permissionBox, archiveButton, folderButton, stopButton;
     private TextView cleanupButton;
-    private FrameLayout skipBox;
+    private LinearLayout skipBox;
     /* Textures: shown when the GPU cannot sample DXT (Textures.Gpu). */
     private LinearLayout texBox, texFormats, texProgressBox;
     private TextView texStatus, texMemory, texConvert, texDelete, texUndo, texProgressText, texStop;
@@ -86,6 +91,14 @@ public final class Launcher extends Activity {
     private Textures.Gpu texGpu;
     private boolean texScanning;
     private int texFormat;
+    /* Tribes of the East's renderer (RendererPolicy): the driver check runs in :probe and is polled. */
+    private TextView rendererDescription, rendererNote;
+    private LinearLayout rendererModes;
+    private Spinner rendererSpinner;
+    private RendererAdapter rendererAdapter;
+    private int rendererShown = -1;
+    private boolean rendererAuto;
+    private long rendererWaitUntil;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -98,7 +111,9 @@ public final class Launcher extends Activity {
         if (getIntent().getStringExtra("launch_edition") == null && !getIntent().getBooleanExtra("game_exited", false)
                 && !getIntent().getBooleanExtra("show_launcher", false) && processes != null) {
             for (android.app.ActivityManager.RunningAppProcessInfo process : processes) {
-                if (Games.process(getPackageName(), edition).equals(process.processName)) {
+                /* A live process alone is no game on screen: only a task that still holds the game's
+                   activity is brought back; otherwise the launcher shows (and can start it anew). */
+                if (Games.process(getPackageName(), edition).equals(process.processName) && gameTaskAlive(manager)) {
                     startActivity(new Intent(this, gameClass(edition)));
                     finish();
                     return;
@@ -112,11 +127,61 @@ public final class Launcher extends Activity {
         getWindow().setNavigationBarColor(Color.rgb(2, 3, 5));
         build();
         if (!storage()) askStorage();
+        if (RendererPolicy.ENABLED) {   /* DXVK/Turnip support is commented out (RendererPolicy.ENABLED) */
+            Renderers.probe(this);
+            rendererWaitUntil = System.currentTimeMillis() + Renderers.PROBE_TIMEOUT_MS + 2000;
+        }
         refresh();
+        if (RendererPolicy.ENABLED) handler.post(rendererWatcher);
     }
 
     static File startupMarker(Context context) { return new File(context.getFilesDir(), "game-started"); }
     static File startupMarker(Context context, String edition) { return new File(context.getFilesDir(), Games.marker(edition)); }
+
+    /** The installed build: a start marker of another build (before an update) does not skip the launcher. */
+    static String buildStamp(Context context) {
+        try {
+            android.content.pm.PackageInfo info = context.getPackageManager().getPackageInfo(context.getPackageName(), 0);
+            return info.versionCode + ":" + info.lastUpdateTime;
+        } catch (android.content.pm.PackageManager.NameNotFoundException e) {
+            return "";
+        }
+    }
+
+    /** GameActivity: this build's start reached the game's first screen. */
+    static void markStarted(Context context, String edition) throws java.io.IOException {
+        try (java.io.FileOutputStream out = new java.io.FileOutputStream(startupMarker(context, edition))) {
+            out.write(buildStamp(context).getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        }
+    }
+
+    /** The last start of this edition, with this build, reached its first screen (GameActivity clears
+     *  the marker before every start), so the icon may go straight into the game. */
+    static boolean startedWithThisBuild(Context context, String edition) {
+        File marker = startupMarker(context, edition);
+        if (!marker.isFile()) return false;
+        try {
+            String stamp = new String(java.nio.file.Files.readAllBytes(marker.toPath()), java.nio.charset.StandardCharsets.US_ASCII);
+            return !stamp.isEmpty() && stamp.equals(buildStamp(context));
+        } catch (java.io.IOException e) {
+            return false;
+        }
+    }
+
+    /** Whether one of this app's tasks still holds the edition's game activity. */
+    private boolean gameTaskAlive(android.app.ActivityManager manager) {
+        String game = gameClass(edition).getName();
+        try {
+            for (android.app.ActivityManager.AppTask task : manager.getAppTasks()) {
+                android.app.ActivityManager.RecentTaskInfo info = task.getTaskInfo();
+                if ((info.baseActivity != null && game.equals(info.baseActivity.getClassName()))
+                        || (info.topActivity != null && game.equals(info.topActivity.getClassName()))) return true;
+            }
+        } catch (RuntimeException e) {
+            android.util.Log.w("HeroesV", "launcher: tasks: " + e);
+        }
+        return false;
+    }
 
     static Class<? extends GameActivity> gameClass(String edition) {
         Games.suffix(edition);
@@ -145,7 +210,7 @@ public final class Launcher extends Activity {
     private boolean autoLaunch() {
         if (getIntent().getStringExtra("launch_edition") != null || getIntent().getBooleanExtra("game_exited", false)
                 || getIntent().getBooleanExtra("show_launcher", false)
-                || !startupMarker(this, edition).isFile()
+                || !startedWithThisBuild(this, edition)
                 || !storage() || Unpacker.current != null || Textures.current != null) return false;
         game = chosenGame(this, getIntent(), edition);
         if (game == null || !Assets.runtimeAvailable(this, base, edition)) return false;
@@ -178,6 +243,7 @@ public final class Launcher extends Activity {
     @Override protected void onDestroy() {
         handler.removeCallbacks(watcher);
         handler.removeCallbacks(texWatcher);
+        handler.removeCallbacks(rendererWatcher);
         if (!isChangingConfigurations()) dropArchive();
         super.onDestroy();
     }
@@ -243,14 +309,25 @@ public final class Launcher extends Activity {
         i.putExtra(Intent.EXTRA_MIME_TYPES, new String[] {"application/zip", "application/x-zip-compressed",
             "application/x-zip", "application/octet-stream"});
         i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-        startActivityForResult(i, ASK_ARCHIVE);
+        ask(i, ASK_ARCHIVE);
     }
 
     private void pickFolder(int request, File near) {
         Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
         Uri initial = near != null ? documentOf(near) : null;
         if (initial != null) i.putExtra(DocumentsContract.EXTRA_INITIAL_URI, initial);
-        startActivityForResult(i, request);
+        ask(i, request);
+    }
+
+    /** The system's file picker; some firmwares disable it (no Files app). */
+    private void ask(Intent picker, int request) {
+        try {
+            startActivityForResult(picker, request);
+        } catch (android.content.ActivityNotFoundException | SecurityException e) {
+            android.util.Log.w("HeroesV", "launcher: picker: " + e);
+            if (request == ASK_TARGET) dropArchive();
+            error(text(E_NO_PICKER));
+        }
     }
 
     @Override protected void onActivityResult(int request, int result, Intent data) {
@@ -284,8 +361,9 @@ public final class Launcher extends Activity {
                 p = Unpacker.plan(new Zip(in.getChannel()));
             } catch (Unpacker.Failure f) {
                 failure = describe(f);
-            } catch (IOException | RuntimeException e) {
-                failure = fmt(E_IO, String.valueOf(e.getMessage()));
+            } catch (IOException | RuntimeException | Error e) {
+                android.util.Log.w("HeroesV", "launcher: archive " + uri, e);
+                failure = fmt(E_IO, String.valueOf(e.getMessage() != null ? e.getMessage() : e));
             }
             if (p == null) close(in);
             final Unpacker.Plan read = p;
@@ -402,7 +480,12 @@ public final class Launcher extends Activity {
         prefs.edit().putString("unpacking", target.getAbsolutePath()).putBoolean("unpackingCreated", job.created).apply();
         Unpacker.current = job;
         new Thread(job, "unpack").start();
-        startForegroundService(new Intent(this, UnpackService.class));
+        try {
+            startForegroundService(new Intent(this, UnpackService.class));
+        } catch (RuntimeException e) {
+            /* Some firmwares refuse foreground services (battery savers): unpack on screen anyway. */
+            android.util.Log.w("HeroesV", "launcher: unpack service: " + e);
+        }
         note(null, false);
         handler.post(watcher);
     }
@@ -506,6 +589,47 @@ public final class Launcher extends Activity {
 
     private void setSkipIntro(boolean on) {
         prefs.edit().putBoolean("skip_intro", on).apply();
+    }
+
+    /** MMH5.5's New Creature Framework patches for Tribes of the East: off unless chosen here. */
+    static boolean newCreatureFramework(Context c) {
+        return c.getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("new_creature_framework", false);
+    }
+
+    private void setNewCreatureFramework(boolean on) {
+        prefs.edit().putBoolean("new_creature_framework", on).apply();
+    }
+
+    /** Tailscale/VPN players for Tribes of the East's LAN game (android/host/network.c): addresses or names. */
+    static String lanPeers(Context c) {
+        return c.getSharedPreferences(PREFS, MODE_PRIVATE).getString("lan_peers", "");
+    }
+
+    /* A row like a toggle's: the list (or "none") and a dialog to edit it. */
+    private View lanPeersRow() {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.setPadding(0, dp(6), 0, dp(6));
+        String peers = lanPeers(this).trim();
+        row.addView(label(text(T_LAN_PEERS), 15, Color.WHITE));
+        row.addView(label(peers.isEmpty() ? text(T_LAN_PEERS_NONE) : peers, 13, peers.isEmpty() ? GREY : GOLD));
+        row.addView(label(text(T_LAN_PEERS_HINT), 12, GREY));
+        row.setOnClickListener(v -> {
+            final android.widget.EditText field = new android.widget.EditText(this);
+            field.setText(lanPeers(this));
+            field.setHint("100.x.y.z, peer.example");
+            field.setSingleLine(false);
+            field.setMinLines(2);
+            field.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                    | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+            dialog().setTitle(text(T_LAN_PEERS)).setMessage(text(T_LAN_PEERS_DIALOG)).setView(field)
+                    .setPositiveButton(android.R.string.ok, (d, w) -> {
+                        prefs.edit().putString("lan_peers", field.getText().toString().trim()).apply();
+                        refresh();
+                    })
+                    .setNegativeButton(android.R.string.cancel, null).show();
+        });
+        return row;
     }
 
     private void refreshCleanup() {
@@ -785,6 +909,7 @@ public final class Launcher extends Activity {
         editionCards.setOrientation(LinearLayout.VERTICAL);
         column.addView(editionCards);
 
+        if (RendererPolicy.ENABLED) buildRenderer(column);
         buildTextures(column);
 
         LinearLayout box = card(column);
@@ -805,7 +930,8 @@ public final class Launcher extends Activity {
         progressBox.setVisibility(View.GONE);
 
         LinearLayout options = card(column);
-        skipBox = new FrameLayout(this);
+        skipBox = new LinearLayout(this);
+        skipBox.setOrientation(LinearLayout.VERTICAL);
         options.addView(skipBox);
         options.addView(label(text(T_SETTINGS_HINT), 13, GREY));
         cleanupButton = button(text(T_CLEAN), false, this::scanCleanup);
@@ -858,9 +984,135 @@ public final class Launcher extends Activity {
         }
         skipBox.removeAllViews();
         skipBox.addView(toggle(text(T_SKIP_INTRO), skipIntro(this), true, null, this::setSkipIntro));
+        skipBox.addView(toggle(text(T_NCF), newCreatureFramework(this), true, text(T_NCF_HINT), this::setNewCreatureFramework));
+        refreshRenderer();
+        if ("toe".equals(edition)) skipBox.addView(lanPeersRow());
         enable();
         refreshCleanup();
         refreshTextures();
+    }
+
+    /* ------------------------------------------------------------ renderer */
+
+    /** The modes with what they need, unavailable ones greyed with their reason (RendererPolicy). */
+    private final class RendererAdapter extends ArrayAdapter<String> {
+        RendererPolicy.Status[] statuses;
+
+        RendererAdapter() {
+            super(Launcher.this, android.R.layout.simple_spinner_item, new ArrayList<>());
+            for (String mode : RendererPolicy.MODES) add(RendererPolicy.title(mode));
+            setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        }
+
+        @Override public boolean areAllItemsEnabled() { return false; }
+        @Override public boolean isEnabled(int position) { return statuses == null || statuses[position].available; }
+
+        @Override public View getView(int position, View convert, ViewGroup parent) {
+            TextView view = (TextView) super.getView(position, convert, parent);
+            view.setTextColor(Color.WHITE);
+            view.setTextSize(17);
+            return view;
+        }
+
+        @Override public View getDropDownView(int position, View convert, ViewGroup parent) {
+            TextView view = (TextView) super.getDropDownView(position, convert, parent);
+            boolean on = isEnabled(position);
+            view.setText(RendererPolicy.title(RendererPolicy.MODES[position]) + (on ? "" : "  ·  " + text(T_RENDERER_UNAVAILABLE)));
+            view.setTextColor(on ? Color.WHITE : GREY);
+            view.setBackgroundColor(CELL);
+            return view;
+        }
+    }
+
+    private void buildRenderer(LinearLayout column) {
+        LinearLayout box = card(column);
+        box.addView(heading(text(T_RENDERER)));
+        rendererSpinner = new Spinner(this, Spinner.MODE_DROPDOWN);
+        rendererAdapter = new RendererAdapter();
+        rendererSpinner.setAdapter(rendererAdapter);
+        rendererSpinner.setPopupBackgroundDrawable(new android.graphics.drawable.ColorDrawable(CELL));
+        rendererSpinner.setBackgroundTintList(ColorStateList.valueOf(GOLD));
+        rendererSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                /* Programmatic selections (rendererShown) are no choice of the player. */
+                if (position == rendererShown || !rendererAdapter.isEnabled(position)) return;
+                Renderers.choose(Launcher.this, RendererPolicy.MODES[position], Renderers.USER);
+                rendererAuto = false;
+                refreshRenderer();
+            }
+
+            @Override public void onNothingSelected(AdapterView<?> parent) { }
+        });
+        box.addView(rendererSpinner, new LinearLayout.LayoutParams(-1, dp(48)));
+        rendererDescription = label("", 13, Color.WHITE);
+        box.addView(rendererDescription);
+        rendererNote = label("", 13, GOLD);
+        box.addView(rendererNote);
+        rendererModes = new LinearLayout(this);
+        rendererModes.setOrientation(LinearLayout.VERTICAL);
+        box.addView(rendererModes);
+    }
+
+    /** The check finished, failed or timed out: show it (and make the first start's choice). */
+    private final Runnable rendererWatcher = new Runnable() {
+        @Override public void run() {
+            if (isFinishing() || isDestroyed()) return;
+            boolean waiting = Renderers.needsProbe(Launcher.this) && Renderers.report(Launcher.this) == null;
+            refreshRenderer();
+            if (waiting && System.currentTimeMillis() < rendererWaitUntil) handler.postDelayed(this, 300);
+        }
+    };
+
+    private void refreshRenderer() {
+        if (rendererSpinner == null) return;
+        boolean ru = Renderers.ru();
+        Map<String, String> report = Renderers.report(this);
+        boolean waiting = report == null && Renderers.needsProbe(this);
+        RendererPolicy.Status[] statuses = Renderers.statuses(this, report);
+        String chosen = Renderers.chosen(this);
+        if (chosen.isEmpty() && !waiting) {
+            /* The first start with a finished check picks the best mode by itself. */
+            chosen = RendererPolicy.best(statuses, report);
+            Renderers.choose(this, chosen, Renderers.AUTO);
+            rendererAuto = true;
+            android.util.Log.i("HeroesV", "launcher: renderer " + chosen + " chosen for this device");
+        }
+        String shown = chosen.isEmpty() ? RendererPolicy.GLES : chosen;
+        rendererAdapter.statuses = statuses;
+        rendererAdapter.notifyDataSetChanged();
+        rendererShown = java.util.Arrays.asList(RendererPolicy.MODES).indexOf(shown);
+        if (rendererSpinner.getSelectedItemPosition() != rendererShown) rendererSpinner.setSelection(rendererShown, false);
+        RendererPolicy.Status current = RendererPolicy.status(statuses, shown);
+        StringBuilder about = new StringBuilder(RendererPolicy.description(shown, ru));
+        if (!RendererPolicy.GLES.equals(shown)) about.append("\n").append(RendererPolicy.limits(ru));
+        rendererDescription.setText(about);
+        String note = null, fallback = Renderers.fallback(this), last = Renderers.lastStart(this);
+        int colour = RED;
+        /* The texture section's scan of the chosen ToE game: DXVK has no D3D9 format for ASTC/ETC2. */
+        boolean converted = "toe".equals(edition) && texState != null && texState.failure == null && texState.converted != 0;
+        if (converted && !RendererPolicy.GLES.equals(shown)) note = fmt(T_RENDERER_CONVERTED, RendererPolicy.title(shown));
+        else if (!current.available && !waiting) note = fmt(T_RENDERER_NOW_GLES, RendererPolicy.title(shown), current.reason);
+        else if (!fallback.isEmpty()) note = fmt(T_RENDERER_FALLBACK, RendererPolicy.title(fallback));
+        else if (!RendererPolicy.GLES.equals(last) && !startupMarker(this, "toe").isFile()) note = fmt(T_RENDERER_FAILED, RendererPolicy.title(last));
+        else if (rendererAuto) { note = fmt(T_RENDERER_AUTO, RendererPolicy.title(shown)); colour = GOLD; }
+        else if (waiting) { note = text(T_RENDERER_CHECKING); colour = GOLD; }
+        rendererNote.setText(note);
+        rendererNote.setTextColor(colour);
+        rendererNote.setVisibility(note == null ? View.GONE : View.VISIBLE);
+        rendererModes.removeAllViews();
+        for (RendererPolicy.Status status : statuses) {
+            String line = RendererPolicy.title(status.mode) + "  —  " + (status.available ? text(T_RENDERER_AVAILABLE) : status.reason);
+            rendererModes.addView(label(line, 12, status.available ? GOLD : GREY));
+        }
+        if (report != null) {
+            String gpu = report.getOrDefault("stock.device", "");
+            if (!gpu.isEmpty()) {
+                String line = fmt(T_RENDERER_GPU, gpu, report.getOrDefault("stock.api", "?"));
+                if ("ok".equals(report.get("turnip.status")) || "missing".equals(report.get("turnip.status")))
+                    line += "; Turnip: Vulkan " + report.getOrDefault("turnip.api", "?");
+                rendererModes.addView(label(line, 12, GREY));
+            }
+        }
     }
 
     private void selectEdition(String id) {
@@ -1130,6 +1382,7 @@ public final class Launcher extends Activity {
                 if (state != null && target.equals(game)) texState = state;
                 if (texFormat == 0) texFormat = gpu.astc ? Textures.ASTC : Textures.ETC2;
                 refreshTextures();
+                refreshRenderer();   /* converted textures rule out the DXVK modes */
             });
         }, "texture-scan").start();
     }
@@ -1352,7 +1605,11 @@ public final class Launcher extends Activity {
         T_TEX_FAILED = 88, T_TEX_STOPPED = 89, T_TEX_ASK = 90, T_TEX_STOP_ASK = 91, T_TEX_MIN = 92, T_TEX_SEC = 93,
         T_TEX_UNREADABLE = 94, T_TEX_NOTHING = 95, T_TEX_CONVERT_BUTTON = 96, T_TEX_RAM_LOW = 97, T_TEX_RAM_OK = 98,
         T_TEX_MORE = 99, T_SELECT_GAME = 100, T_READY = 101, T_RUNTIME_MISSING = 102,
-        T_TEX_PARTIAL = 103, T_TEX_MIXED = 104, T_TEX_PARTLY_REMOVED = 105;
+        T_TEX_PARTIAL = 103, T_TEX_MIXED = 104, T_TEX_PARTLY_REMOVED = 105, E_NO_PICKER = 106, T_NCF = 107,
+        T_NCF_HINT = 108, T_RENDERER = 109, T_RENDERER_UNAVAILABLE = 110, T_RENDERER_AVAILABLE = 111,
+        T_RENDERER_AUTO = 112, T_RENDERER_FALLBACK = 113, T_RENDERER_FAILED = 114, T_RENDERER_CHECKING = 115,
+        T_RENDERER_GPU = 116, T_RENDERER_NOW_GLES = 117, T_RENDERER_CONVERTED = 118,
+        T_LAN_PEERS = 119, T_LAN_PEERS_NONE = 120, T_LAN_PEERS_HINT = 121, T_LAN_PEERS_DIALOG = 122;
     private static final String[][] TEXTS = {
         {"Game files", "Файлы игр"},
         {"No game chosen yet", "Игра ещё не выбрана"},
@@ -1509,6 +1766,39 @@ public final class Launcher extends Activity {
          "Файлы игры используют разные форматы текстур. Сконвертируйте их в один формат."},
         {"Original textures were removed from some files. Continue removing them to finish.",
          "Оригинальные текстуры удалены из части файлов. Продолжите удаление для завершения."},
+        {"The system file picker is unavailable on this device. Enable the Files app (Settings → Apps) and try again.",
+         "На устройстве недоступен системный выбор файлов. Включите приложение «Файлы» (Настройки → Приложения) и повторите."},
+        {"Tribes of the East: New Creature Framework", "Tribes of the East: New Creature Framework"},
+        {"MMH5.5 patches: creature limit 999 for mods with new creatures. Only with such a mod installed: "
+            + "without its creature files the game does not start.",
+         "Патчи MMH5.5: лимит существ 999 для модов с новыми существами. Только с установленным модом: "
+            + "без его файлов существ игра не запустится."},
+        {"Tribes of the East: renderer", "Tribes of the East: отрисовка"},
+        {"unavailable", "недоступно"},
+        {"available", "доступно"},
+        {"%s was chosen as the best mode for this device.", "Выбран режим %s — лучший для этого устройства."},
+        {"%s did not start last time; the game ran on OpenGL ES. Details: /sdcard/HeroesV/userdata/homm5.log.",
+         "%s в прошлый раз не запустился, игра шла на OpenGL ES. Подробности: /sdcard/HeroesV/userdata/homm5.log."},
+        {"The last start with %s did not reach the main menu. If the game does not start, choose OpenGL ES.",
+         "Прошлый запуск с %s не дошёл до главного меню. Если игра не запускается, выберите OpenGL ES."},
+        {"Checking the graphics driver…", "Проверка видеодрайвера…"},
+        {"GPU: %1$s, Vulkan %2$s (system driver)", "Видеочип: %1$s, Vulkan %2$s (системный драйвер)"},
+        {"%1$s is not available here (%2$s): the game starts with OpenGL ES.",
+         "%1$s здесь недоступен (%2$s): игра запустится на OpenGL ES."},
+        {"This game's textures are converted for OpenGL ES (ASTC/ETC2), which %s cannot read: go back to the "
+             + "original textures (Textures) or choose OpenGL ES.",
+         "Текстуры этой игры сконвертированы для OpenGL ES (ASTC/ETC2), а %s их не читает: верните оригинальные "
+             + "текстуры (раздел «Текстуры») или выберите OpenGL ES."},
+        {"LAN over Tailscale/VPN: players", "LAN через Tailscale/VPN: игроки"},
+        {"No addresses", "Адреса не заданы"},
+        {"For a network game across Tailscale: the other players' Tailscale addresses or names. Also turn on "
+            + "Settings → Additional → «LAN over Tailscale/VPN» in the game on every device.",
+         "Для сетевой игры через Tailscale: адреса или имена других игроков в Tailscale. Также включите в игре "
+            + "Настройки → Дополнительные → «LAN через Tailscale/VPN» на каждом устройстве."},
+        {"Tailscale (100.x.y.z) addresses or MagicDNS names of the other players, separated by spaces, commas "
+            + "or lines. The game sends its LAN search to them; their replies come back the same way.",
+         "Адреса Tailscale (100.x.y.z) или имена MagicDNS других игроков через пробел, запятую или с новой "
+            + "строки. Поиск сетевых игр отправляется и на них, ответы приходят тем же путём."},
     };
 
     static String text(int id) {

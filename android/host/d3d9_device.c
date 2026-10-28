@@ -1,5 +1,6 @@
 /* IDirect3D9 and IDirect3DDevice9. */
 #include "d3d9_internal.h"
+#include "dxvk.h"
 #include "input.h"
 #include "touch.h"
 #include <math.h>
@@ -221,6 +222,11 @@ static void_com_class d3d9_class = { "IDirect3D9", 17, d3d9_methods, 0 };
 
 WINAPI_EXPORT("d3d9.dll", Direct3DCreate9, 1)
 {
+#ifndef HOMM5_LEGACY_UI
+    /* The launcher's DXVK renderer (d3d9_dxvk.c); 0 when GLES was chosen or DXVK cannot start. */
+    uint32_t dxvk = void_dxvk_create9(ARG(0));
+    if (dxvk) return dxvk;
+#endif
     d3d9_t *d = (d3d9_t *)calloc(1, sizeof *d);
     uint32_t guest = void_com_wrap(&d->com, &d3d9_class, 0);
     void_log("[d3d9] Direct3DCreate9(%u) = %08X", ARG(0), guest);

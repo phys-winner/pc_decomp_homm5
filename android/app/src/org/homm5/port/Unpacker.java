@@ -255,7 +255,8 @@ final class Unpacker {
             } catch (IOException e) {
                 String m = String.valueOf(e.getMessage());
                 failure = new Failure(m.contains("ENOSPC") ? FULL : m.contains("EACCES") || m.contains("EROFS") ? READ_ONLY : IO, m);
-            } catch (RuntimeException e) {
+            } catch (RuntimeException | Error e) {
+                /* Out of memory or a decoder bug must end in a message, not in the launcher's death. */
                 failure = new Failure(IO, e.toString());
             } finally {
                 if (failure != null) clean(temp(), created ? target : null);
@@ -294,6 +295,8 @@ final class Unpacker {
                 }
                 if (cancelled) throw new Failure(CANCELLED, null);
                 if (written != e.size || crc.getValue() != e.crc) throw new Failure(CORRUPT, path);
+                /* The archive's own times, as an unpacked copy of the installation keeps them. */
+                if (e.time > 0) out.setLastModified(e.time);
             }
             /* Into place: the target held nothing (or was new). */
             String[] items = temp.list();

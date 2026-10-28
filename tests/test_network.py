@@ -54,6 +54,7 @@ typedef struct { const char *dll, *name; uint32_t ordinal; void_fn fn; } void_sh
 #include "exports.h"
 static int void_verbose;
 static void void_log(const char *format, ...) { (void)format; }
+static int void_port_lan_vpn(void) { return 0; }   /* ToE's VPN LAN option, off */
 #define VLOG(...) do { if (void_verbose) void_log(__VA_ARGS__); } while (0)
 static int void_vm_readable(uint32_t va, uint32_t size) { return va >= 0x100 && (uint64_t)va + size <= sizeof memory; }
 static int void_vm_writable(uint32_t va, uint32_t size) { return void_vm_readable(va, size); }

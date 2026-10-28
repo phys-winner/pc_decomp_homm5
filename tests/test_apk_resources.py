@@ -36,6 +36,7 @@ class ApkResourcesTest(unittest.TestCase):
         self.assertEqual(activities[".Launcher"].get(ANDROID + "exported"), "true")
         self.assertEqual(launcher_entries(game), [])
         services = [service.get(ANDROID + "name") for service in application.findall("service")]
+        # DXVK/Turnip support is commented out: the renderer's driver check (RendererProbe) is no service.
         self.assertEqual(services, [".UnpackService", ".TextureService"])
         for service in application.findall("service"):
             self.assertEqual(service.get(ANDROID + "exported"), "false", service.get(ANDROID + "name"))
@@ -43,7 +44,8 @@ class ApkResourcesTest(unittest.TestCase):
         permissions = {permission.get(ANDROID + "name") for permission in manifest.findall("uses-permission")}
         self.assertLessEqual({"android.permission.FOREGROUND_SERVICE", "android.permission.WAKE_LOCK"}, permissions)
         package = manifest.get("package").replace(".", "/")
-        for component in (".Launcher", ".GameActivity", ".VanillaGameActivity", ".HofGameActivity", ".UnpackService", ".TextureService"):
+        for component in (".Launcher", ".GameActivity", ".VanillaGameActivity", ".HofGameActivity", ".UnpackService", ".TextureService",
+                          ".RendererProbe"):
             self.assertTrue((app / "src" / package / (component[1:] + ".java")).is_file(), component)
         for version in (26, 33):
             icon = ET.parse(app / f"res/mipmap-anydpi-v{version}/ic_launcher.xml").getroot()

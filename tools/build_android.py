@@ -431,6 +431,31 @@ def cutscene_projection(text):
     return text.replace(b"void sub_007D20E0(void) {", declaration + b"void sub_007D20E0(void) {", 1).replace(original, replacement)
 
 
+# MMH5.5's New Creature Framework hex patch for the 3.1 exe (NewCreatureFramework.yml, group Original):
+# the creature limit at 0x00ACB381 and 0x00AE2620, and the jump at 0x0040EC76 into a cave that skips the
+# copy-assign for a creature's missing map visual. The host values (android/host/ncf.c) keep each body's
+# control flow, so the PGO profile still matches; they stay the original ones unless the launcher enables it.
+NEW_CREATURE_FRAMEWORK = (
+    (b"void sub_0040EC70(void) {", b"    edi = MEM32(esp + 0xC); /* 0x0040EC72: mov edi, dword ptr [esp + 0xc] */",
+     b"    edi = void_ncf_source(MEM32(esp + 0xC), ecx); /* 0x0040EC72: mov edi, dword ptr [esp + 0xc]; NCF map visual guard */"),
+    (b"void sub_00ACB380(void) {", b"    eax = 0xB4u; /* 0x00ACB380: mov eax, 0xb4 */",
+     b"    eax = void_ncf_creatures(); /* 0x00ACB380: mov eax, 0xb4; NCF creature limit */"),
+    (b"void sub_00AE25C0(void) {", b"    PUSH32(esp, 0xB4u); /* 0x00AE261F: push 0xb4 */",
+     b"    PUSH32(esp, void_ncf_creatures()); /* 0x00AE261F: push 0xb4; NCF creature limit */"),
+)
+
+
+def new_creature_framework(text):
+    declaration = b"uint32_t void_ncf_creatures(void);\nuint32_t void_ncf_source(uint32_t source, uint32_t self);\n"
+    for function, original, replacement in NEW_CREATURE_FRAMEWORK:
+        if function not in text:
+            continue
+        if text.count(original) != 1:
+            raise ValueError("New Creature Framework anchor changed: " + function.decode())
+        text = text.replace(function, declaration + function, 1).replace(original, replacement)
+    return text
+
+
 def override_source(source, local_xmm):
     """The file to compile for a generated source and its extra flags: a
     patched copy under build/ when a transform changes it: x87 precision
@@ -439,7 +464,7 @@ def override_source(source, local_xmm):
     original = source.read_bytes()
     text = round_x87_precision(guard_fpu_memory(original))
     if EDITION == "toe":
-        text = cutscene_projection(text)
+        text = new_creature_framework(cutscene_projection(text))
     elif source.name != "recomp_dispatch.c":
         from port_patches import adapt_generated_source
         text = adapt_generated_source(text, source.parent.name[:-len("-x86")], EDITION)
