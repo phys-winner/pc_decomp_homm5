@@ -111,16 +111,22 @@ def lift_function_linear(*args, **kwargs):
 class BoundedDisassembler(Disassembler):
     """Fail visibly on an excessive decode rather than silently truncate it."""
     max_windows = 16384
+    # The vendor scan stops at 256 entries. A declared table is read whole: H5's
+    # spell-name switch (0x009F2438) has 353 arms, and an id past 255 reached a
+    # missing arm (0x009F1E06) as an unresolved dispatch.
+    max_declared_entries = 4096
 
     def __init__(self, *args, jump_tables=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.jump_tables = {address: (0, value) if type(value) is int else value
                             for address, value in (jump_tables or {}).items()}
+        limit = self.max_declared_entries
         for address, (first_index, count) in self.jump_tables.items():
             if (type(address) is not int or type(first_index) is not int or type(count) is not int
-                    or not -256 <= first_index <= 255 or not 1 <= count <= 256
-                    or first_index + count - 1 > 255):
-                raise ValueError("Declared jump tables require integer VAs, indices in -256..255 and counts in 1..256")
+                    or not -256 <= first_index <= 255 or not 1 <= count <= limit
+                    or first_index + count > limit):
+                raise ValueError(f"Declared jump tables require integer VAs, first indices in -256..255, "
+                                 f"counts in 1..{limit} and last indices below {limit}")
             self._declared_table(address, first_index, count)
 
     def _declared_table(self, address, first_index, count):
@@ -144,9 +150,8 @@ class BoundedDisassembler(Disassembler):
             memory = operand.mem
             address = memory.disp & 0xFFFFFFFF
             if not memory.base and memory.index and memory.scale == 4 and address in self.jump_tables:
+                # The declaration, not the scan limit, sizes the table.
                 first_index, count = self.jump_tables[address]
-                if count > limit:
-                    raise ValueError(f"Declared jump table {address:#x} exceeds scan limit {limit}")
                 return self._declared_table(address, first_index, count)
         return super().jump_table_targets(instruction, limit)
 

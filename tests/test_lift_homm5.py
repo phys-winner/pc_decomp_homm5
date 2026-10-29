@@ -140,6 +140,57 @@ class LiftInputs(unittest.TestCase):
                 self.assertIn(f"case 0x{target:08X}u: goto L_{target:08X};", source)
             self.assertNotIn("RECOMP_CALL(", source)
 
+    def test_h5_long_switch_tables_lift_every_arm(self):
+        """The vendor scan reads 256 entries; H5's spell-name switch has 353 arms, and spell
+        ids past 255 (Fortress runes, ToE abilities) reached an unlifted arm in LAN games."""
+        binary = self.game / "bin/H5_Game.exe"
+        info = analyze_pe(str(binary))
+        imports = build_iat_map(info)
+        rows = lift.read_json(lift.ROOT / "config/game.jump-tables.json")
+        tables = {int(r["address"], 0): (r["first_index"], r["count"]) for r in rows}
+        undeclared = BoundedDisassembler(binary.read_bytes(), info.image_base, info.sections)
+        arms = [struct.unpack("<I", undeclared.read_bytes(0x009F2438 + 4 * i, 4))[0] for i in range(353)]
+        self.assertEqual(arms[256], 0x009F1E06)
+        self.assertNotIn(0x009F1E06, undeclared.disassemble_function(0x009F0DF0, imports).jump_targets)
+        decoder = BoundedDisassembler(binary.read_bytes(), info.image_base, info.sections, jump_tables=tables)
+        function = decoder.disassemble_function(0x009F0DF0, imports)
+        self.assertTrue(set(arms) <= function.jump_targets)
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            emit_functions(directory, imports, decoder, {function.address: function})
+            source = (directory / "recomp_0000.c").read_text()
+        for target in (arms[255], arms[256], arms[352]):
+            self.assertIn(f"L_{target:08X}:", source)
+            self.assertIn(f"case 0x{target:08X}u: goto L_{target:08X};", source)
+
+    def test_declared_game_tables_match_their_switch_bounds(self):
+        """Each declared count is the `cmp index, count - 1; ja default` in front of its dispatch."""
+        from capstone import CS_ARCH_X86, CS_MODE_32, Cs
+        binary = self.game / "bin/H5_Game.exe"
+        info = analyze_pe(str(binary))
+        decoder = BoundedDisassembler(binary.read_bytes(), info.image_base, info.sections)
+        disassembler = Cs(CS_ARCH_X86, CS_MODE_32)
+        text = next(s for s in pefile.PE(str(binary)).sections if s.Name.rstrip(b"\0") == b".text")
+        code, start = text.get_data(), info.image_base + text.VirtualAddress
+        for row in lift.read_json(lift.ROOT / "config/game.jump-tables.json"):
+            table, count = int(row["address"], 0), row["count"]
+            self.assertEqual(row["first_index"], 0)
+            sites = [start + at for at in range(len(code) - 7) if code[at] == 0xFF and code[at + 1] == 0x24
+                     and code[at + 2] & 0xC7 == 0x85 and struct.unpack_from("<I", code, at + 3)[0] == table]
+            self.assertEqual(len(sites), 1, hex(table))
+            index = ("eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi")[(decoder.read_bytes(sites[0] + 2, 1)[0] >> 3) & 7]
+            bounds = set()
+            for back in range(6, 24):
+                window = list(disassembler.disasm(decoder.read_bytes(sites[0] - back, back), sites[0] - back))
+                if sum(i.size for i in window) != back or len(window) < 2 or window[-1].mnemonic != "ja":
+                    continue
+                for instruction in reversed(window[:-1]):   # flag-neutral moves may sit between
+                    if instruction.mnemonic == "cmp" and instruction.op_str.startswith(index + ","):
+                        bounds.add(int(instruction.op_str.split(",")[1], 0) + 1)
+                    if instruction.mnemonic not in ("push", "pop", "mov", "lea"):
+                        break
+            self.assertEqual(bounds, {count}, hex(table))
+
     def test_granny_keeps_the_base_embedded_in_original_animation_data(self):
         spec = next(s for s in self.specs if s["name"] == "granny2")
         original = pefile.PE(str(self.game / spec["source"]))

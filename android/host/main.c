@@ -13,6 +13,7 @@
 int void_modules_start(void);
 #ifndef HOMM5_LEGACY_UI
 void void_highlight_init(void);   /* highlight.c: the map's object highlight without its per-frame rebuild */
+void void_log_system_info(void);  /* core.c: the device and the engine build */
 #endif
 
 void void_files_std_init(void);
@@ -84,6 +85,9 @@ int void_game_main(const char *game, const char *data, const char *images, int s
     snprintf(log_path, sizeof log_path, "%s/homm5.log", data);
     void_log_open(log_path);
     void_log("[void] Heroes V ARM64 static host: game=%s data=%s images=%s", game, data, images);
+#if !defined(HOMM5_LEGACY_UI) && defined(__ANDROID__)
+    void_log_system_info();
+#endif
     if (!void_guest_reserve()) return 65;
     void_threads_init();
     void_dispatch_init();

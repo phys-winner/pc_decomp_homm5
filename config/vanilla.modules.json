@@ -5,7 +5,8 @@
     "source": "bin/H5_Game.exe",
     "base": "0x400000",
     "exe": true,
-    "sha256": "2b4e8bd32bd929e8caf1d53f74bc4aa6be56c362080549b9dc675d4e88289950"
+    "sha256": "2b4e8bd32bd929e8caf1d53f74bc4aa6be56c362080549b9dc675d4e88289950",
+    "jump_tables": "config/vanilla.game.jump-tables.json"
   },
   {
     "name": "granny2",

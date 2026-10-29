@@ -305,6 +305,8 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
            crashes or hangs must not be repeated by every later tap on the icon. */
         if (!Launcher.startupMarker(this, gameEdition()).delete() && Launcher.startupMarker(this, gameEdition()).exists())
             android.util.Log.w("HeroesV", "startup marker stays");
+        /* ToE keeps the previous sessions' logs and how they ended (the engine appends to this one). */
+        if ("toe".equals(gameEdition())) SessionLog.begin(this, data);
         nativeStart(gameDir.getAbsolutePath(), data.getAbsolutePath(), images.getAbsolutePath(),
                 overlay != null ? overlay.getAbsolutePath() : null, cache.getAbsolutePath(), 0, 0,
                 new File(base, "verbose").exists());

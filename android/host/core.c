@@ -9,6 +9,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #ifdef __ANDROID__
 #include <android/log.h>
 #endif
@@ -84,12 +85,22 @@ void void_regs_load(const void_regs *r)
 /* --------------------------------------------------------------- logging */
 static pthread_mutex_t log_lock = PTHREAD_MUTEX_INITIALIZER;
 static FILE *log_file;
+#ifndef HOMM5_LEGACY_UI
+/* Set while a fatal signal is being reported: the faulting thread may hold log_lock. */
+static atomic_int log_in_signal;
+#endif
 
 void void_log_open(const char *path)
 {
     pthread_mutex_lock(&log_lock);
     if (log_file) fclose(log_file);
+#if defined(VOID_ANDROID_APP) && !defined(HOMM5_LEGACY_UI)
+    /* GameActivity (SessionLog.java) has moved the previous sessions' logs aside and begun
+     * this one; appending also keeps the lines Java adds itself (an uncaught exception). */
+    log_file = path ? fopen(path, "a") : NULL;
+#else
     log_file = path ? fopen(path, "w") : NULL;
+#endif
     if (log_file) setvbuf(log_file, NULL, _IOLBF, 0);
     pthread_mutex_unlock(&log_lock);
 }
@@ -98,6 +109,27 @@ static void log_va(const char *fmt, va_list ap)
 {
     char line[2048];
     vsnprintf(line, sizeof line, fmt, ap);
+#ifndef HOMM5_LEGACY_UI
+    if (atomic_load_explicit(&log_in_signal, memory_order_relaxed)) {
+        /* A crash report must not wait for a lock its own thread may hold: wait briefly,
+         * then write the line past the lock (line-buffered stdio holds no partial lines). */
+        int locked = 0;
+        for (int i = 0; i < 100 && !(locked = !pthread_mutex_trylock(&log_lock)); ++i) usleep(1000);
+        size_t length = strlen(line);
+        line[length] = '\n';
+        if (log_file) {
+            if (locked) fflush(log_file);
+            ssize_t written = write(fileno(log_file), line, length + 1);
+            (void)written;
+        }
+        line[length] = 0;
+#ifdef __ANDROID__
+        __android_log_write(ANDROID_LOG_ERROR, "HeroesV", line);
+#endif
+        if (locked) pthread_mutex_unlock(&log_lock);
+        return;
+    }
+#endif
     pthread_mutex_lock(&log_lock);
     fprintf(stderr, "%s\n", line);
     if (log_file) fprintf(log_file, "%s\n", line);
@@ -407,6 +439,57 @@ recomp_func_t void_resolve(uint32_t va)
 /* ---------------------------------------------------------------- traps */
 static atomic_int dumping;
 
+#ifndef HOMM5_LEGACY_UI
+/* The lifted function whose entry is the closest at or below va (the merged dispatch table
+ * is sorted), or 0. */
+static uint32_t lifted_owner(uint32_t va)
+{
+    uint32_t lo = 0, hi = recomp_dispatch_count;
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2;
+        if (recomp_dispatch_table[mid].address <= va) lo = mid + 1; else hi = mid;
+    }
+    return lo ? recomp_dispatch_table[lo - 1].address : 0;
+}
+
+/* A word on the guest stack that follows a call instruction in a lifted image. */
+static int return_address(uint32_t va)
+{
+    if (!in_image(va) || !void_vm_readable(va - 7, 7)) return 0;
+    if (MEM8(va - 5) == 0xE8) {                                   /* call rel32 */
+        uint32_t target = va + MEM32(va - 4);
+        return in_image(target) || void_thunk_name(target);
+    }
+    uint8_t m2 = MEM8(va - 1), m3 = MEM8(va - 2), m6 = MEM8(va - 5), m7 = MEM8(va - 6);
+    return (MEM8(va - 2) == 0xFF && ((m2 >= 0xD0 && m2 <= 0xD7) ||                  /* call reg */
+                                     (m2 >= 0x10 && m2 <= 0x17 && m2 != 0x14 && m2 != 0x15))) ||   /* [reg] */
+           (MEM8(va - 3) == 0xFF && ((m3 >= 0x50 && m3 <= 0x57 && m3 != 0x54) || m3 == 0x14)) ||  /* [reg+d8] */
+           (MEM8(va - 4) == 0xFF && MEM8(va - 3) == 0x54) ||                                     /* [sib+d8] */
+           (MEM8(va - 6) == 0xFF && (m6 == 0x15 || (m6 >= 0x90 && m6 <= 0x97 && m6 != 0x94))) ||  /* [d32] */
+           (MEM8(va - 7) == 0xFF && m7 == 0x94);                                                /* [sib+d32] */
+}
+
+/* Production builds keep no guest call trace (g_cur_func is 0): the return addresses on the
+ * guest stack name the lifted callers instead. Words that only look like return addresses can
+ * appear, so this is a hint, newest first. */
+static void log_guest_stack(void)
+{
+    uint32_t esp = g_esp & ~3u, shown = 0;
+    for (uint32_t offset = 0; offset < 0x8000u && shown < 24; offset += 4) {
+        uint32_t at = esp + offset;
+        if (!(at & (GUEST_PAGE - 1)) || !offset) {
+            if (!void_vm_readable(at, 4)) break;
+        }
+        uint32_t va = MEM32(at);
+        if (!return_address(va)) continue;
+        uint32_t owner = lifted_owner(va);
+        void_log("[void] guest stack +%04X: %08X in sub_%08X+0x%X", offset, va, owner, va - owner);
+        ++shown;
+    }
+    if (!shown) void_log("[void] guest stack: no return addresses found above ESP %08X", g_esp);
+}
+#endif
+
 void void_dump_state(const char *why)
 {
     void_log("[void] ===== state dump: %s =====", why ? why : "");
@@ -439,6 +522,9 @@ void void_dump_state(const char *why)
         if (used > sizeof line - 80) { void_log("%s", line); used = 0; line[0] = 0; }
     }
     if (used) void_log("%s", line);
+#ifndef HOMM5_LEGACY_UI
+    log_guest_stack();
+#endif
     void_log_flush();
 }
 
@@ -548,18 +634,43 @@ static void log_host_backtrace(const void *context)
 #endif
 }
 
+#ifndef HOMM5_LEGACY_UI
+/* The handlers before ours (debuggerd's in an app): they still get the signal afterwards. */
+static struct sigaction previous_actions[SIGSYS + 1];
+#endif
+
 static void on_signal(int signo, siginfo_t *info, void *context)
 {
     uintptr_t fault = (uintptr_t)info->si_addr;
     char where[96] = "";
     if (fault >= VOID_GUEST_BASE && fault < VOID_GUEST_BASE + VOID_GUEST_SPAN)
         snprintf(where, sizeof where, " (guest VA %08X)", (uint32_t)(fault - VOID_GUEST_BASE));
+#ifndef HOMM5_LEGACY_UI
+    atomic_store(&log_in_signal, 1);
+    char thread[17] = "?";
+    prctl(PR_GET_NAME, thread, 0, 0, 0);
+    void_log("[void] host signal %d (%s) code %d at %p%s on thread %d \"%s\"", signo, strsignal(signo),
+             info->si_code, info->si_addr, where, (int)gettid(), thread);
+#else
     void_log("[void] host signal %d code %d at %p%s", signo, info->si_code, info->si_addr, where);
+#endif
     if (!atomic_exchange(&dumping, 1)) {
         log_host_backtrace(context);
         void_dump_state("host signal");
     }
     void_log_flush();
+#ifndef HOMM5_LEGACY_UI
+    /* The previous handler takes over: in an app debuggerd writes the tombstone and Android
+     * records the native crash (shown in the next session's homm5.1.log). A fault happens
+     * again when the handler returns; a sent signal (abort, kill) is sent again. */
+    const struct sigaction *previous = signo > 0 && signo <= SIGSYS ? &previous_actions[signo] : NULL;
+    if (previous && previous->sa_handler != SIG_IGN &&
+        !((previous->sa_flags & SA_SIGINFO) && previous->sa_sigaction == on_signal)) {
+        sigaction(signo, previous, NULL);
+        if (info->si_code <= 0) raise(signo);
+        return;
+    }
+#endif
     signal(signo, SIG_DFL);
     raise(signo);
 }
@@ -575,8 +686,75 @@ void void_install_fault_handlers(void)
     sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
     sigemptyset(&sa.sa_mask);
     int signals[] = { SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT };
+#ifndef HOMM5_LEGACY_UI
+    for (size_t i = 0; i < sizeof signals / sizeof signals[0]; ++i)
+        sigaction(signals[i], &sa, &previous_actions[signals[i]]);
+#else
     for (size_t i = 0; i < sizeof signals / sizeof signals[0]; ++i) sigaction(signals[i], &sa, NULL);
+#endif
 }
+
+#if !defined(HOMM5_LEGACY_UI) && defined(__ANDROID__)
+#include <link.h>
+#include <sys/sysinfo.h>
+#include <sys/system_properties.h>
+
+void void_log_system_info(void);
+
+/* This library's GNU build ID: llvm-symbolizer needs the unstripped build it names. */
+static int find_build_id(struct dl_phdr_info *module, size_t size, void *data)
+{
+    (void)size;
+    char *out = (char *)data;
+    uintptr_t self = (uintptr_t)void_log_system_info;
+    int ours = 0;
+    for (int i = 0; i < module->dlpi_phnum; ++i) {
+        const ElfW(Phdr) *p = &module->dlpi_phdr[i];
+        uintptr_t start = module->dlpi_addr + p->p_vaddr;
+        if (p->p_type == PT_LOAD && self >= start && self < start + p->p_memsz) ours = 1;
+    }
+    if (!ours) return 0;
+    for (int i = 0; i < module->dlpi_phnum; ++i) {
+        const ElfW(Phdr) *p = &module->dlpi_phdr[i];
+        if (p->p_type != PT_NOTE) continue;
+        const uint8_t *note = (const uint8_t *)(module->dlpi_addr + p->p_vaddr), *end = note + p->p_memsz;
+        while (note + sizeof(ElfW(Nhdr)) <= end) {
+            const ElfW(Nhdr) *header = (const ElfW(Nhdr) *)note;
+            const uint8_t *name = note + sizeof *header, *desc = name + ((header->n_namesz + 3) & ~3u);
+            if (header->n_type == NT_GNU_BUILD_ID && header->n_namesz == 4 && !memcmp(name, "GNU", 4) &&
+                desc + header->n_descsz <= end) {
+                for (uint32_t b = 0; b < header->n_descsz && b < 32; ++b) sprintf(out + 2 * b, "%02x", desc[b]);
+                return 1;
+            }
+            note = desc + ((header->n_descsz + 3) & ~3u);
+        }
+    }
+    return 1;
+}
+
+/* The device and the engine build, for a log a player sends in. */
+void void_log_system_info(void)
+{
+    static const char *const names[] = { "ro.product.manufacturer", "ro.product.model", "ro.build.version.release",
+        "ro.build.version.sdk", "ro.soc.manufacturer", "ro.soc.model", "ro.board.platform" };
+    char value[7][PROP_VALUE_MAX];
+    for (int i = 0; i < 7; ++i) {
+        value[i][0] = 0;
+        __system_property_get(names[i], value[i]);
+    }
+    struct sysinfo memory;
+    unsigned long mib = sysinfo(&memory) ? 0 :
+        (unsigned long)((unsigned long long)memory.totalram * memory.mem_unit / (1024 * 1024));
+    void_log("[void] device: %s %s, Android %s (SDK %s), SoC %s %s (%s), %ld CPUs, %lu MiB", value[0], value[1],
+             value[2], value[3], value[4], value[5], value[6], sysconf(_SC_NPROCESSORS_CONF), mib);
+    char build_id[65] = "";
+    dl_iterate_phdr(find_build_id, build_id);
+    Dl_info self;
+    const char *file = dladdr((void *)void_log_system_info, &self) && self.dli_fname ? self.dli_fname : "?";
+    const char *slash = strrchr(file, '/');
+    void_log("[void] engine %s build-id %s", slash ? slash + 1 : file, build_id[0] ? build_id : "?");
+}
+#endif
 
 /* ---------------------------------------------------------------- CPUID */
 /* Captured on the Windows PC the x86 build was validated on (Ryzen 7 5700X),

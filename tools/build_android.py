@@ -131,6 +131,22 @@ BACKEDGE_GLOBAL = (b"#undef RECOMP_BACKEDGE_COUNTER\n#undef RECOMP_BACKEDGE_OUT\
 # Broad localization added 9 MB of call-boundary transfers without a game FPS gain.
 BACKEDGE_HOT_FUNCTIONS = (b"sub_008800B0", b"sub_00C362E0")
 
+# ToE bodies regenerated (lift_homm5.py --function) after build/pgo/homm5.profdata was
+# trained, so their profile hash no longer matches and -Werror=profile-instr-out-of-date
+# would stop the build. Both were cold in training (zero counts). A profile-use build
+# compiles them without profile data; a training build instruments them, and a retrained
+# profile empties this set. Full jump tables (config/game.jump-tables.json): the spell-name
+# switch and DXGetErrorString.
+PGO_RETRAIN = (b"sub_009F0DF0", b"sub_00D3E3F6")
+PGO_USE = False
+
+
+def skip_stale_profile(text):
+    for name in PGO_RETRAIN:
+        text = text.replace(b"\nvoid %s(void) {" % name,
+                            b"\n__attribute__((no_profile_instrument_function))\nvoid %s(void) {" % name, 1)
+    return text
+
 
 def localize_backedges(text, functions=None):
     # Guest stores alias globals; retain the exact counter in a local between transfers.
@@ -491,6 +507,8 @@ def override_source(source, local_xmm):
                 text = apply_x87(text, x87_plan())
         if EDITION == "toe":
             text = mark_frame_begin_scene(text)
+            if PGO_USE:
+                text = skip_stale_profile(text)
     if text == original:
         return source, []
     patched = OUT / "patched" / source.parent.name / source.name
@@ -641,7 +659,8 @@ def main():
     # memory plainly (first location on the Redmi Note 8 Pro: 37-43 fps against
     # 33-39 with both off). The upstream modes build in their own directories
     # (build/arm64-globalregs, build/arm64-volatilemem, ...) for A/B runs.
-    global OUT, GENERATED_FLAGS, ACTIVE_NATIVE_OVERRIDES
+    global OUT, GENERATED_FLAGS, ACTIVE_NATIVE_OVERRIDES, PGO_USE
+    PGO_USE = bool(args.pgo_use)
     GENERATED_FLAGS = (GENERATED_FLAGS + ([] if args.global_regs else ["-DRECOMP_LOCAL_REGS"]) +
                        ([] if args.volatile_memory else ["-DRECOMP_PLAIN_MEMORY"]))
     upstream = [name for name, on in (("globalregs", args.global_regs), ("volatilemem", args.volatile_memory),

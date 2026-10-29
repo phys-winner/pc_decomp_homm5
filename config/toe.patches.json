@@ -89,7 +89,7 @@
     ]
   },
   "sources": {
-    "android/app/src/org/homm5/port/GameActivity.java": "938677e4b99efe9b2f67c0265c9109b74b1353358b7e2980736a77d451943e0e",
+    "android/app/src/org/homm5/port/GameActivity.java": "e3f909802134818e5a683411db0be9b3b5de048485e290d778cfeccd4ae3f9f9",
     "android/app/src/org/homm5/port/Games.java": "1bcd9870245cef51902911eaa307f8a0f493859ab4aedaa1b7e0080b99076e37",
     "android/app/src/org/homm5/port/Launcher.java": "8323059e61d4147c756526f33174c2ed2c40b421d9e076d0b5326d24539782ea",
     "android/app/src/org/homm5/port/Textures.java": "af6d684c1be1dcd319b1683693a0364cf0da1ebb32893627eeb18364a6d3497f",
@@ -122,7 +122,7 @@
     "android/texconv/texconv_jni.cpp": "2f0a81e57a82666fd1559ba372c4b6c2c1116b7c0127ca1287d320ed8f97cd8d",
     "config/editions.json": "d027f842cc9cd9f4024d8de61b1c61930d9453dac85890fb3b759eac1089d304",
     "config/music/manifest.json": "5d26ebddbf56f730c0b3c8981b6a187909e73f8036d0c996a2e873a498f61f21",
-    "tools/build_android.py": "360c67c45ef027cd7ea3e798db991363bffabf5411f345055614474b62a7e79f",
+    "tools/build_android.py": "107dd518df379de0699c416d8c603eff5fd84ca3b8593bc73334404b870e9430",
     "tools/build_game_apk.py": "b70bef55144c15e296945854f7d8fb6162e796ce37d2f2a2d87c54f5dc3933e2",
     "tools/editions.py": "b8387259953545ed8b52be2ce8aff98397a61c76a4f8e02d32717374593f3728",
     "tools/lift_homm5.py": "4df9027a199c145caa065ccc4be9ca65c7bbe23104488cc15fe0d64e076aba62",

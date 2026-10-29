@@ -367,17 +367,51 @@ aliasing heard on music and effects. The Android output uses the normal
 (server-mixed) path, and the mixer refills the device queue after a late wake, so
 slow frames no longer cause crackling. Every edition shares these changes.
 
+## Logs and crash reports (Tribes of the East)
+
+Every start writes `/sdcard/HeroesV/userdata/homm5.log`. The two previous
+sessions stay beside it as `homm5.1.log` and `homm5.2.log`, so restarting the
+game after a crash no longer overwrites the log that recorded it. The new log
+begins with the device and Android version and, on Android 11 and later, with
+how the previous game process ended: a native crash and its signal, a kill for
+low memory, "not responding" (with the thread trace), or an engine error (exit
+code 70). The previous log ends with the same line; a native crash also leaves
+an Android tombstone (`adb bugreport`). A crash or engine error records the
+faulting thread, the host backtrace as `libhomm5.so+offset` (resolve it with
+`llvm-symbolizer` against the unstripped library whose build ID the log names)
+and the guest return addresses found on the game's stack. To report a crash,
+send `homm5.1.log` (the session that crashed) together with `homm5.log`.
+
 ## Versions and local release files
 
-Development versions advance as `0.1-dev`, `0.2-dev`, `0.3-dev`, and so on.
-The version is stored in `android/app/AndroidManifest.xml`; increase
-`android:versionCode` for every subsequent published build. Version `0.3-dev`
-uses code `5` (the replacement build supersedes the earlier code `4` APK).
+Development versions advance as `0.1-dev`, `0.2-dev`, `0.3-dev`, and so on;
+a fix-only build adds a third number (`0.3.1-dev`). The version is stored in
+`android/app/AndroidManifest.xml`; increase `android:versionCode` for every
+subsequent published build. Version `0.3-dev` uses code `5` (the replacement
+build supersedes the earlier code `4` APK); `0.3.1-dev` uses code `6`.
 
-Local release copies use `heroes-v-0.3-dev-<sha256-prefix>.apk`, where the suffix
+Local release copies use `heroes-v-0.3.1-dev-<sha256-prefix>.apk`, where the suffix
 is the first eight characters of the APK's SHA-256, with a companion `.sha256`
 file. The `pub/` directory is ignored. Building and naming an APK does not
 automatically publish it or create a Git tag.
+
+## Changes in 0.3.1-dev
+
+Fixes since 0.3-dev:
+- The game no longer closes when the town's creature hire window opens. The
+  lifted spell-name lookup missed every spell id above 255 (Fortress runes,
+  Stronghold war cries and abilities, Tribes of the East specialities), so
+  Fortress and Stronghold towns crashed in single player and LAN games alike, at
+  any interface scale. Fixed in Tribes of the East and Hammers of Fate (the same
+  crash for the Fortress); Heroes V 1.6 has fewer spells and was not affected.
+  The lifter now reads declared jump tables in full; every table longer than 256
+  entries is declared for each engine, including the DirectX error-name tables
+  that were cut in all three.
+- Tribes of the East keeps the logs of its two previous sessions
+  (`homm5.1.log`, `homm5.2.log`) and records how the previous game process ended,
+  the device, the engine build ID and more crash details (see "Logs and crash
+  reports"). Hammers of Fate and 1.6 keep the old single log.
+- Android version is now `0.3.1-dev` / code `6`.
 
 ## Changes in 0.3-dev
 
