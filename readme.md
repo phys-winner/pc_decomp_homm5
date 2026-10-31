@@ -3,7 +3,7 @@
 Heroes of Might and Magic V, Hammers of Fate and Tribes of the East on Android ARM64 through static
 x86 recompilation, with native touch controls and a Direct3D 9 to OpenGL ES bridge.
 
-**Development version: 0.3-dev.** The release build uses ThinLTO and PGO.
+**Current version: 0.3.2-dev.** All three engines use ThinLTO; Tribes of the East also uses PGO.
 This is an experimental port for sideloading.
 The original game's menus, adventure maps, towns, battles, sound and saves run
 through a local Win32 compatibility host. The game and eight DLLs are translated
@@ -89,10 +89,11 @@ An experimental DXVK renderer for ToE (DXVK 2.4.1 on the system Vulkan driver, o
 on a bundled Mesa Turnip driver on Adreno 6xx/7xx GPUs) is disabled for now: on
 the tested Adreno 650 with Turnip the game started, but the screen stayed black
 after the startup device reset. Its sources remain in the repository
-(`android/dxvk`, `android/host/d3d9_dxvk.c`, `RendererPolicy`/`Renderers` in the
-app), but the launcher shows no renderer choice, runs no graphics driver check
-and the APK carries no DXVK libraries. Re-enabling it for development takes
-`RendererPolicy.ENABLED = true`, `HOMM5_DXVK` in `android/host/d3d9_dxvk.c` and
+(`android/dxvk`, `android/host/d3d9_dxvk.c`), but the launcher offers only
+OpenGL ES, runs no graphics driver check and the APK carries no DXVK libraries.
+Re-enabling it for development takes the `dxvk`/`turnip` modes in the
+`renderers` of `android/port.json` (the launcher base then adds its Vulkan
+probe), `HOMM5_DXVK` in `android/host/d3d9_dxvk.c` and
 `tools/build_game_apk.py --dxvk`.
 
 ## Build requirements
@@ -102,11 +103,17 @@ The current scripts build on **Windows x64**, without Gradle. Install:
 | Tool | Version |
 | --- | --- |
 | Python | 3.13 used during development |
-| Android SDK platform | `platforms;android-36` |
+| Android SDK platform | `platforms;android-37.0` (the APK targets SDK 37) |
 | Android SDK Build Tools | `build-tools;36.1.0` |
 | Android NDK | `27.2.12479018` |
 | JDK | 17 or later; 24.0.1 used during development |
 | UPX | 5.2.1, for unpacking the private copy of `fmod.dll` |
+
+The launcher is the shared port launcher base, a sibling project
+(`../launcher`, or an `android/launcher` submodule, or the folder named by
+`PORT_LAUNCHER`); `tools/build_game_apk.py` renders it into the package
+`org.homm5.port.launcher` from the game's description in
+[`android/port.json`](android/port.json).
 
 Python requirements are pinned in [`requirements.txt`](requirements.txt).
 The needed source snapshots of pcrecomp, MojoShader, dlmalloc, astcenc and etcpak
@@ -232,17 +239,32 @@ are excluded from Git.
 ## Install and provide game resources
 
 1. Install your APK on an ARM64 Android device and open **Heroes V**.
-2. Grant the requested file access. Choose the original game folder or a ZIP
-   above the game cards. The launcher detects the editions from their files;
-   a combined Vanilla + HoF installation registers both games automatically.
-   An offline GOG installer EXE is not a game ZIP.
+2. Grant file access when the launcher asks: Android 11 and later need
+   *All files access*; Android 8–10 ask for storage, and a permanently refused
+   permission opens the app's settings. Choose the game folder (a folder inside
+   or above it works too) or a ZIP. A folder holding several editions, for
+   example Vanilla + HoF, is assigned to each of them. A ZIP is unpacked once into
+   `/sdcard/HeroesV/game`, `game-hof` or `game-vanilla` (or a folder you pick),
+   keeping only the folders the game reads and checking every file; a combined
+   Vanilla + HoF archive is unpacked once for both. An offline GOG installer EXE
+   is not a game ZIP.
 3. Vanilla 1.6 requires `bin/`, `data/` and `DataLS/`, including
    `DataLS/p6-data.pak`. HoF 2.1 requires `bina1/`, base `data/` and `dataa1/`;
    it does not use the Vanilla `DataLS/` bank. ToE requires `bin/` and `data/`.
-4. Let the launcher copy or unpack the resources. Texture conversion is optional
-   and can take time and additional storage space.
-5. Start the game from the launcher. Intro skipping and cleanup are available
-   there; keep a separate copy of your original game files.
+4. Texture conversion is optional and can take time and additional storage space.
+5. Start the game from the launcher; keep a separate copy of your original game
+   files.
+
+The launcher shows a card per edition with **Play**, or *Return to the game*
+while it runs. Options: skip the opening videos (per edition, on by default),
+the players for LAN over Tailscale/VPN, and New Creature Framework (ToE). On
+GPUs without DXT textures it converts them to ASTC or ETC2, can undo that, or
+delete the originals afterwards to save space (irreversible). Cleanup previews
+and removes the map editor, installers, manuals and store files. *About* shows
+the version, the GitHub page, the update check and the language (English or
+Russian). Updating from 0.3.x keeps the chosen game folders, edition and
+options; saves stay in `/sdcard/HeroesV/userdata*`. On Android 17 the launcher
+asks for local-network access before the first start.
 
 The main menu's **Переключить игру** opens an Android dialog with the installed
 games and **Открыть лаунчер**. Switching saves the current engine's profile and
@@ -301,20 +323,23 @@ receipts are `build/deploy-receipt[-vanilla|-hof].json`.
 | Two nearby fingers moving vertically together | Tilt the camera, including in battle |
 | Brief simultaneous tap with three fingers on the field | Restore camera tilt and rotation; in battle, also restore its position |
 | Hold an interface element | Show its tooltip |
+| Swipe left or right on a scenario's hero, faction, bonus, team or player-state icon | Cycle through the scenario's allowed choices. The active icon stays highlighted with its name and tooltip; heroes also show their specialization description |
 | While aiming in battle, rest a second finger | Show the details card of the creature under the first finger at once; lift the second finger to hide it and keep aiming. Lifting the first finger while the second rests gives no order |
-| While aiming in battle, tap with a second finger | Show the details card until the first finger lifts (no order is given); each further second-finger tap switches once between the card and the creature's effects (ToE) |
-| Tap a portrait on the battle initiative bar, then tap it again | The first tap selects the portrait (it stays highlighted); the second shows the creature's details card, which stays open without holding; each further tap on the portrait switches between the card and the effects; a touch elsewhere closes it (ToE) |
-| Hold a map or town object, or the battle initiative bar | Show its tooltip and details card; in ToE each second-finger tap on a held initiative bar portrait switches its card once |
-| Drag your active shooter onto an enemy in battle | Melee attack instead of a shot, like Ctrl+click on the PC (ToE) |
-| Brief simultaneous tap with two fingers on the adventure map | Stop the moving hero or cancel an aim (ToE) |
-| Double tap the minimap, or tap it with two fingers | Toggle the highlighting of objects, like holding Alt on the PC; the camera stays. A single tap on the minimap moves the camera after a short pause (0.4 s) (ToE) |
-| Swipe left or right across the spellbook | Next or previous page (ToE) |
-| Swipe up or down across the spellbook | Previous or next bookmark (school); the orcish book switches its page. A tap that misses a bookmark by a little takes the nearest one (ToE) |
-| Drag a stack during troop deployment | Move it between the field and the reserve slots; the dragged portrait stays centred under the finger (ToE) |
-| Swipe from a dropdown, move to an item and release | Select that item; a second finger cancels (Vanilla/HoF: hold the dropdown first) |
-| Swipe on a slider | Move its value from where it is; a tap or hold does not move it (ToE) |
+| While aiming in battle, tap with a second finger | Show the details card until the first finger lifts (no order is given); each further second-finger tap switches once between the card and the creature's effects |
+| Tap a portrait on the battle initiative bar, then tap it again | The first tap selects the portrait (it stays highlighted); the second shows the creature's details card, which stays open without holding; each further tap on the portrait switches between the card and the effects; a touch elsewhere closes it |
+| Hold a map or town object, or the battle initiative bar | Show its tooltip and details card; each second-finger tap on a held initiative bar portrait switches its card once |
+| Drag your active shooter onto an enemy in battle | Melee attack instead of a shot, like Ctrl+click on the PC |
+| Brief simultaneous tap with two fingers on the adventure map | Stop the moving hero or cancel an aim |
+| Double tap the minimap, or tap it with two fingers | Toggle the highlighting of objects, like holding Alt on the PC; the camera stays. A single tap on the minimap moves the camera after a short pause (0.4 s) |
+| Swipe left or right across the spellbook | Next or previous page |
+| Swipe up or down across the spellbook | Previous or next bookmark (school); the orcish book of ToE switches its page. A tap that misses a bookmark by a little takes the nearest one |
+| Drag a stack during troop deployment | Move it between the field and the reserve slots; the dragged portrait stays centred under the finger |
+| Hold a deployment reserve portrait and tap the reserve bar with a second finger | Split one creature into the next free reserve slot per tap. Hold the second finger on a destination slot to open the original army split dialog |
+| Swipe from a dropdown, move to an item and release | Select that item; a second finger cancels |
+| Swipe on a slider | Move its value from where it is; a tap or hold does not move it |
 | Swipe a list | Scroll |
-| Drag troops or artifacts | Transfer between slots |
+| Drag troops or artifacts | Transfer between slots, empty slots included; a tap on a stack and then a tap on a slot does the same |
+| Hold a stack and tap any army slot with a second finger; or drag a stack onto an army portrait | Split one creature off per tap, open the split dialog by holding the second finger, collect or distribute a creature type on its own portrait, move stacks to the other army — in towns, hero screens and the caravan, raise-the-dead, joining-creatures, garrison and creature-exchange windows |
 | Aim a selected ability, then release | Confirm the target |
 | Second finger while aiming | Cancel targeting (in battles: a quick two-finger touch or moving the second finger) |
 
@@ -334,13 +359,18 @@ the camera.
 
 ## In-game Android settings
 
-**Настройки → Дополнительные** holds the port's options. In ToE, render scale,
+**Настройки → Дополнительные** holds the port's options. Render scale,
 interface scale and the frame rate limit are dropdowns; the frame rate list is
 built from the display's own refresh rates (30 FPS and every supported rate from
 45 to 240 Hz). The touch cursor and **LAN через Tailscale/VPN** are checkboxes.
-Vanilla and HoF keep sliders for these options.
+All three editions show the same page.
 
-## LAN over Tailscale or another VPN (ToE, experimental)
+The interface scale is an upper limit: a large panel temporarily uses
+the largest scale at which it fits on screen. Closing it restores the requested
+scale. This also applies to adventure dialogs such as level-up; wrapped list
+rows grow to keep their text from overlapping the next row.
+
+## LAN over Tailscale or another VPN (experimental)
 
 The game finds LAN games by broadcast, which a VPN such as
 [Tailscale](https://tailscale.com) does not carry, and the game has no direct-IP
@@ -367,9 +397,10 @@ aliasing heard on music and effects. The Android output uses the normal
 (server-mixed) path, and the mixer refills the device queue after a late wake, so
 slow frames no longer cause crackling. Every edition shares these changes.
 
-## Logs and crash reports (Tribes of the East)
+## Logs and crash reports (all editions)
 
-Every start writes `/sdcard/HeroesV/userdata/homm5.log`. The two previous
+Every start writes `homm5.log` in the edition's settings folder
+(`/sdcard/HeroesV/userdata/`, `userdata-vanilla/` or `userdata-hof/`). The two previous
 sessions stay beside it as `homm5.1.log` and `homm5.2.log`, so restarting the
 game after a crash no longer overwrites the log that recorded it. The new log
 begins with the device and Android version and, on Android 11 and later, with
@@ -384,16 +415,69 @@ send `homm5.1.log` (the session that crashed) together with `homm5.log`.
 
 ## Versions and local release files
 
-Development versions advance as `0.1-dev`, `0.2-dev`, `0.3-dev`, and so on;
-a fix-only build adds a third number (`0.3.1-dev`). The version is stored in
+The current version is `0.3.2-dev` / code `7`. Earlier development builds used
+`0.1-dev`, `0.2-dev`, `0.3-dev` and `0.3.1-dev`. The version is stored in
 `android/app/AndroidManifest.xml`; increase `android:versionCode` for every
 subsequent published build. Version `0.3-dev` uses code `5` (the replacement
 build supersedes the earlier code `4` APK); `0.3.1-dev` uses code `6`.
 
-Local release copies use `heroes-v-0.3.1-dev-<sha256-prefix>.apk`, where the suffix
+Local release copies use `heroes-v-0.3.2-dev-<sha256-prefix>.apk`, where the suffix
 is the first eight characters of the APK's SHA-256, with a companion `.sha256`
 file. The `pub/` directory is ignored. Building and naming an APK does not
 automatically publish it or create a Git tag.
+
+## Changes in 0.3.2-dev
+
+Changes since 0.3.1-dev:
+
+- Fix Android 17 startup: unpacked native engines are made read-only before
+  loading, including engines already cached by an earlier APK. All three editions.
+- The game no longer closes on snow. The five random sounds of the snow terrain
+  ambience are the only MS ADPCM files of Hammers of Fate and Tribes of the East;
+  FMOD decodes them through the Windows Audio Compression Manager, which the port
+  lacked, so the first of them (a few seconds after starting on snow, or in a
+  battle on a snow arena) stopped the game. The port now provides those ACM calls
+  with an MS ADPCM decoder that matches Windows' own codec sample for sample.
+  All three editions.
+- Dropping a creature onto an empty army cell works in the caravan, raise-the-dead,
+  joining-creatures, garrison and creature-exchange windows (and wherever an empty
+  cell hides its icon): the touch adapter looked for the target among visible
+  slots only, while the game's own drop takes the hidden empty cell. Tap a stack,
+  then tap an empty cell, or drag it there. All three editions.
+- The quick army management of the town and the hero screen (splitting with a
+  second finger, the split dialog, collecting and distributing on the army's
+  portrait, moving a stack or the whole army to the other portrait) also works in
+  those windows. Raising the dead uses the game's own controller with its dark
+  energy cost, so a stack can be raised partly. All three editions (no caravans
+  in 1.6).
+- The launcher is the shared port launcher base (see "Install and provide game
+  resources"); the APK targets Android SDK 37.
+- Sound fixes for very short loops, several cursor laps per mixer step, invalid
+  formats and silent 8-bit buffers, and the crash logs of the previous two
+  sessions, now apply to Heroes V 1.6 and Hammers of Fate as well.
+- Scenario options can be cycled with swipes and keep their highlight and
+  tooltip, heroes show their specialization; deployment reserve stacks can be
+  split with a second finger; large panels such as level-up shrink to fit at high
+  interface scales; scenario list rows reflow after text wrapping and stay
+  scrollable; the object highlight refreshes in small batches.
+- The touch controls, settings and network options that were Tribes of the East's
+  only now work in Heroes V 1.6 and Hammers of Fate too: the initiative bar
+  portrait and its card, second-finger card taps, the minimap highlight
+  (double tap or two fingers), stopping a hero with a quick two-finger tap,
+  spellbook page and bookmark swipes, slider and dropdown swipes, the shooter's
+  melee drag, the centred deployment portrait, the dropdowns and checkboxes of
+  **Настройки → Дополнительные**, and LAN over Tailscale/VPN. The 1.6 and 2.1
+  engine addresses were matched against their own code. Checked on a device: the
+  settings page, slider and dropdown swipes, the initiative bar card, the
+  two-finger tap, spellbook swipes and bookmarks, scenario swipes. The minimap
+  highlight has no visible effect there: the Alt object highlight itself appears
+  to be a Tribes of the East feature.
+- The spellbook of Heroes V 1.6 and Hammers of Fate is no longer cut off at the
+  top and bottom on wide screens: its camera now widens the view the way Tribes
+  of the East does. Tapping a spell selects it again on wide screens; those two
+  engines pick spells by fixed 4:3 screen areas, which the port now maps onto the
+  widened screen (the spell tooltips follow).
+- Android version is now `0.3.2-dev` / code `7`.
 
 ## Changes in 0.3.1-dev
 

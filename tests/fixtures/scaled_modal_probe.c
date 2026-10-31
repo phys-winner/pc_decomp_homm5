@@ -46,7 +46,32 @@ int main(void){
     for(int i=0;i<120;++i)
         assert(scale_fits(0x1000,0,172400.0f/165,76800.0f/165,1724,768,200)==165);
     MEM32(0xA000)=0xA000;
+    /* Closing a modal hides its window; self-positioned adventure dialogs still need fitting (every edition). */
+    assert(scale_fits(0x1000,0,172400.0f/165,76800.0f/165,1724,768,200)==165);
+    MEMF(0x40A8)=630;
+    assert(scale_fits(0x1000,0,172400.0f/125,76800.0f/125,1724,768,125)==121);
+    for(int i=0;i<120;++i)
+        assert(scale_fits(0x1000,0,172400.0f/121,76800.0f/121,1724,768,125)==121);
+    /* Level-up's own code retains y=69 even after the root adopts the new viewport. */
+    float view_h=76800.0f/121;
+    float shifted_y=69+scale_anchor_shift(0,69,630,0,view_h,view_h);
+    assert(shifted_y>=0&&shifted_y+630<=view_h+.5f);
+    assert(scale_anchor_shift(2,view_h-20,36,0,view_h,view_h)==0);
+    /* Fixed native panels: level-up, hero, recruitment, market, guild, objectives, town and options. */
+    const float panels[][2]={{526,630},{512,720},{512,723},{450,727},{511,725},{887,684},{760,680},{712,717}};
+    const float widths[]={1024,1366,1724};
+    for(unsigned aspect=0;aspect<sizeof widths/sizeof *widths;++aspect)
+        for(unsigned panel=0;panel<sizeof panels/sizeof *panels;++panel)
+            for(int request=100;request<=200;request+=25){
+                MEMF(0x40A4)=panels[panel][0];MEMF(0x40A8)=panels[panel][1];
+                int result=scale_fits(0x1000,0,widths[aspect]*100/request,76800.0f/request,widths[aspect],768,request);
+                assert(result<=request&&result>=100);
+                assert(panels[panel][0]<=widths[aspect]*100/result&&panels[panel][1]<=76800.0f/result);
+                assert(scale_fits(0x1000,0,widths[aspect]*100/result,76800.0f/result,widths[aspect],768,request)==result);
+            }
+    MEM8(0x4070)=0;
     assert(scale_fits(0x1000,0,172400.0f/165,76800.0f/165,1724,768,200)==200);
+    MEM8(0x4070)=1;
     /* ChangeProfile and its SetupPanel keep their native 16-unit gap. */
     MEMF(0x40A4)=498;MEMF(0x40A8)=464;MEM32(0x409C)=0;MEM32(0x4094)=2;MEMF(0x408C)=-220;
     MEMF(0x3064)=MEMF(0x3068)=0;

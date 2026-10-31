@@ -16,6 +16,8 @@ public class RefreshRateCheck extends RefreshRateCheckBase {
     private MulticastLock lanLock;
     private int hides, releases, nativeSurfaces, pauses;
     private Surface lastNativeSurface;
+    /* GameActivity's engine state: loaded, and the DXVK modes' surface hand-back (OpenGL ES here). */
+    private boolean nativeReady = true, resumed, surfaceHidden;
     Window getWindow() { return window; }
     void hideSystemUi() { hides++; }
     void releaseAll() { releases++; }
@@ -208,9 +210,10 @@ class RefreshRateTest(unittest.TestCase):
         subprocess.run([str(JAVA / "javac.exe"), "--release", "8", "-encoding", "UTF-8", "-d", str(out), str(java)], check=True)
         subprocess.run([str(JAVA / "java.exe"), "-ea", "-cp", str(out), "RefreshRateCheck"], check=True)
 
-    def test_legacy_target_unchanged(self):
+    def test_target_sdk_is_the_launcher_bases(self):
         source = (ROOT / "android/app/AndroidManifest.xml").read_text(encoding="utf8")
-        self.assertIn('android:targetSdkVersion="28"', source)
+        self.assertIn('android:targetSdkVersion="37"', source)
+        self.assertIn('android:minSdkVersion="26"', source)
 
 
 if __name__ == "__main__":

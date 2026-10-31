@@ -160,6 +160,16 @@ static float rs_source(dsbuf_t *b, uint32_t g, uint32_t total, uint32_t c)
 static void rs_seek(dsbuf_t *b, uint32_t f, uint32_t total)
 {
     uint32_t distance = !b->rs_valid ? RS_TAPS + 1 : f >= b->rs_frame ? f - b->rs_frame : f + total - b->rs_frame;
+    /* A tiny ring can make a whole lap between output samples; no history is behind its cursor. */
+    if (b->looping && total <= RS_TAPS) {
+        b->rs_frame = f; b->rs_head = 0; b->rs_valid = 1;
+        for (uint32_t k = 0; k < RS_TAPS; ++k) {
+            int offset = k <= RS_HALF ? (int)k : (int)k - (int)RS_TAPS;
+            uint32_t source = (uint32_t)((int)f + offset + (int)(total * RS_TAPS)) % total;
+            for (uint32_t c = 0; c < 2; ++c) b->rs_window[c][k] = sample_at(b, source, c);
+        }
+        return;
+    }
     if (distance > RS_TAPS) {
         b->rs_frame = f;
         b->rs_head = 0;
@@ -246,6 +256,7 @@ static void mix_chunk(float *mix, uint32_t frames)
             gr *= atten * (side < 0 ? 1.0f + 0.5f * side : 1.0f);
         }
         uint32_t total = b->size / b->block;
+        if (!total) continue;
         double step = (double)b->frequency / MIX_RATE;
         uint32_t start = b->play_pos;
         double frame = (double)(b->play_pos / b->block) + b->frac;
@@ -256,7 +267,8 @@ static void mix_chunk(float *mix, uint32_t frames)
             uint32_t f = (uint32_t)frame;
             if (f >= total) {
                 if (!b->looping) { stopped = 1; break; }
-                frame -= total; f = (uint32_t)frame; wrapped = 1;
+                frame = fmod(frame, (double)total);
+                f = (uint32_t)frame; wrapped = 1;
             }
             float l, r;
             if (resample) {
@@ -539,6 +551,10 @@ COM_METHOD(dsb, SetFrequency, 2)
 {
     dsbuf_t *b = BUFF;
     pthread_mutex_lock(&mix_lock);
+    if (ARG(1) && (ARG(1) < 100 || ARG(1) > 200000)) {
+        pthread_mutex_unlock(&mix_lock);
+        return DSERR_INVALIDPARAM;
+    }
     b->frequency = ARG(1) ? ARG(1) : b->rate;
     pthread_mutex_unlock(&mix_lock);
     if (dstrace && b->frequency != b->rate) DSTRACE("buffer %08X frequency %u (rate %u)", b->com.guest, b->frequency, b->rate);
@@ -702,7 +718,13 @@ COM_METHOD(ds, CreateSoundBuffer, 4)
 {
     uint32_t desc = ARG(1), out = ARG(2);
     uint32_t flags = MEM32(desc + 4), bytes = MEM32(desc + 8), wfx = MEM32(desc + 16);
+    MEM32(out) = 0;
+    if (wfx && (MEM16(wfx) != 1 || (MEM16(wfx + 2) != 1 && MEM16(wfx + 2) != 2) ||
+        (MEM16(wfx + 14) != 8 && MEM16(wfx + 14) != 16) ||
+        MEM16(wfx + 12) != MEM16(wfx + 2) * (MEM16(wfx + 14) / 8) ||
+        MEM32(wfx + 4) < 100 || MEM32(wfx + 4) > 200000)) return DSERR_INVALIDPARAM;
     dsbuf_t *b = (dsbuf_t *)calloc(1, sizeof *b);
+    if (!b) return 0x8007000Eu;
     b->flags = flags;
     b->primary = (flags & DSBCAPS_PRIMARYBUFFER) != 0;
     b->min_distance = 1.0f;
@@ -716,7 +738,10 @@ COM_METHOD(ds, CreateSoundBuffer, 4)
     if (!b->primary) {
         if (!bytes || !b->block) { free(b); return DSERR_INVALIDPARAM; }
         b->size = bytes - bytes % b->block;
+        if (!b->size) { free(b); return DSERR_INVALIDPARAM; }
         b->data = void_galloc(b->size);
+        if (!b->data) { free(b); return 0x8007000Eu; }
+        if (b->bits == 8) memset(GPTR(b->data), 128, b->size);
     }
     MEM32(out) = void_com_wrap(&b->com, &buffer_class, 0);
     b->com.destroy = buffer_destroy;

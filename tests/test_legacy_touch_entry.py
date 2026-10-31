@@ -20,7 +20,16 @@ enum {SCREEN_MENU, SCREEN_ADVENTURE, SCREEN_COMBAT, SCREEN_TOWN};
 enum {TOUCH_BEGIN};
 typedef struct {int kind;float x,y;} void_touch_event;
 static struct {uint32_t screen,root,controller,dnd;unsigned begin_frame;
- int active,dnd_pressed,ui,kind,book,announcement,dnd_claim;float start_x,start_y,x,y;} gesture;
+ int active,dnd_pressed,ui,kind,book,announcement,dnd_claim,atb,committed,cancelled;float start_x,start_y,x,y;} gesture;
+/* The initiative portrait selection and the waiting minimap tap: none in these cases. */
+static void_touch_event shifted;
+static struct {float x,y;} atb;
+static struct {unsigned due;} minimap_tap;
+static int touch_mode;
+static int atb_begin(float x,float y) {(void)x;(void)y;return 0;}
+static int minimap_at(float x,float y) {(void)x;(void)y;assert(0);return 0;}
+static void minimap_click(void) {assert(0);}
+static int publish_point(float x,float y) {(void)x;(void)y;assert(0);return 0;}
 static unsigned army_batch,touch_frame;
 static struct {int pending;} pointer_text;
 static struct {int valid;} combat_home;

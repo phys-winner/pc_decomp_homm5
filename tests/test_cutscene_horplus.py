@@ -215,7 +215,7 @@ class CutsceneHorplus(unittest.TestCase):
         source = (ROOT / "android/host/touch_scale.c").read_text(encoding="utf-8")
         helpers = "\n".join(function(source, name) for name in
                             ("static float scale_native_position(", "static float scale_size(",
-                             "static float scale_anchor_shift("))
+                             "static float scale_clamp(", "static float scale_anchor_shift("))
         harness = r'''
 #include <assert.h>
 #include <math.h>

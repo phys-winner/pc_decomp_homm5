@@ -54,7 +54,7 @@ typedef struct { const char *dll, *name; uint32_t ordinal; void_fn fn; } void_sh
 #include "exports.h"
 static int void_verbose;
 static void void_log(const char *format, ...) { (void)format; }
-static int void_port_lan_vpn(void) { return 0; }   /* ToE's VPN LAN option, off */
+static int void_port_lan_vpn(void) { return 0; }   /* the VPN LAN option, off */
 #define VLOG(...) do { if (void_verbose) void_log(__VA_ARGS__); } while (0)
 static int void_vm_readable(uint32_t va, uint32_t size) { return va >= 0x100 && (uint64_t)va + size <= sizeof memory; }
 static int void_vm_writable(uint32_t va, uint32_t size) { return void_vm_readable(va, size); }
@@ -112,7 +112,7 @@ int main(void) {
         assert(CALL(htonl_wsock, x) == htonl(x) && CALL(ntohl_ws2, x) == ntohl(x));
     }
     strcpy((char *)GPTR(0x4000), "127.0.0.1"); assert(CALL(inet_addr_ws2, 0x4000) == 0x0100007F);
-    strcpy((char *)GPTR(0x4000), "192.168.1.2"); assert(CALL(inet_addr_wsock, 0x4000) == 0x0201A8C0);
+    strcpy((char *)GPTR(0x4000), "192.0.2.2"); assert(CALL(inet_addr_wsock, 0x4000) == 0x020200C0);
     strcpy((char *)GPTR(0x4000), "not an address"); assert(CALL(inet_addr_ws2, 0x4000) == UINT32_MAX);
     assert(CALL(inet_addr_ws2, 0) == UINT32_MAX && error() == 10014);
     uint32_t text = CALL(inet_ntoa_ws2, 0x0100007F);

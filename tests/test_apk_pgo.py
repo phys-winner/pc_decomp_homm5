@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import lzma
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -18,6 +19,9 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
+# The launcher base the APK is built with (tools/build_game_apk.py: PORT_LAUNCHER, android/launcher, ../launcher).
+LAUNCHER = next((path for path in ([Path(os.environ["PORT_LAUNCHER"])] if os.environ.get("PORT_LAUNCHER") else [])
+                 + [ROOT / "android/launcher", ROOT.parent / "launcher"] if (path / "tools/launcher.py").is_file()), None)
 TEXCONV = b"texture-converter-library"
 LIFTED = b"lifted PE image"
 EDITIONS = json.loads((ROOT / "config/editions.json").read_text(encoding="utf-8"))
@@ -50,6 +54,7 @@ def override_payload(name, payload, edition):
     return data.getvalue()
 
 
+@unittest.skipUnless(LAUNCHER is not None, "the launcher base is required")
 class ApkPGORoutingTest(unittest.TestCase):
     @contextmanager
     def fixture(self):
@@ -68,6 +73,9 @@ class ApkPGORoutingTest(unittest.TestCase):
                 "config/profiles/default_profile/user_a2.cfg": b"setvar port = 1\n",
                 "config/video/intro_a1.xml": b"<Base><Movies/></Base>",
                 "android/app/src/Example.java": b"class Example {}",
+                # The launcher base's input: the real specification and manifest.
+                "android/port.json": (ROOT / "android/port.json").read_bytes(),
+                "android/app/AndroidManifest.xml": (ROOT / "android/app/AndroidManifest.xml").read_bytes(),
                 "build/android/debug.keystore": b"fake-debug-key",
                 "android/dxvk/bridge.cpp": DXVK_SOURCE,
                 "build/dxvk/build-receipt.json": dxvk_receipt(),
@@ -103,6 +111,8 @@ class ApkPGORoutingTest(unittest.TestCase):
             real_rmtree = shutil.rmtree
 
             def native_run(argv, **kwargs):
+                if Path(str(argv[0])).name.lower() in ("git", "git.exe"):   # the launcher's build.json asks for the commit
+                    return subprocess.CompletedProcess(argv, 0, "0123abcd\n", "")
                 self.assertTrue(kwargs.get("check"))
                 native_calls.append([str(a) for a in argv])
                 if Path(argv[1]).name == "build_texconv.py":
@@ -192,7 +202,7 @@ class ApkPGORoutingTest(unittest.TestCase):
                     packed.write_bytes(lzma.compress(data))
                     return packed, f"{library.name} {len(data)} {hashlib.sha256(data).hexdigest()} {module.CHUNK} {packed.stat().st_size}\n"
                 stack.enter_context(patch.object(module, "compress_library", side_effect=compress))
-                stack.enter_context(patch.dict(module.os.environ, {"JAVA_HOME": str(root / "jdk")}))
+                stack.enter_context(patch.dict(module.os.environ, {"JAVA_HOME": str(root / "jdk"), "PORT_LAUNCHER": str(LAUNCHER)}))
                 stack.enter_context(patch.multiple(module, ROOT=root, OUT=out, TOOLS=root / "sdk/build-tools",
                                                    ANDROID_JAR=root / "sdk/android.jar", JAVA_HOME=root / "jdk"))
                 stack.enter_context(patch.object(module, "run", side_effect=sdk_run))
@@ -271,9 +281,45 @@ class ApkPGORoutingTest(unittest.TestCase):
             self.assertIn(archive, link_call)
             self.assertNotIn("-R", link_call)
             self.assertEqual(link_call[link_call.index("-A") + 1], str(out / "assets"))
+            # The launcher base: its expanded manifest, linked against android-37.0 (target SDK 37).
+            self.assertEqual(link_call[link_call.index("-I") + 1], str(root / "sdk/android.jar"))
+            manifest = Path(link_call[link_call.index("--manifest") + 1])
+            self.assertEqual(manifest, out / "launcher/AndroidManifest.xml")
+            text = manifest.read_text(encoding="utf-8")
+            self.assertIn('android:name="org.homm5.port.launcher.LauncherActivity"', text)
+            self.assertNotIn("<!-- launcher:", text)
+            self.assertNotIn(".Probe", text)                     # OpenGL ES only: no driver check
             javac = next(call for call in sdk if Path(call[0]).name == "javac.exe")
             self.assertEqual(javac[javac.index("-encoding") + 1], "UTF-8")
+            self.assertEqual(javac[javac.index("--release") + 1], "8")
+            self.assertIn(str(out / "launcher/src/org/homm5/port/launcher/LauncherActivity.java"), javac)
+            self.assertIn(str(root / "android/app/src/Example.java"), javac)
+            d8 = next(call for call in sdk if Path(call[0]).name == "d8.bat")
+            inputs = Path(d8[-1][1:])                            # cmd.exe's 8191 characters: an argument file
+            self.assertTrue(d8[-1].startswith("@") and inputs.read_text(encoding="utf-8").splitlines() == [str(out / "classes/Example.class")])
+            self.assertEqual(d8[d8.index("--min-api") + 1], "26")
             self.assertEqual(self.packaged_library(out), b"ordinary-library")
+            with zipfile.ZipFile(out / "heroes-v.apk") as apk:
+                self.assertFalse([name for name in apk.namelist() if name.endswith("libportprobe.so")])
+
+    def test_signing_key_launcher_base_and_spec_are_checked_before_any_work(self):
+        defects = {"keystore": lambda root: (root / "build/android/debug.keystore").unlink(),
+                   "spec": lambda root: (root / "android/port.json").write_text('{"schema": 2}', encoding="utf-8"),
+                   "base": None}
+        for defect, damage in defects.items():
+            with self.subTest(defect=defect), self.fixture() as (module, root, out, native, sdk, removed):
+                self.library(root, "arm64", b"ordinary-library")
+                if damage:
+                    damage(root)
+                    context = patch.dict(os.environ, {})
+                else:
+                    context = patch.dict(os.environ, {"PORT_LAUNCHER": str(root / "no-launcher")})
+                with context, self.assertRaises(SystemExit) as error:
+                    self.invoke(module, ["--skip-native"])
+                self.assertEqual(error.exception.code, 2)
+                self.assertEqual((out / "keep-until-valid-library").read_bytes(), b"previous-apk")
+                self.assertEqual((native, sdk, removed), ([], [], []))
+                self.assertFalse(any("keytool" in str(call) for call in sdk))   # the key is never generated anew
 
     def test_assets_carry_lifted_images_overlay_and_intro_with_indexes(self):
         with self.fixture() as (module, root, out, native, sdk, removed):
@@ -288,6 +334,13 @@ class ApkPGORoutingTest(unittest.TestCase):
 
             expected = {"assets/licenses/" + name: (ROOT / relative).read_bytes() for name, relative in module.LICENSE_FILES.items()}
             receipts = json.loads(files.pop("assets/edition-patches.json"))
+            # The launcher base's assets: the specification as written and this build's identity.
+            self.assertEqual(json.loads(files.pop("assets/launcher/port.json")), json.loads((ROOT / "android/port.json").read_bytes()))
+            build = json.loads(files.pop("assets/launcher/build.json"))
+            manifest = (ROOT / "android/app/AndroidManifest.xml").read_text(encoding="utf-8")
+            version = lambda name: manifest.split(f'android:{name}="', 1)[1].split('"', 1)[0]
+            self.assertEqual((build["versionName"], build["versionCode"], build["commit"]),
+                             (version("versionName"), int(version("versionCode")), "0123abcd"))
             self.assertEqual(set(receipts), set(EDITIONS))
             for edition, row in EDITIONS.items():
                 suffix = row["assets_suffix"]

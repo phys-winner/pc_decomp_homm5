@@ -91,11 +91,10 @@ class LongSwitchTables(unittest.TestCase):
 
 
 class CrashLog(unittest.TestCase):
-    def test_engine_appends_to_the_session_log_in_the_toe_app(self):
+    def test_engine_appends_to_the_session_log_in_the_app(self):
         core = (ROOT / "android/host/core.c").read_text(encoding="utf-8")
         opening = core[core.index("void void_log_open("):core.index("static void log_va(")]
-        self.assertRegex(opening, r'#if defined\(VOID_ANDROID_APP\) && !defined\(HOMM5_LEGACY_UI\)[^#]*fopen\(path, "a"\)'
-                                  r'[^#]*#else[^#]*fopen\(path, "w"\)')
+        self.assertRegex(opening, r'#ifdef VOID_ANDROID_APP[^#]*fopen\(path, "a"\)[^#]*#else[^#]*fopen\(path, "w"\)')
 
     def test_signal_handler_chains_to_the_previous_handler(self):
         core = (ROOT / "android/host/core.c").read_text(encoding="utf-8")
@@ -105,9 +104,11 @@ class CrashLog(unittest.TestCase):
         install = core[core.index("void void_install_fault_handlers("):]
         self.assertIn("sigaction(signals[i], &sa, &previous_actions[signals[i]]);", install)
 
-    def test_session_log_starts_before_the_engine_for_toe_only(self):
+    def test_session_log_starts_before_the_engine_in_every_edition(self):
         activity = (ROOT / "android/app/src/org/homm5/port/GameActivity.java").read_text(encoding="utf-8")
-        begin = activity.index('if ("toe".equals(gameEdition())) SessionLog.begin(this, data);')
+        begin = activity.index("\n        SessionLog.begin(this, data);")   # not gated by edition
+        self.assertEqual(activity.count("SessionLog.begin("), 1)
+        self.assertIn("File data = new File(base, Games.userdata(gameEdition()));", activity)   # each edition's own folder
         self.assertEqual(activity.count("nativeStart(gameDir"), 1)
         self.assertLess(begin, activity.index("nativeStart(gameDir"))   # the log is begun before the engine
         session = (ROOT / "android/app/src/org/homm5/port/SessionLog.java").read_text(encoding="utf-8")
@@ -115,14 +116,15 @@ class CrashLog(unittest.TestCase):
                        "setDefaultUncaughtExceptionHandler", "Application.getProcessName()"):
             self.assertIn(needle, session)
 
-    def test_legacy_copies_keep_the_old_log_behaviour(self):
+    def test_legacy_copies_share_the_crash_log_behaviour(self):
         from port_patches import legacy_ui_branch
-        core = (ROOT / "android/host/core.c").read_bytes().replace(b"\r\n", b"\n")
-        legacy = legacy_ui_branch(core, True)
-        self.assertNotIn(b"log_in_signal", legacy)
-        self.assertNotIn(b"previous_actions", legacy)
-        self.assertNotIn(b"log_guest_stack", legacy)
-        self.assertIn(b'fopen(path, "w")', legacy)
+        for name in ("core.c", "main.c"):
+            source = (ROOT / "android/host" / name).read_bytes().replace(b"\r\n", b"\n")
+            self.assertNotIn(b"HOMM5_LEGACY_UI", source)
+            self.assertEqual(legacy_ui_branch(source, True), source)
+        core = (ROOT / "android/host/core.c").read_bytes()
+        for needle in (b"log_in_signal", b"previous_actions", b"log_guest_stack", b'fopen(path, "a")'):
+            self.assertIn(needle, core)
 
 
 if __name__ == "__main__":

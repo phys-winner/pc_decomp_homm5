@@ -645,6 +645,36 @@ int main(void) {
     def test_directsound_cursor_refill_and_late_worker(self):
         compile_probe("sound-streaming", DS_HARNESS, directsound_headers())
 
+    def test_tiny_loop_and_frequency_bounds(self):
+        headers = directsound_headers()
+        source = (ROOT / "android/host/dsound.c").read_text(encoding="utf8")
+        headers["sound_functions.h"] += "\n" + function(source, "COM_METHOD(dsb, SetFrequency,")
+        harness = DS_HARNESS[:DS_HARNESS.index("int main(void)")] + r'''int main(void) {
+            const uint32_t rates[]={44100,48000,96000,200000};
+            const uint32_t lengths[]={1,2,3,16,32};
+            float mix[960];
+            for(unsigned n=0;n<5;++n) for(unsigned rate=0;rate<4;++rate) {
+                memset(&buffer,0,sizeof buffer);buffers=&buffer;
+                buffer.data=0x1000;buffer.size=lengths[n]*4;buffer.block=4;
+                buffer.bits=16;buffer.channels=2;buffer.rate=44100;buffer.frequency=rates[rate];
+                buffer.playing=buffer.looping=1;
+                for(uint32_t i=0;i<buffer.size;i+=2) MEM16(buffer.data+i)=1000;
+                for(int chunk=0;chunk<8;++chunk) {
+                    mix_chunk(mix,480);
+                    for(int i=0;i<960;++i) assert(fabsf(mix[i]-1000.0f/32768)<0.00001f);
+                    assert(buffer.play_pos<buffer.size && isfinite(buffer.frac) && buffer.frac>=0 && buffer.frac<1);
+                }
+            }
+            args[1]=99;assert(dsb_SetFrequency()==DSERR_INVALIDPARAM && buffer.frequency==200000);
+            args[1]=200001;assert(dsb_SetFrequency()==DSERR_INVALIDPARAM);
+            args[1]=0;assert(!dsb_SetFrequency() && buffer.frequency==44100);
+            args[1]=100;assert(!dsb_SetFrequency() && buffer.frequency==100);
+            assert(!lock_depth);
+            puts("PASS tiny looping PCM: 1/2/3/16/32 frames at 44.1/48/96/200 kHz, no gaps or invalid cursors; frequency bounds");
+            return 0;
+        }'''
+        compile_probe("sound-tiny-loop", harness, headers)
+
     def test_directsound_refill_catchup_and_bandlimited_resampling(self):
         harness = DS_HARNESS[:DS_HARNESS.index("static uint32_t void_audio_output(")] + DS_REFILL_HARNESS
         compile_probe("sound-refill-resample", harness, directsound_headers())

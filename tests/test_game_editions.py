@@ -1,4 +1,4 @@
-"""Run actual edition discovery, ZIP import, cleanup and launcher runtime gating."""
+"""Run actual edition metadata, discovery and runtime gating (import and cleanup: test_launcher_base.py)."""
 import json
 from pathlib import Path
 import subprocess
@@ -7,7 +7,7 @@ import xml.etree.ElementTree as ET
 
 from test_d3d_lifecycle import function
 from test_touch_controls import JAVA, ROOT
-from android_tools import ANDROID_JAR
+from test_launcher_base import LAUNCHER, PLATFORM_JAR, javac, prepare
 
 JAVA_SOURCE = ROOT / "android/app/src/org/homm5/port"
 
@@ -26,15 +26,9 @@ public class EditionCheck {
         for(String edition:editions) for(String path:Games.required(edition)) file(root,path);
         return root.toFile();
     }
-    static void archive(Path source, Path archive) throws Exception {
-        try(ZipOutputStream zip=new ZipOutputStream(Files.newOutputStream(archive))) {
-            try(java.util.stream.Stream<Path> paths=Files.walk(source)) {
-                for(Path path:(Iterable<Path>)paths.filter(Files::isRegularFile)::iterator) {
-                    zip.putNextEntry(new ZipEntry("wrapper/Game/"+source.relativize(path).toString().replace('\\','/')));
-                    zip.write(Files.readAllBytes(path)); zip.closeEntry();
-                }
-            }
-        }
+    static void delete(File f) {
+        if (f.isDirectory() && !Files.isSymbolicLink(f.toPath())) { File[] items = f.listFiles(); if (items != null) for (File i : items) delete(i); }
+        f.delete();
     }
     public static void main(String[] args) throws Exception {
         if(args.length>0) {
@@ -59,7 +53,7 @@ public class EditionCheck {
             assert Games.discover(root.resolve("absent").toFile()).isEmpty();
             assert !Games.installed(toe,"vanilla") && !Games.installed(vanilla,"toe");
             Path partial=root.resolve("partial"); file(partial,"bin/H5_Game.exe"); file(partial,"data/data.pak"); file(partial,"data/p3c-data.pak");
-            assert !Unpacker.isGame(partial.toFile()) : "Unknown versions must not become another game's ready tile";
+            assert Games.editions(partial.toFile()).isEmpty() : "Unknown versions must not become another game's ready tile";
             Path mixed=root.resolve("mixed");
             for(String name:Games.required("hof")) file(mixed,name.toUpperCase(Locale.ROOT));
             assert Games.installed(mixed.toFile(),"hof");
@@ -70,27 +64,6 @@ public class EditionCheck {
             assert userdata.size()==3 && prefs.size()==3 && libs.size()==3 && markers.size()==3;
             boolean rejected=false; try { Games.library("unknown"); } catch(IllegalArgumentException expected) { rejected=true; }
             assert rejected;
-            for(String id:Games.IDS) file(hof.toPath(),Games.userdata(id)+"/save.sav");
-            file(hof.toPath(),"manual.pdf"); file(hof.toPath(),"Editor/tool.exe");
-            GameCleanup.Plan cleanup=GameCleanup.scan(hof);
-            assert cleanup.files.size()==2;
-            for(GameCleanup.Entry entry:cleanup.files) assert !entry.file.getPath().contains("dataa1") && !entry.file.getPath().contains("bina1");
-            Path packed=root.resolve("gold.zip"); archive(hof.toPath(),packed);
-            Zip zip=new Zip(new FileInputStream(packed.toFile()).getChannel());
-            Unpacker.Plan plan=Unpacker.plan(zip);
-            assert plan.editions.equals(Arrays.asList("vanilla","hof"));
-            assert plan.paths.contains("bina1/H5_Game.exe") && plan.paths.contains("dataa1/a1-data.pak");
-            assert plan.paths.contains("DataLS/p6-data.pak");
-            assert !plan.paths.contains("manual.pdf") && !plan.paths.contains("Editor/tool.exe");
-            File target=root.resolve("unpacked").toFile();
-            Unpacker.Job job=new Unpacker.Job(plan,target,packed.toString(),packed.toFile()); job.run();
-            assert job.finished && job.failure==null : job.failure;
-            assert Games.editions(target).equals(Arrays.asList("vanilla","hof"));
-            Path bad=root.resolve("bad.zip"); archive(partial,bad);
-            try(Zip incomplete=new Zip(new FileInputStream(bad.toFile()).getChannel())) {
-                rejected=false; try { Unpacker.plan(incomplete); } catch(Unpacker.Failure expected) { rejected=expected.code==Unpacker.NOT_HOMM5; }
-                assert rejected;
-            }
             try {
                 Path boundary=Files.createDirectory(root.resolve("links"));
                 Files.createSymbolicLink(boundary.resolve("outside"),hof.toPath());
@@ -98,8 +71,8 @@ public class EditionCheck {
             } catch(IOException|UnsupportedOperationException|SecurityException unavailable) {
                 System.out.println("Symlink boundary fixture unavailable: "+unavailable.getClass().getSimpleName());
             }
-            System.out.println("PASS actual edition discovery: separate/combined installations, case, import, missing versions, isolated state and cleanup preservation");
-        } finally { Unpacker.delete(root.toFile()); }
+            System.out.println("PASS actual edition discovery: separate/combined installations, case, missing versions, isolated state");
+        } finally { delete(root.toFile()); }
     }
 }
 '''
@@ -112,10 +85,10 @@ class GameEditionTest(unittest.TestCase):
         cls.out.mkdir(parents=True, exist_ok=True)
         harness = cls.out / "EditionCheck.java"
         harness.write_text(CHECK, encoding="utf-8")
-        sources = [JAVA_SOURCE / (name + ".java") for name in ("Games", "Zip", "Deflate64", "Unpacker", "GameCleanup")]
+        sources = [JAVA_SOURCE / (name + ".java") for name in ("Games",)]
         subprocess.run([str(JAVA / "javac.exe"), "--release", "8", "-encoding", "UTF-8", "-d", str(cls.out), *map(str, sources), str(harness)], check=True)
 
-    def test_actual_discovery_import_and_cleanup(self):
+    def test_actual_discovery_and_isolated_state(self):
         subprocess.run([str(JAVA / "java.exe"), "-ea", "-cp", str(self.out), "org.homm5.port.EditionCheck"], check=True)
 
     def test_actual_metadata_matches_build(self):
@@ -186,7 +159,11 @@ public class RuntimeCheck {
             assert runtimeAvailable(c,base,"toe") : "Keep the existing ToE development deployment";
             assert !runtimeAvailable(c,base,"vanilla") && !runtimeAvailable(c,base,"hof");
             System.out.println("PASS actual readiness: matching library, images and overlay; ToE-only legacy fallback");
-        } finally { Unpacker.delete(base); }
+        } finally { delete(base); }
+    }
+    static void delete(File f) {
+        if (f.isDirectory()) { File[] items = f.listFiles(); if (items != null) for (File i : items) delete(i); }
+        f.delete();
     }
 }
 '''
@@ -195,11 +172,10 @@ public class RuntimeCheck {
         subprocess.run([str(JAVA / "javac.exe"), "--release", "8", "-cp", str(self.out), "-d", str(self.out), str(harness)], check=True)
         subprocess.run([str(JAVA / "java.exe"), "-ea", "-cp", str(self.out), "org.homm5.port.RuntimeCheck"], check=True)
 
+    @unittest.skipUnless(LAUNCHER is not None and PLATFORM_JAR.is_file(), "the launcher base and android-37.0 are required")
     def test_production_java_callers_compile(self):
-        out = self.out / "android"
-        out.mkdir(exist_ok=True)
-        subprocess.run([str(JAVA / "javac.exe"), "--release", "8", "-encoding", "UTF-8", "-cp", str(ANDROID_JAR), "-d", str(out),
-                        *map(str, sorted(JAVA_SOURCE.glob("*.java")))], check=True)
+        prepared = prepare(self.out / "launcher")
+        javac(self.out / "android", [*sorted(JAVA_SOURCE.glob("*.java")), *map(Path, prepared["sources"])])
 
 
 if __name__ == "__main__":

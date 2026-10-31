@@ -8,17 +8,17 @@
  *   port_fps_limit           0 or 30..240 maximum frame rate; 0 follows the display
  *   port_cursor_offset_x/y   -0.2 .. 0.2  fraction of the shorter screen side
  *   port_touch_cursor        0 or 1      draw the cursor during finger contact
- *   port_lan_vpn             0 or 1      (ToE) LAN discovery to listed VPN peers, network.c
+ *   port_lan_vpn             0 or 1      LAN discovery to listed VPN peers, network.c
  *
- * ToE's frame rate is a combobox like the original resolution one: string
+ * The frame rate is a combobox like the original resolution one: string
  * variables port_fps_items ("30;60;...", the display's rates from
  * Java, level 0) and port_fps_choice (the chosen item's text, profile level).
  * The engine's string copier 0x00499700 assigns the default's text to a
  * {begin, end, capacity} string storage, which, as the engine's own static
  * initializers make them (0x00DC13E0 for gfx_availible_resolutions), starts
  * as an 8-byte buffer from its allocator 0x008791F0: its assign 0x00404150
- * writes through begin. port_fps_limit stays registered for old profiles and
- * Vanilla/HoF.
+ * writes through begin (3.1 addresses; 1.6/2.1 map them in their patch contracts).
+ * port_fps_limit stays registered for old profiles.
  *
  * The engine registers its variables from static initializers through
  * 0x00C11400 (ECX name string, EDX value copier, stack: storage, default,
@@ -38,7 +38,6 @@ void void_android_settings_changed(int which, float value);
 static void void_android_settings_changed(int which, float value) { (void)which; (void)value; }
 #endif
 
-#ifndef HOMM5_LEGACY_UI
 enum { PORT_UI, PORT_RENDER, PORT_CAMERA, PORT_FPS, PORT_CURSOR_X, PORT_CURSOR_Y, PORT_TOUCH_CURSOR, PORT_LAN_VPN, PORT_COUNT };
 static const char *const port_names[PORT_COUNT] = {
     "port_ui_scale", "port_render_scale", "port_camera_sensitivity", "port_fps_limit",
@@ -51,14 +50,6 @@ static const uint32_t port_text_levels[PORT_TEXT_COUNT] = { 0, 2 };
 /* Plain numbers: a profile stores the choice unquoted (setvar port_fps_choice = 60). */
 static char port_text_defaults[PORT_TEXT_COUNT][256] = { "30;60", "60" };
 static uint32_t port_text_storage;        /* PORT_TEXT_COUNT guest strings {begin, end, capacity} */
-#else
-enum { PORT_UI, PORT_RENDER, PORT_CAMERA, PORT_FPS, PORT_CURSOR_X, PORT_CURSOR_Y, PORT_TOUCH_CURSOR, PORT_COUNT };
-static const char *const port_names[PORT_COUNT] = {
-    "port_ui_scale", "port_render_scale", "port_camera_sensitivity", "port_fps_limit",
-    "port_cursor_offset_x", "port_cursor_offset_y", "port_touch_cursor",
-};
-static float port_defaults[PORT_COUNT] = { 1.0f, 1.0f, 1.0f, 60.0f, 0.0f, 0.0f, 0.0f };
-#endif
 static float port_applied[PORT_COUNT] = { -1.0f, -1.0f, -1.0f, -1.0f };
 static uint32_t port_storage;             /* PORT_COUNT guest floats */
 static int port_state;                    /* 0 not yet, 1 registering, 2 registered */
@@ -128,7 +119,6 @@ static void register_port_variables(void)
         if (!register_variable(scratch, port_names[i], port_storage + 4 * i, 0x00499630u /* float copier */,
                                value, text, 2)) break;
     }
-#ifndef HOMM5_LEGACY_UI
     port_text_storage = void_galloc(12 * PORT_TEXT_COUNT);
     if (port_text_storage) {
         for (int i = 0; i < PORT_TEXT_COUNT; ++i) {
@@ -145,7 +135,6 @@ static void register_port_variables(void)
                  port_text_defaults[PORT_TEXT_FPS_CHOICE]);
         pthread_mutex_unlock(&port_lock);
     }
-#endif
     void_gfree(scratch);
     void_log("[port] settings registered: ui %g, render %g, camera %g", (double)MEMF(port_storage),
              (double)MEMF(port_storage + 4), (double)MEMF(port_storage + 8));
@@ -176,7 +165,6 @@ static float port_value(int which, float low, float high)
 float void_port_camera_sensitivity(void) { return port_value(PORT_CAMERA, 0.25f, 4.0f); }
 float void_port_cursor_offset(int vertical) { return port_value(vertical ? PORT_CURSOR_Y : PORT_CURSOR_X, -0.2f, 0.2f); }
 int void_port_touch_cursor(void) { return port_value(PORT_TOUCH_CURSOR, 0.0f, 1.0f) >= 0.5f; }
-#ifndef HOMM5_LEGACY_UI
 int void_port_lan_vpn(void) { return port_value(PORT_LAN_VPN, 0.0f, 1.0f) >= 0.5f; }
 
 /* Leading decimal of a registered string variable ("60" -> 60), 0 if none. */
@@ -227,13 +215,6 @@ float void_port_fps_limit(void)
     int value = port_text_number(PORT_TEXT_FPS_CHOICE);
     return value >= 30 && value <= 240 ? (float)value : 60.0f;
 }
-#else
-float void_port_fps_limit(void)
-{
-    float value = port_value(PORT_FPS, 0.0f, 240.0f);
-    return value > 0.0f ? fmaxf(30.0f, value) : 0.0f;
-}
-#endif
 
 /* Guest window thread, every frame: options and profiles change the storage. */
 void void_port_settings_pump(void)

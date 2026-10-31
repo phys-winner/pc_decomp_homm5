@@ -416,8 +416,7 @@ JNIEXPORT void JNICALL Java_org_homm5_port_GameActivity_nativeCameraSensitivity(
     void_port_set_default(2, value);
 }
 
-#ifndef HOMM5_LEGACY_UI
-/* ToE's frame-rate combobox items: the display's refresh rates. */
+/* The frame-rate combobox items: the display's refresh rates. */
 JNIEXPORT void JNICALL Java_org_homm5_port_GameActivity_nativeRefreshRates(JNIEnv *env, jobject self, jfloatArray rates)
 {
     (void)self;
@@ -427,7 +426,6 @@ JNIEXPORT void JNICALL Java_org_homm5_port_GameActivity_nativeRefreshRates(JNIEn
     if (count > 0) (*env)->GetFloatArrayRegion(env, rates, 0, count, values);
     void_port_set_refresh_rates(values, (int)count);
 }
-#endif
 
 JNIEXPORT jboolean JNICALL Java_org_homm5_port_GameActivity_nativeText(JNIEnv *env, jobject self,
     jint generation, jstring text)

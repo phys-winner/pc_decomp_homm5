@@ -45,6 +45,9 @@ static void native_layout(uint32_t e,const float *r) {
 }
 /* The original CWindow::Layout: thiscall, parent rectangle at [esp+4], RET 4. */
 static uint32_t g_ecx, g_esp;
+typedef struct {uint32_t ecx,esp;} void_regs;
+static void void_regs_save(void_regs *r){r->ecx=g_ecx;r->esp=g_esp;}
+static void void_regs_load(const void_regs *r){g_ecx=r->ecx;g_esp=r->esp;}
 static int lifted_layouts;
 static void sub_00A50560(void) {
     native_layout(g_ecx,(const float *)GPTR(MEM32(g_esp+4)));g_esp+=8;++lifted_layouts;
@@ -77,6 +80,7 @@ static void dummy(void) {}
 static uint32_t void_galloc(uint32_t size) {assert(size==16||size==128);return allocation_fail?0:size==16?0x80000:0x80100;}
 static void sub_00A50560(void);
 static void_fn void_dispatch_find(uint32_t a) {
+    if(a==0x8885D0)return NULL; /* Scrollable rows have their own native-layout fixture. */
     if(a==0xA50560)return dispatch?(void_fn)sub_00A50560:NULL;
     assert(a==0x66A4D0||a==0x8385A0||a==0x8384D0||a==0xD119FC||
            a==0xA4E570||a==0xB95AC0||a==0xABE980||a==0x487990||a==0xA504B0||a==0x488220||a==0xA50560);return dispatch?dummy:NULL;
@@ -350,9 +354,10 @@ int main(void) {
     fit.screen=0x22000;MEM32(0x52000)=0x52010;
     assert(scale_fits(root,0,862,384,1724,768,200)==165);
     assert(scale_fits(root,0,172400.0f/165,76800.0f/165,1724,768,200)==165);
-    MEM32(0x52000)=0x52000; /* Non-modal custom tooltips retain their existing policy. */
-    assert(scale_fits(root,0,172400.0f/165,76800.0f/165,1724,768,200)==200);
+    MEM32(0x52000)=0x52000; /* Self-positioned non-modal dialogs must fit too. */
+    assert(scale_fits(root,0,172400.0f/165,76800.0f/165,1724,768,200)==165);
     MEM8(modal_placement+0x70)=0;
+    assert(scale_fits(root,0,172400.0f/165,76800.0f/165,1724,768,200)==200);
     /* Rounded render resolution cannot change the logical UI size. */
     void_android_display_size=native_size;
     backbuffer_w=1319;backbuffer_h=826;dimensions(1319,826,1227,768);pump();

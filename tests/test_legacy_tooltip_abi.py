@@ -56,11 +56,12 @@ INSPECT_HARNESS = r'''
 #include <stdio.h>
 #include <string.h>
 enum { TOUCH_SECOND_BEGIN=20, TOUCH_SECOND_TAP, TOUCH_SECOND_HOLD };
+enum { SCREEN_MENU, SCREEN_ADVENTURE, SCREEN_COMBAT, SCREEN_TOWN };
 typedef struct {int kind;float x,y;} void_touch_event;
 typedef struct {int unused;} troop_cell;
 static struct {
  uint32_t screen,root,dnd,combo;
- int cancelled,second_troop,ui,dnd_pressed,second_info,held,panning,inspecting;
+ int kind,cancelled,second_troop,ui,dnd_pressed,second_info,held,panning,inspecting,card_mode,details;
  float x,y,start_x,start_y,inspect_x,inspect_y;
 } gesture;
 static int screen_live,method_live,target_live,point_live,change_screen;
@@ -81,6 +82,9 @@ static uint32_t object_method(uint32_t root,unsigned slot) {
  assert(root==0x2000 && slot==SLOT);++lookups;return method_live?METHOD:0;
 }
 static int tooltip_target_at(float x,float y) {assert(x==500&&y==600);return target_live;}
+/* Combat controls and card steps (combat screens only) are not part of these menu-screen cases. */
+static int combat_ui_hold(void) {return 0;}
+static int card_step(uint32_t root,float x,float y,int mode) {(void)root;(void)x;(void)y;assert(0);return mode;}
 static uint32_t logical_point(float x,float y) {assert(x==100&&y==200);return point_live?0x3000:0;}
 static void publish_point(float x,float y) {published_x=x;published_y=y;}
 static uint32_t void_call_guest_this(uint32_t method,uint32_t self,unsigned n,const uint32_t *args) {

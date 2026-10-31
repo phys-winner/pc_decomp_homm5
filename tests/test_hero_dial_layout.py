@@ -29,7 +29,8 @@ class HeroDialLayoutTest(unittest.TestCase):
         state = (ROOT / 'android/host/core.c').read_text()
         state = state[state.index('VOID_HIDDEN uint32_t g_eax'):state.index('#define VOID_ENTER_RING')]
         runtime = prepare_windows_runtime.platform_header((ROOT / 'android/runtime/recomp_types.h').read_text())
-        scale = function((ROOT / 'android/host/touch_scale.c').read_text(), 'static float scale_anchor_shift(')
+        source = (ROOT / 'android/host/touch_scale.c').read_text()
+        scale = function(source, 'static float scale_clamp(') + function(source, 'static float scale_anchor_shift(')
         compiler, _, _ = build_windows.compiler_environment()
         self.assertEqual(port_ui.legacy_widescreen(reference, reference, 'toe', {}), {})
         for edition, spec in SPECS.items():

@@ -181,8 +181,11 @@ class LegacyArmyRowsTest(unittest.TestCase):
         adapted, _ = port_patches.adapt_host_source(
             ROOT / "android/host/touch_engine.c", out, edition)
         text = adapted.read_text(encoding="utf-8")
-        host = "\n".join(function(text, signature) for signature in (
-            "static uint32_t virtual_base(", "static int troop_cell_window(",
+        # The two-army screen helpers come first: a hero screen is none of them (-1 falls through).
+        layout = text[text.index("#define ARMY_HANDLER_SLOT"):text.index("static int army_screen(")]
+        host = layout + "\n".join(function(text, signature) for signature in (
+            "static uint32_t virtual_base(", "static int army_screen(", "static uint32_t army_row(",
+            "static int army_cell_window(", "static int army_portrait_at(", "static int troop_cell_window(",
             "static uint32_t troop_row_window(", "static int troop_portrait_at(",
         ))
         generated = generated_body(edition, native["resolver"])

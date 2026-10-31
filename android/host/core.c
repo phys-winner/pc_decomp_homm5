@@ -85,16 +85,14 @@ void void_regs_load(const void_regs *r)
 /* --------------------------------------------------------------- logging */
 static pthread_mutex_t log_lock = PTHREAD_MUTEX_INITIALIZER;
 static FILE *log_file;
-#ifndef HOMM5_LEGACY_UI
 /* Set while a fatal signal is being reported: the faulting thread may hold log_lock. */
 static atomic_int log_in_signal;
-#endif
 
 void void_log_open(const char *path)
 {
     pthread_mutex_lock(&log_lock);
     if (log_file) fclose(log_file);
-#if defined(VOID_ANDROID_APP) && !defined(HOMM5_LEGACY_UI)
+#ifdef VOID_ANDROID_APP
     /* GameActivity (SessionLog.java) has moved the previous sessions' logs aside and begun
      * this one; appending also keeps the lines Java adds itself (an uncaught exception). */
     log_file = path ? fopen(path, "a") : NULL;
@@ -109,7 +107,6 @@ static void log_va(const char *fmt, va_list ap)
 {
     char line[2048];
     vsnprintf(line, sizeof line, fmt, ap);
-#ifndef HOMM5_LEGACY_UI
     if (atomic_load_explicit(&log_in_signal, memory_order_relaxed)) {
         /* A crash report must not wait for a lock its own thread may hold: wait briefly,
          * then write the line past the lock (line-buffered stdio holds no partial lines). */
@@ -129,7 +126,6 @@ static void log_va(const char *fmt, va_list ap)
         if (locked) pthread_mutex_unlock(&log_lock);
         return;
     }
-#endif
     pthread_mutex_lock(&log_lock);
     fprintf(stderr, "%s\n", line);
     if (log_file) fprintf(log_file, "%s\n", line);
@@ -439,7 +435,6 @@ recomp_func_t void_resolve(uint32_t va)
 /* ---------------------------------------------------------------- traps */
 static atomic_int dumping;
 
-#ifndef HOMM5_LEGACY_UI
 /* The lifted function whose entry is the closest at or below va (the merged dispatch table
  * is sorted), or 0. */
 static uint32_t lifted_owner(uint32_t va)
@@ -488,7 +483,6 @@ static void log_guest_stack(void)
     }
     if (!shown) void_log("[void] guest stack: no return addresses found above ESP %08X", g_esp);
 }
-#endif
 
 void void_dump_state(const char *why)
 {
@@ -522,9 +516,7 @@ void void_dump_state(const char *why)
         if (used > sizeof line - 80) { void_log("%s", line); used = 0; line[0] = 0; }
     }
     if (used) void_log("%s", line);
-#ifndef HOMM5_LEGACY_UI
     log_guest_stack();
-#endif
     void_log_flush();
 }
 
@@ -634,10 +626,8 @@ static void log_host_backtrace(const void *context)
 #endif
 }
 
-#ifndef HOMM5_LEGACY_UI
 /* The handlers before ours (debuggerd's in an app): they still get the signal afterwards. */
 static struct sigaction previous_actions[SIGSYS + 1];
-#endif
 
 static void on_signal(int signo, siginfo_t *info, void *context)
 {
@@ -645,21 +635,16 @@ static void on_signal(int signo, siginfo_t *info, void *context)
     char where[96] = "";
     if (fault >= VOID_GUEST_BASE && fault < VOID_GUEST_BASE + VOID_GUEST_SPAN)
         snprintf(where, sizeof where, " (guest VA %08X)", (uint32_t)(fault - VOID_GUEST_BASE));
-#ifndef HOMM5_LEGACY_UI
     atomic_store(&log_in_signal, 1);
     char thread[17] = "?";
     prctl(PR_GET_NAME, thread, 0, 0, 0);
     void_log("[void] host signal %d (%s) code %d at %p%s on thread %d \"%s\"", signo, strsignal(signo),
              info->si_code, info->si_addr, where, (int)gettid(), thread);
-#else
-    void_log("[void] host signal %d code %d at %p%s", signo, info->si_code, info->si_addr, where);
-#endif
     if (!atomic_exchange(&dumping, 1)) {
         log_host_backtrace(context);
         void_dump_state("host signal");
     }
     void_log_flush();
-#ifndef HOMM5_LEGACY_UI
     /* The previous handler takes over: in an app debuggerd writes the tombstone and Android
      * records the native crash (shown in the next session's homm5.1.log). A fault happens
      * again when the handler returns; a sent signal (abort, kill) is sent again. */
@@ -670,7 +655,6 @@ static void on_signal(int signo, siginfo_t *info, void *context)
         if (info->si_code <= 0) raise(signo);
         return;
     }
-#endif
     signal(signo, SIG_DFL);
     raise(signo);
 }
@@ -686,15 +670,11 @@ void void_install_fault_handlers(void)
     sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
     sigemptyset(&sa.sa_mask);
     int signals[] = { SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT };
-#ifndef HOMM5_LEGACY_UI
     for (size_t i = 0; i < sizeof signals / sizeof signals[0]; ++i)
         sigaction(signals[i], &sa, &previous_actions[signals[i]]);
-#else
-    for (size_t i = 0; i < sizeof signals / sizeof signals[0]; ++i) sigaction(signals[i], &sa, NULL);
-#endif
 }
 
-#if !defined(HOMM5_LEGACY_UI) && defined(__ANDROID__)
+#ifdef __ANDROID__
 #include <link.h>
 #include <sys/sysinfo.h>
 #include <sys/system_properties.h>

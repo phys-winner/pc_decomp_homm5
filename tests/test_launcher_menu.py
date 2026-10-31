@@ -7,6 +7,7 @@ from test_static_tls import ROOT, compile_probe
 sys.path.insert(0, str(ROOT / "tools"))
 import port_ui
 from editions import game_directory
+from test_launcher_base import LAUNCHER, prepare
 
 
 HARNESS = r'''
@@ -126,16 +127,16 @@ class LauncherMenuTest(unittest.TestCase):
         reaction = ET.fromstring(members["UI/PortGamepad.(ARSendGameMessage).xdb"])
         self.assertEqual(reaction.findtext("EventName"), "port_gamepad")
 
+    @unittest.skipUnless(LAUNCHER is not None, "the launcher base is required")
     def test_launcher_services_share_process(self):
-        app = ET.parse(ROOT / "android/app/AndroidManifest.xml").getroot().find("application")
+        app = ET.parse(prepare(ROOT / "build/tests/launcher-menu/prepared")["manifest"]).getroot().find("application")
         android = "{http://schemas.android.com/apk/res/android}"
-        launcher = next(a for a in app.findall("activity") if a.get(android + "name") == ".Launcher")
+        launcher = next(a for a in app.findall("activity") if a.get(android + "name") == "org.homm5.port.launcher.LauncherActivity")
         self.assertEqual(launcher.get(android + "process"), ":launcher")
         processes = {service.get(android + "name"): service.get(android + "process") for service in app.findall("service")}
-        # The unpack and texture jobs live in the launcher's memory (Unpacker.current, Textures.current).
-        for name in (".UnpackService", ".TextureService"):
-            self.assertEqual(processes.pop(name), launcher.get(android + "process"))
-        # The renderer's driver check (a process of its own) is commented out with DXVK/Turnip support.
+        # Import, cleanup and texture work live in the launcher's memory (Work.current, kept by its service).
+        self.assertEqual(processes.pop("org.homm5.port.launcher.Work$WorkService"), launcher.get(android + "process"))
+        # The renderer's driver check (a process of its own) only comes with Vulkan renderers: none while DXVK is off.
         self.assertEqual(processes, {})
 
     def test_native_menu(self):

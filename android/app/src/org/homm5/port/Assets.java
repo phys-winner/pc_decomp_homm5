@@ -93,7 +93,7 @@ final class Assets {
         }
         File noted = new File(dir, ".apk-index");
         if (noted.isFile() && new String(readFile(noted), StandardCharsets.UTF_8).equals(index)) return true;
-        Unpacker.delete(dir);
+        delete(dir);
         if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("cannot create " + dir);
         int copied = 0;
         for (String line : index.split("\n")) {
@@ -108,6 +108,15 @@ final class Assets {
         try (FileOutputStream o = new FileOutputStream(noted)) { o.write(index.getBytes(StandardCharsets.UTF_8)); }
         android.util.Log.i("HeroesV", name + ": " + copied + " files copied from the APK to " + dir);
         return true;
+    }
+
+    /** f and everything in it, without following links out of it. */
+    private static void delete(File f) {
+        if (f.isDirectory() && !java.nio.file.Files.isSymbolicLink(f.toPath())) {
+            File[] items = f.listFiles();
+            if (items != null) for (File item : items) delete(item);
+        }
+        f.delete();
     }
 
     private static void copy(Context c, String asset, File out) throws IOException {

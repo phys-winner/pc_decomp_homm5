@@ -63,6 +63,7 @@ public class AssetManager {
             }
             source = (ROOT / "android/app/src/org/homm5/port/NativeLibrary.java").read_text(encoding="utf-8")
             source = source.replace("System.loadLibrary(", "PayloadCheck.loadLibrary(").replace("System.load(", "PayloadCheck.load(")
+            source = source.replace("target.setReadOnly()", "PayloadCheck.readOnly(target)").replace("Files.move(", "PayloadCheck.move(")
             source = source.replace("private static native long nativeUnpack(AssetManager assets, String name, String path,\n                                            long total, int chunk, int[] sizes);", '''private static long nativeUnpack(AssetManager assets,String name,String path,long total,int chunk,int[] sizes) {
                 ++PayloadCheck.unpacks;
                 try { java.nio.file.Files.write(new File(path).toPath(),PayloadCheck.payload); }
@@ -74,8 +75,14 @@ public class AssetManager {
             sources["org/homm5/port/PayloadCheck.java"] = r'''package org.homm5.port;
 import java.io.*;import java.nio.file.*;import java.security.*;import android.content.Context;import android.content.res.AssetManager;
 public class PayloadCheck {
- static byte[] payload="first engine".getBytes();static int unpacks,loads;static boolean fail;
- static void load(String file){assert new File(file).isFile();++loads;}
+ static byte[] payload="first engine".getBytes();static int unpacks,loads;static boolean fail,failReadOnly;
+ static void load(String file){File f=new File(file);assert f.isFile()&&!f.canWrite():"writable native library";++loads;}
+ static boolean readOnly(File file){return !failReadOnly&&file.setReadOnly();}
+ static void move(Path from,Path to,CopyOption... options)throws IOException {
+  // Windows cannot replace a read-only target; Android's atomic rename can.
+  if(Files.exists(to)&&!to.toFile().setWritable(true))throw new IOException("cannot replace test library");
+  Files.move(from,to,options);
+ }
  static void loadLibrary(String name){assert name.equals("homm5xz");}
  static String hash(byte[] data)throws Exception {
   StringBuilder s=new StringBuilder();for(byte b:MessageDigest.getInstance("SHA-256").digest(data))s.append(String.format("%02x",b&255));return s.toString();
@@ -92,17 +99,22 @@ public class PayloadCheck {
   fail=true;invalid(c);assert !target.exists()&&!stamp.exists()&&!part.exists();
   fail=false;NativeLibrary.load(c,"homm5");assert unpacks==2&&loads==1&&stamp.isFile();
   NativeLibrary.load(c,"homm5");assert unpacks==2&&loads==2;
-  Files.write(target.toPath(),new byte[1]);NativeLibrary.load(c,"homm5");assert unpacks==3&&loads==3;
+  assert target.setWritable(true);Files.write(target.toPath(),new byte[1]);NativeLibrary.load(c,"homm5");assert unpacks==3&&loads==3;
   byte[] old=Files.readAllBytes(target.toPath());payload="next engine!".getBytes();index(c,name);
   String expected=c.assets.index;payload[0]^=1;invalid(c);assert java.util.Arrays.equals(old,Files.readAllBytes(target.toPath()))&&!stamp.exists()&&!part.exists();
   payload[0]^=1;Files.write(part.toPath(),new byte[]{1});NativeLibrary.load(c,"homm5");assert loads==4&&!part.exists();
   assert java.util.Arrays.equals(payload,Files.readAllBytes(target.toPath()));
+  int beforeUnpacks=unpacks,beforeLoads=loads;
+  assert target.setWritable(true);NativeLibrary.load(c,"homm5");
+  assert unpacks==beforeUnpacks&&loads==beforeLoads+1&&!target.canWrite():"repair a writable cached engine without unpacking";
+  failReadOnly=true;invalid(c);failReadOnly=false;
+  assert unpacks==beforeUnpacks:"a permission failure must not unpack a valid cache";
   for(String bad:new String[]{name+" 1 broken 4096 24",name+" -1 "+hash(payload)+" 4096 24",name+" 1 "+hash(payload)+" 0 24",name+" 1 "+hash(payload)+" 4096 -24",name+" 1 "+hash(payload)+" 4096 24,24",name+" 1 "+hash(payload)+" 4096 24,"}){
    c.assets.index=bad;assert !NativeLibrary.available(c,"homm5");invalid(c);
   }
   c.assets.index=expected.replace(name,"other.so");assert !NativeLibrary.available(c,"homm5");invalid(c);
   c.assets.index=null;File plain=new File(c.info.nativeLibraryDir,name);plain.getParentFile().mkdirs();assert plain.createNewFile();assert NativeLibrary.available(c,"homm5");
-  System.out.println("PASS real Java payload install: retry, SHA rejection, atomic old-copy preservation, update, cache, malformed index and availability");
+  System.out.println("PASS real Java payload install: retry, SHA rejection, atomic old-copy preservation, update, read-only load/cache repair/failure, malformed index and availability");
  }
 }'''
             paths = []

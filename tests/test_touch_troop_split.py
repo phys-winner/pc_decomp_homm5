@@ -251,7 +251,7 @@ int main(void){
 def fixture():
     source = HARNESS.replace('static int force_ui,', 'static int troop_mode;\nstatic int force_ui,').replace('static uint32_t void_call_guest_this(', EXTRA+'\nstatic uint32_t void_call_guest_this(', 1)
     source = source.replace('    if(va==0x6B2830)', '    if(troop_mode){uint32_t out=troop_call(va,self,n,args);if(out!=UINT32_MAX)return out;}\n    if(va==0x6B2830)', 1)
-    source = source.replace('if(args[3]==0xF2DA88) {assert(args[0]==0x6044);return 0x6000;}', 'if(args[3]==0xF2DA88) {if(troop_mode&&args[0]>=0x80000&&args[0]<0x82000)return args[0]-0xF8;assert(args[0]==0x6044);return 0x6000;}')
+    source = source.replace('if(args[3]==0xF2DA88) return args[0]==0x6044 ? 0x6000 : 0;', 'if(args[3]==0xF2DA88) {if(troop_mode&&args[0]>=0x80000&&args[0]<0x82000)return args[0]-0xF8;return args[0]==0x6044?0x6000:0;}')
     # The native-held assertion is a memory predicate in a pre-adapter engine spy.
     source = source.replace('dnd_held(0x60000)', '(MEM32(MEM32(0x6000C))==0xE4775C)')
     source = source.replace('int main(void) {', SCENARIOS+'\nint main(void) {\n    troop_tests();', 1)

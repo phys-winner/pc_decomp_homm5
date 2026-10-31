@@ -57,7 +57,7 @@ def native_harness(before, after, checks):
     source = (ROOT / 'android/host/touch_scale.c').read_text()
     helpers = '\n'.join(function(source, signature) for signature in (
         'static float scale_native_position(', 'static float scale_size(',
-        'static int scale_near(', 'static float scale_anchor_shift('))
+        'static int scale_near(', 'static float scale_clamp(', 'static float scale_anchor_shift('))
     # C float constants need a decimal point even when XML used integer spelling.
     def c_rows(values):
         return ',\n'.join('{' + ','.join(str(float(v)) + 'f' for v in row) + '}' for row in values)

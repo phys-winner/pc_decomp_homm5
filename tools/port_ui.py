@@ -62,16 +62,6 @@ OPTIONS = (
      "Показывать игровой курсор, пока палец касается экрана. Действие выполняется в позиции этого курсора, "
      "с учётом заданного смещения. Жесты камеры не перемещают курсор.",
      "Выкл.", "Вкл.", (0.0, 1.0), 0),
-)
-
-# ToE draws these options with the original widgets (Vanilla/HoF keep scrollers, TECHDEBT-LEGACY.md):
-# render and interface scale as comboboxes of the same values, the touch cursor as a checkbox, and
-# the frame rate like the original resolution combobox: its items are port_fps_items, the display's
-# own rates, and the chosen item's text is port_fps_choice (android/host/port_settings.c).
-TOE_KINDS = {"port_render_scale": "combo", "port_ui_scale": "combo", "port_fps_limit": "rates",
-             "port_touch_cursor": "check"}
-# ToE-only options, same fields as OPTIONS.
-TOE_OPTIONS = (
     ("port_lan_vpn", "port_lan_vpn", "port_touch_cursor",
      "LAN через Tailscale/VPN",
      "Сетевая игра между устройствами, соединёнными Tailscale или другой VPN: поиск игр уходит также на "
@@ -79,12 +69,19 @@ TOE_OPTIONS = (
      "игроки подключаются через VPN.",
      "Выкл.", "Вкл.", (0.0, 1.0), 0),
 )
-TOE_KINDS["port_lan_vpn"] = "check"
+
+# The options use the original widgets (every edition has the same OPTION_COMBO_BOX/OPTION_CHECK_BOX
+# and combobox template): render and interface scale as comboboxes of the same values, the touch cursor
+# and the VPN switch as checkboxes, and the frame rate like the original resolution combobox: its items
+# are port_fps_items, the display's own rates, and the chosen item's text is port_fps_choice
+# (android/host/port_settings.c). Others are scrollers.
+KINDS = {"port_render_scale": "combo", "port_ui_scale": "combo", "port_fps_limit": "rates",
+         "port_touch_cursor": "check", "port_lan_vpn": "check"}
 COMBO_TEMPLATE = "UI/GameOptions/Templates/ComboBox/Combo.(WindowComboBox).xdb"
 
 
 def options(edition="toe"):
-    return OPTIONS + (TOE_OPTIONS if edition == "toe" else ())
+    return OPTIONS
 
 
 def utf16(text):
@@ -161,14 +158,12 @@ def patch_uiconsts(data, edition="toe"):
       <NameFileRef href="Consts/GameOptions/PortAdditional.txt"/>
       <TooltipFileRef href="Consts/GameOptions/PortAdditionalTooltip.txt"/>
       <Pages>'''
-    # The native template lays out two pages; ToE's network switch closes the controls page.
-    pages = [("port_video", "PortVideo", OPTIONS[:3]),
-             ("port_controls", "PortControls", OPTIONS[3:] + (TOE_OPTIONS if edition == "toe" else ()))]
-    kinds = TOE_KINDS if edition == "toe" else {}
+    # The native template lays out two pages; the network switch closes the controls page.
+    pages = [("port_video", "PortVideo", OPTIONS[:3]), ("port_controls", "PortControls", OPTIONS[3:])]
     for identifier, name, page in pages:
         category += (f'<Item><ID>{identifier}</ID><NameFileRef href="Consts/GameOptions/{name}.txt"/>'
                      '<TooltipFileRef href="Consts/GameOptions/PortAdditionalTooltip.txt"/><Options>').encode()
-        category += b"".join(option_xml(option, kind=kinds.get(option[0], "scroller")) for option in page)
+        category += b"".join(option_xml(option, kind=KINDS.get(option[0], "scroller")) for option in page)
         category += b"</Options></Item>"
     category += b"</Pages><Enabled>true</Enabled></Item>"
     data = data[:end] + category + data[end:]
@@ -183,20 +178,18 @@ def patch_uiconsts(data, edition="toe"):
 
 def combo_rows(game_dir, edition="toe"):
     """Every port combobox (eight render scales) without a scrolling list."""
-    if edition != "toe":
-        return {}
     window = ET.fromstring(source_resource(game_dir, COMBO_TEMPLATE, edition)[0])
     rows = window.find("MaxVisibleRows")
     if rows is None:
         raise ValueError("combobox template lacks MaxVisibleRows")
-    rows.text = str(max(int(rows.text), *(len(option[7]) for option in OPTIONS if TOE_KINDS.get(option[0]) == "combo")))
+    rows.text = str(max(int(rows.text), *(len(option[7]) for option in OPTIONS if KINDS.get(option[0]) == "combo")))
     return {COMBO_TEMPLATE: ET.tostring(window, encoding="utf-8", xml_declaration=True)}
 
 
 def texts(edition="toe"):
     out = {f"UI/{TEXTS}/PortAdditional.txt": utf16("Дополнительные"),
            f"UI/{TEXTS}/PortVideo.txt": utf16("Изображение"),
-           f"UI/{TEXTS}/PortControls.txt": utf16("Управление и сеть" if edition == "toe" else "Управление"),
+           f"UI/{TEXTS}/PortControls.txt": utf16("Управление и сеть"),
            f"UI/{TEXTS}/PortAdditionalTooltip.txt": utf16("Настройки Android-порта и переход в лаунчер."),
            "UI/PortLauncher.txt": utf16("В лаунчер"),
            "UI/PortLauncherTooltip.txt": utf16("Завершить игру и открыть лаунчер. Сначала сохраните игру."),
@@ -685,6 +678,29 @@ def legacy_widescreen(game_dir, reference_dir, edition, members):
     return changed
 
 
+def scenario_selection(game_dir, edition="toe"):
+    """Native selection frame for the swipeable scenario options."""
+    base = "UI/HavenTraining/ArmyHolder/Creature/Selection"
+    icon_path = "UI/MPWait/PlayersList/Item/Icon.(WindowTextViewShared).xdb"
+    window = ET.fromstring(source_resource(game_dir, base + ".(WindowSimple).xdb", edition)[0])
+    shared = ET.fromstring(source_resource(game_dir, base + ".(WindowSimpleShared).xdb", edition)[0])
+    icon = ET.fromstring(source_resource(game_dir, icon_path, edition)[0])
+    for node in (window, shared):
+        node.attrib.pop("ObjectRecordID", None)
+    window.find("Name").text = "PortChoiceSelection"
+    window.find("Visible").text = "false"
+    window.find("Priority").text = "100"
+    window.find("Shared").set("href", "/UI/PortChoiceSelection.(WindowSimpleShared).xdb#xpointer(/WindowSimpleShared)")
+    for axis in ("x", "y"):
+        window.find("Placement/Position/First/" + axis).text = "0"
+    shared.find("Flags/Transparent").text = "true"
+    shared.find("Background").set("href", "/" + base + ".(BackgroundSimpleTexture).xdb#xpointer(/BackgroundSimpleTexture)")
+    ET.SubElement(icon.find("Children"), "Item", href="/UI/PortChoiceSelection.(WindowSimple).xdb#xpointer(/WindowSimple)")
+    return {name: ET.tostring(node, encoding="utf-8", xml_declaration=True) for name, node in (
+        (icon_path, icon), ("UI/PortChoiceSelection.(WindowSimple).xdb", window),
+        ("UI/PortChoiceSelection.(WindowSimpleShared).xdb", shared))}
+
+
 def build_port_ui_override(root=ROOT, game_dir=None, edition="toe"):
     root = Path(root)
     if game_dir is None:
@@ -701,6 +717,7 @@ def build_port_ui_override(root=ROOT, game_dir=None, edition="toe"):
     # Apply custom scene geometry after the shared ToE anchor migration.
     members.update(cutscene_horplus(game_dir, edition))
     members.update(inactive_chat_background(game_dir, edition))
+    members.update(scenario_selection(game_dir, edition))
     output = root / ("build/data-overrides" + ("-" + edition if edition != "toe" else "")) / PAK_NAME
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_suffix(".pak.tmp")

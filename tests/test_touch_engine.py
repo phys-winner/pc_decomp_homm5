@@ -33,7 +33,7 @@ static int atb_lookups, minimap_hit, hero_moving, hero_stops;
 static int town_actions,town_blocked,town_busy;
 static int town_portrait_hits,town_portrait_opens,town_portrait_changes_screen;
 static uint32_t town_portrait_pick;
-static int dnd_available,dnd_blank,dnd_overlay,dnd_child,dnd_invalid,dnd_probe_changes_screen;
+static int dnd_available,dnd_blank,dnd_overlay,dnd_child,dnd_invalid,dnd_probe_changes_screen,dnd_hidden;
 static int dnd_probes,dnd_downs,dnd_ups,dnd_moves,dnd_doubles,dnd_cancels,dnd_pickups,dnd_drops,dnd_restores;
 static float dnd_down_x,dnd_down_y;
 static int mentor_selects,mentor_confirms,mentor_changes_screen,ui_overlay,ghost_selects,ghost_moves;
@@ -44,6 +44,9 @@ static int g_fp_top, list_available, mock_horizontal, scroll_sets, scroll_notifi
 static float scroll_value;
 static double fp_pop_impl(double *st, int *depth) { double value=st[0]; memmove(st,st+1,7*sizeof *st); st[7]=0; --*depth; return value; }
 static uint32_t g_eax, g_esp, g_edx, g_ecx;
+typedef struct {uint32_t eax,esp,edx,ecx;} void_regs;
+static void void_regs_save(void_regs *r){*r=(void_regs){g_eax,g_esp,g_edx,g_ecx};}
+static void void_regs_load(const void_regs *r){g_eax=r->eax;g_esp=r->esp;g_edx=r->edx;g_ecx=r->ecx;}
 static uint64_t mock_now_ns = 1000000000ull;
 static int physical_seen;
 static uint32_t physical_x=500, physical_y=250;
@@ -85,6 +88,7 @@ static int void_vm_writable(uint32_t p, uint32_t n) { return void_vm_readable(p,
 static void dummy(void) { g_eax=0x1234; g_esp+=4; }
 static void original_draw(void) { ++cursor_draws; g_eax=0xD00D; g_esp+=8; }
 static void_fn void_dispatch_find(uint32_t va) {
+    if(va==0x7148E0)return NULL; /* Scenario row refresh has its own fixture. */
     if ((book_missing_picker && (va==0x683450 || va==0x67BAB0)) || (book_missing_action && va==0x493ED0)) return NULL;
     return va==0x836440 ? original_draw : va ? dummy : NULL;
 }
@@ -101,7 +105,7 @@ static uint32_t void_call_guest(uint32_t va, int n, const uint32_t *args, int po
         if(args[3]==0xF34164) return minimap_hit && args[0]==0x6800 ? 0x6A00 : 0;   /* NUI::CAdvMinimap */
         if(args[3]==0xF786F0) return MEM32(args[0])==0xE85E94 ? args[0]-0x17C : 0;
         if(args[3]==0xF2DC80) return 0;   /* CWindowSlider: none here */
-        if(args[3]==0xF2DA88) {assert(args[0]==0x6044);return 0x6000;}
+        if(args[3]==0xF2DA88) return args[0]==0x6044 ? 0x6000 : 0;
         if(args[0]==0x6810 || args[0]==0x6820 || args[0]==0x6900)return 0;
         assert(args[0] == 0x6800);
         if(args[3]==0xF7A234) return edit_kind==1 ? 0x30000 : 0;
@@ -151,9 +155,9 @@ static uint32_t void_call_guest_this(uint32_t va, uint32_t self, int n, const ui
     if(va==0x813DE0) {
         assert(self==0x60000 && n==2 && args[1]==1);++dnd_probes;
         if(dnd_probe_changes_screen)mock_screen=0x5000;
-        return dnd_blank ? 0 : 0x70000;
+        return dnd_blank || dnd_hidden ? 0 : 0x70000;   /* the probe wants a visible window */
     }
-    if(va==0x470024) {assert(self==0x71000 && n==1);return 0x6800;}
+    if(va==0x470024) {assert(self==0x71000 && n==1);return dnd_blank ? 0 : dnd_hidden ? 0x6810 : 0x6800;}   /* slot map: nothing over a blank point; a hidden empty cell's icon */
     if(va==0x4700D8) {assert(self==0x6810 && !n);return 0x6800;}
     if(va==0x813BC0 || va==0x813C60 || va==0x813B20 || va==0x813D00 || va==0x813DA0) {
         assert(self==0x60000 && n==(va==0x813DA0 ? 0 : 1));
@@ -409,7 +413,7 @@ static void reset(int kind) {
     town_actions=town_blocked=town_busy=0;MEM32(0x414C)=MEM32(0x4150)=0;
     town_portrait_hits=town_portrait_opens=town_portrait_changes_screen=0;
     town_portrait_pick=0;MEM32(0x42A8)=0;MEM32(0x44E8)=MEM32(0x4600)=0;MEM32(0x41BC)=0;
-    dnd_available=dnd_blank=dnd_overlay=dnd_child=dnd_invalid=dnd_probe_changes_screen=0;
+    dnd_available=dnd_blank=dnd_overlay=dnd_child=dnd_invalid=dnd_probe_changes_screen=dnd_hidden=0;
     dnd_probes=dnd_downs=dnd_ups=dnd_moves=dnd_doubles=dnd_cancels=dnd_pickups=dnd_drops=dnd_restores=0;
     dnd_down_x=731;dnd_down_y=333;
     mentor_selects=mentor_confirms=mentor_changes_screen=ui_overlay=ghost_selects=ghost_moves=0;
@@ -573,6 +577,17 @@ int main(void) {
     assert(!dnd_ups && dnd_cancels==1 && !dnd_drops);
     reset_dnd();event(TOUCH_BEGIN,900,400);event(TOUCH_PAN,950,410);dnd_blank=dnd_invalid=1;event(TOUCH_END,950,410);
     assert(dnd_ups==1 && dnd_restores==1 && !dnd_drops && !dnd_cancels);
+    /* An empty army cell hides its icon: the probe finds no visible slot, the held stack's own map does,
+       and the picker falls through to the cell's container. The native drop takes it, as with a mouse. */
+    /* The native pickup keeps its slot entry at helper +1C (the drop 0x00813950 clears it). */
+    reset_dnd();event(TOUCH_BEGIN,900,400);event(TOUCH_PAN,950,410);MEM32(0x6001C)=0x70000;dnd_hidden=1;event(TOUCH_END,950,410);
+    assert(dnd_ups==1 && dnd_drops==1 && !dnd_cancels);
+    reset_dnd();event(TOUCH_BEGIN,900,400);event(TOUCH_TAP,900,400);event(TOUCH_END,900,400);
+    MEM32(0x6001C)=0x70000;dnd_hidden=1;event(TOUCH_BEGIN,900,400);event(TOUCH_TAP,900,400);event(TOUCH_END,900,400);
+    assert(dnd_pickups==1 && dnd_drops==1 && !dnd_cancels);
+    /* Without the held entry the visible-slot probe is all there is: the hidden cell is refused. */
+    reset_dnd();MEM32(0x6001C)=0;event(TOUCH_BEGIN,900,400);event(TOUCH_PAN,950,410);dnd_hidden=1;event(TOUCH_END,950,410);
+    assert(!dnd_ups && dnd_cancels==1 && !dnd_drops);
     reset_dnd();dnd_overlay=1;event(TOUCH_BEGIN,900,400);event(TOUCH_TAP,900,400);assert(!dnd_downs && !dnd_ups);
     reset_dnd();event(TOUCH_BEGIN,900,400);event(TOUCH_HOLD_BEGIN,900,400);void_touch_ui_pump();event(TOUCH_END,900,400);
     assert(!dnd_downs && !dnd_ups && !dnd_cancels && !dnd_pickups);

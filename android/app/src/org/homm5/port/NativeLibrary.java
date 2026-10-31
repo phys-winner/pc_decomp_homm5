@@ -62,6 +62,8 @@ final class NativeLibrary {
             android.util.Log.i("HeroesV", "native: " + file + " unpacked and verified in "
                 + (android.os.SystemClock.elapsedRealtime() - started) + " ms");
         }
+        /* Android 17 rejects writable code; repair engines cached by earlier APKs too. */
+        if (!target.setReadOnly()) throw new IOException("cannot make native library read-only: " + file);
         System.load(target.getAbsolutePath());
     }
 

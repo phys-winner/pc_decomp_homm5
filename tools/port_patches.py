@@ -251,7 +251,7 @@ def validate_packaged_native(edition, library, root=ROOT):
 
 
 def validate_overlay(edition, folder, root=ROOT):
-    from port_ui import OPTIONS, PAK_NAME, TOE_OPTIONS, UICONSTS
+    from port_ui import OPTIONS, PAK_NAME, UICONSTS
     from town_music import PAK_NAME as MUSIC_PAK, TOWNS_BY_EDITION, ZIP_DATE as MUSIC_DATE
     folder = Path(folder)
     archive_path = folder / "data" / PAK_NAME
@@ -268,9 +268,6 @@ def validate_overlay(edition, folder, root=ROOT):
         for option in OPTIONS:
             if constants.count(("<ID>" + option[0] + "</ID>").encode()) != 1:
                 raise ValueError(edition + ": UI patch is missing or duplicated: " + option[0])
-        for option in TOE_OPTIONS:
-            if constants.count(("<ID>" + option[0] + "</ID>").encode()) != (edition == "toe"):
-                raise ValueError(edition + ": ToE-only UI option is missing, duplicated or leaked: " + option[0])
         for name in ("UI/DialogueScreen.(WindowScreenShared).xdb",
                      "UI/CutsceneScreen/SubtitlesArea.(WindowStaticText).xdb"):
             if name not in archive.namelist():

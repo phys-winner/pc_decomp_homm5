@@ -1,111 +1,50 @@
-"""Execute the launcher's actual selection and Android switch callbacks in Java."""
-from pathlib import Path
+"""The game's side of the launcher base: GameActivity's actual switch dialog, native exit routing
+and back key run in Java against a recording Launch, and the order of its Launch calls."""
+import re
 import subprocess
-import sys
 import unittest
 
 from test_d3d_lifecycle import function
 from test_touch_controls import JAVA, ROOT
 
-SOURCE = ROOT / 'android/app/src/org/homm5/port'
+SOURCE = ROOT / "android/app/src/org/homm5/port"
 
-
-SELECTION = r'''
-package org.homm5.port;
-import java.io.*;
-import java.nio.file.*;
+LAUNCH = r'''
+package org.homm5.port.launcher;
 import java.util.*;
-public class LauncherSelectionCheck {
- static class SharedPreferences {
-  Map<String,String> values=new HashMap<>();
-  class Editor { Editor putString(String k,String v){values.put(k,v);return this;} void apply(){} }
-  Editor edit(){return new Editor();}
- }
- static class Uri {File path;Uri(File p){path=p;}}
- static class Handler {volatile boolean done;void post(Runnable r){r.run();done=true;}}
- private SharedPreferences prefs=new SharedPreferences();private String edition="toe";private File game;
- private Handler handler=new Handler();private String busy,error;private int refreshes;
- private static final int T_SEARCHING=1,E_NO_PATH=2,E_FOLDER=3;
- private static String text(int n){return Integer.toString(n);}
- private static File treePath(Uri tree){return tree.path;}
- private void setBusy(String s){busy=s;}private void error(String s){error=s;}
- private void note(String s,boolean e){}private void refresh(){refreshes++;}
- /* ACTUAL */
- static void install(Path folder,String edition)throws Exception{
-  for(String name:Games.required(edition)){Path p=folder.resolve(name);Files.createDirectories(p.getParent());Files.write(p,new byte[]{1,2,3});}
- }
- static Map<Path,byte[]> snapshot(Path root)throws Exception{
-  Map<Path,byte[]> out=new HashMap<>();
-  try(java.util.stream.Stream<Path> paths=Files.walk(root)){
-   for(Path p:(Iterable<Path>)paths.filter(Files::isRegularFile)::iterator)out.put(p,Files.readAllBytes(p));
-  }return out;
- }
- void choose(File folder)throws Exception{
-  handler.done=false;chooseFolder(new Uri(folder));long until=System.nanoTime()+3_000_000_000L;
-  while(!handler.done&&System.nanoTime()<until)Thread.sleep(1);
-  assert handler.done&&error==null : error;
- }
- public static void main(String[] args)throws Exception{
-  Path root=Files.createTempDirectory("heroes-launcher-flow-");
-  try{
-   Path common=root.resolve("Games"),gold=common.resolve("Gold"),toe=common.resolve("Tribes");
-   install(gold,"vanilla");install(gold,"hof");install(toe,"toe");
-   Map<Path,byte[]> before=snapshot(root);LauncherSelectionCheck ui=new LauncherSelectionCheck();
-   ui.prefs.values.put(Games.pathKey("toe"),toe.toString());
-   ui.choose(gold.resolve("DataLS").toFile());
-   assert ui.edition.equals("vanilla")&&ui.game.equals(gold.toFile());
-   assert ui.prefs.values.get(Games.pathKey("vanilla")).equals(gold.toString());
-   assert ui.prefs.values.get(Games.pathKey("hof")).equals(gold.toString());
-   assert ui.prefs.values.get(Games.pathKey("toe")).equals(toe.toString());
-   ui.edition="toe";ui.choose(common.toFile());
-   assert ui.edition.equals("toe")&&ui.game.equals(toe.toFile());
-   assert ui.prefs.values.get(Games.pathKey("vanilla")).equals(gold.toString());
-   assert ui.prefs.values.get(Games.pathKey("hof")).equals(gold.toString());
-   int refreshes=ui.refreshes;Map<String,String> saved=new HashMap<>(ui.prefs.values);
-   ui.select(root.resolve("incomplete").toFile());assert ui.refreshes==refreshes&&ui.prefs.values.equals(saved);
-   Map<Path,byte[]> after=snapshot(root);assert before.keySet().equals(after.keySet());
-   for(Path p:before.keySet())assert Arrays.equals(before.get(p),after.get(p));
-   System.out.println("PASS actual folder flow: inner DataLS, combined Vanilla/HoF, parent discovery, retained ToE path, incomplete root, original bytes");
-  }finally{Unpacker.delete(root.toFile());}
- }
+/* Records what the game asks of the launcher base (org.homm5.port.launcher.Launch). */
+public final class Launch {
+    public static List<String> ready = new ArrayList<>();
+    public static List<String> opened = new ArrayList<>();
+    public static boolean readyFails;
+    public final List<String> calls = new ArrayList<>();
+    public static List<String> ready(Object context) {
+        if (readyFails) throw new IllegalStateException("no port.json");
+        return new ArrayList<>(ready);
+    }
+    public static void openLauncher(Object activity, String distribution) { opened.add("open " + distribution); }
+    public static void openLauncher(Object activity, String distribution, boolean play) { opened.add("open " + distribution + (play ? " play" : "")); }
+    public void exiting(int code, String next) { calls.add("exiting " + code + " " + next); openLauncher(null, next != null ? next : "current", next != null); }
+    public void failed(String reason) { calls.add("failed " + reason); }
 }
 '''
-
 
 SWITCH = r'''
 package org.homm5.port;
 import java.io.*;
-import java.nio.file.*;
 import java.lang.ref.WeakReference;
 import java.util.*;
-class Context {
- static final int MODE_PRIVATE=0;final Prefs prefs=new Prefs();
- Prefs getSharedPreferences(String s,int mode){return prefs;}
- static class Prefs {Map<String,String> values=new HashMap<>();Editor edit(){return new Editor();}
-  class Editor {Editor putString(String k,String v){values.put(k,v);return this;}void apply(){}}}
-}
-class Intent {
- static final int FLAG_ACTIVITY_NEW_TASK=1,FLAG_ACTIVITY_CLEAR_TASK=2;
- Class<?> target;int flags;Map<String,Object> extras=new HashMap<>();
- Intent(Context c,Class<?> t){target=t;}Intent putExtra(String k,Object v){extras.put(k,v);return this;}
- Intent addFlags(int f){flags|=f;return this;}
-}
-class Assets {static Set<String> available=new HashSet<>();static boolean runtimeAvailable(Context c,File base,String id){return available.contains(id);}}
-class Launcher {
- static final String PREFS="launcher",EXTRA_GAME="game";static File base;static Map<String,File> folders=new HashMap<>();
- static File baseDir(){return base;}
- static File chosenGame(Context c,Intent i,String id){File f=folders.get(id);return Games.installed(f,id)?f:null;}
- /* READY */
- /* CLASSES */
-}
+import org.homm5.port.launcher.Launch;
+class Assets {static Set<String> available=new HashSet<>();static boolean runtimeAvailable(Object c,File base,String id){return available.contains(id);}}
 class VanillaGameActivity extends GameActivity {}class HofGameActivity extends GameActivity {}
 class android {
+ static class util {static class Log {static int w(String tag,String text){return 0;}}}
  static class R {static class style {static final int Theme_Material_Dialog_Alert=16974374;}}
  static class app {static class AlertDialog {
  interface Click {void run(AlertDialog d,int which);}interface Dismiss {void run(AlertDialog d);}
  String[] titles;Click item,neutral;Dismiss dismissed;boolean visible;int theme;
  static class Builder {
-  AlertDialog d=new AlertDialog();Builder(Context c){}Builder(Context c,int theme){d.theme=theme;}Builder setTitle(String t){return this;}
+  AlertDialog d=new AlertDialog();Builder(Object c,int theme){d.theme=theme;}Builder setTitle(String t){return this;}
   Builder setItems(String[] t,Click c){d.titles=t;d.item=c;return this;}
   Builder setNeutralButton(String t,Click c){d.neutral=c;return this;}
   Builder setNegativeButton(String t,Click c){return this;}AlertDialog create(){return d;}
@@ -114,87 +53,135 @@ class android {
  void dismiss(){visible=false;if(dismissed!=null)dismissed.run(this);}
  void select(int i){item.run(this,i);dismiss();}void launcher(){neutral.run(this,0);dismiss();}
 }}}
-public class GameActivity extends Context {
+public class GameActivity {
  private static volatile WeakReference<GameActivity> currentActivity=new WeakReference<>(null);
- private android.app.AlertDialog gameSwitchDialog;private volatile Intent pendingGameLaunch;
+ private android.app.AlertDialog gameSwitchDialog;
+ private volatile boolean switchRequested;private volatile String pendingSwitch;
+ private Launch launch=new Launch();private boolean nativeReady=true,finished;
  private String edition="toe";private String gameEdition(){return edition;}
- private static final int T_CURRENT_GAME=1,T_SWITCH_GAME=2,T_OPEN_LAUNCHER=3,T_CANCEL=4;
+ private static final int T_CURRENT_GAME=1,T_SWITCH_GAME=2,T_OPEN_LAUNCHER=3,T_CANCEL=4,ESC=1;
  private static String text(int n){return Integer.toString(n);}
- private static int requests;private int uiPosts,releases;private List<Intent> started=new ArrayList<>();
+ private static int requests;private int uiPosts,releases,escapes;
  private static void nativeRequestGameSwitch(){requests++;}
+ private static File baseDir(){return new File("HeroesV");}
  private boolean isFinishing(){return false;}private boolean isDestroyed(){return false;}
- private void releaseAll(){releases++;}private void hideSystemUi(){}
+ private void releaseAll(){releases++;}private void hideSystemUi(){}private void finish(){finished=true;}
+ private void pulseKey(int code){assert code==ESC;escapes++;}
  private static class Touch {void requestFocus(){}}private Touch touch=new Touch();
  private void runOnUiThread(Runnable r){uiPosts++;r.run();}
- private void startActivity(Intent i){started.add(i);}
  /* ACTUAL */
- static void install(Path root,String id)throws Exception{
-  for(String name:Games.required(id)){Path p=root.resolve(name);Files.createDirectories(p.getParent());Files.write(p,new byte[]{1});}
- }
- static GameActivity fresh(){GameActivity a=new GameActivity();currentActivity=new WeakReference<>(a);return a;}
+ static GameActivity fresh(String id){GameActivity a=new GameActivity();a.edition=id;currentActivity=new WeakReference<>(a);return a;}
  public static void main(String[] args)throws Exception{
-  Path root=Files.createTempDirectory("heroes-switch-flow-");
-  try{
-   Launcher.base=root.toFile();for(String id:Games.IDS){Path p=root.resolve(id);install(p,id);Launcher.folders.put(id,p.toFile());Assets.available.add(id);}
-   GameActivity a=fresh();onSwitchGame();assert a.gameSwitchDialog.titles.length==3&&a.releases==1;
-   assert a.gameSwitchDialog.theme==android.R.style.Theme_Material_Dialog_Alert : "Switch list and buttons must use a coherent dark dialog theme";
-   a.gameSwitchDialog.dismiss();assert requests==0&&a.pendingGameLaunch==null&&a.started.isEmpty();
-   onSwitchGame();a.gameSwitchDialog.select(2);assert requests==0&&a.pendingGameLaunch==null;
-   onSwitchGame();Assets.available.remove("hof");a.gameSwitchDialog.select(1);assert requests==0;Assets.available.add("hof");
-   File hof=Launcher.folders.remove("hof");assert Launcher.readyGames(a).equals(Arrays.asList("vanilla","toe"));Launcher.folders.put("hof",hof);
-   onSwitchGame();a.gameSwitchDialog.select(0);
-   assert requests==1&&a.started.isEmpty()&&a.pendingGameLaunch.target==Launcher.class;
-   assert a.pendingGameLaunch.extras.get(Launcher.EXTRA_GAME).equals(Launcher.folders.get("vanilla").getAbsolutePath());
-   assert a.pendingGameLaunch.extras.get("launch_edition").equals("vanilla");
-   assert a.prefs.values.isEmpty();int posts=a.uiPosts;
-   onGameExit();assert a.started.size()==1&&a.started.get(0).target==Launcher.class&&a.uiPosts==posts;
-   a=fresh();onSwitchGame();a.gameSwitchDialog.launcher();assert requests==2&&a.started.isEmpty();
-   onGameExit();Intent next=a.started.get(0);assert next.target==Launcher.class;
-   assert Boolean.TRUE.equals(next.extras.get("show_launcher"))&&Boolean.TRUE.equals(next.extras.get("game_exited"));
-   a=fresh();onGameExit();assert a.started.size()==1&&a.started.get(0).target==Launcher.class;
-   assert (a.started.get(0).flags&Intent.FLAG_ACTIVITY_CLEAR_TASK)!=0;
-   System.out.println("PASS actual Android switch flow: installed/runtime filtering, cancel/current no exit, missing runtime race, deferred target launch, synchronous JNI exit callback, launcher escape");
-  }finally{Unpacker.delete(root.toFile());}
+  Launch.ready.addAll(Arrays.asList("toe","hof","vanilla"));Assets.available.addAll(Launch.ready);
+  GameActivity a=fresh("toe");onSwitchGame();assert a.gameSwitchDialog.titles.length==3&&a.releases==1;
+  assert a.gameSwitchDialog.theme==android.R.style.Theme_Material_Dialog_Alert : "a coherent dark dialog";
+  assert a.gameSwitchDialog.titles[0].endsWith(text(T_CURRENT_GAME)) : "the running edition is marked";
+  a.gameSwitchDialog.dismiss();assert requests==0&&!a.switchRequested&&Launch.opened.isEmpty() : "cancel changes nothing";
+  onSwitchGame();a.gameSwitchDialog.select(0);assert requests==0&&!a.switchRequested : "the current edition is no switch";
+  onSwitchGame();Assets.available.remove("hof");a.gameSwitchDialog.select(1);assert requests==0 : "its engine left the build meanwhile";
+  Assets.available.add("hof");
+  Launch.ready.remove("hof");assert a.readyGames().equals(Arrays.asList("toe","vanilla")) : "only editions with their files";
+  Launch.ready.add(1,"hof");
+  Launch.readyFails=true;assert a.readyGames().isEmpty();Launch.readyFails=false;
+  onSwitchGame();a.gameSwitchDialog.select(1);
+  assert requests==1&&a.switchRequested&&"hof".equals(a.pendingSwitch)&&Launch.opened.isEmpty() : "the engine saves and exits first";
+  int posts=a.uiPosts;onSwitchGame();assert a.gameSwitchDialog==null : "no second dialog while the switch runs";
+  onGameExit();assert a.uiPosts==posts+1 : "the exit callback itself is synchronous";
+  assert a.launch.calls.equals(Arrays.asList("exiting 0 hof"))&&Launch.opened.equals(Arrays.asList("open hof play")) : Launch.opened;
+  Launch.opened.clear();a=fresh("vanilla");onSwitchGame();a.gameSwitchDialog.launcher();assert requests==2&&a.switchRequested&&a.pendingSwitch==null;
+  onGameExit();assert a.launch.calls.equals(Arrays.asList("exiting 0 null"))&&Launch.opened.equals(Arrays.asList("open current")) : Launch.opened;
+  Launch.opened.clear();a=fresh("hof");onGameExit();assert a.launch.calls.equals(Arrays.asList("exiting 0 null")) : "the options' Launcher item";
+  Launch.opened.clear();a=fresh("hof");a.launch=null;a.switchRequested=true;a.pendingSwitch="toe";onGameExit();
+  assert Launch.opened.equals(Arrays.asList("open toe play")) : "without the launcher's record the switch still opens it";
+  Launch.opened.clear();a=fresh("toe");a.back();assert a.escapes==1&&a.releases==1&&!a.finished : "back is the game's Escape";
+  a.nativeReady=false;a.back();assert a.finished&&Launch.opened.equals(Arrays.asList("open toe")) : "before the engine runs back leads to the launcher";
+  Launch.opened.clear();a=fresh("vanilla");a.refuse("files missing");
+  assert a.launch.calls.equals(Arrays.asList("failed files missing"))&&a.finished&&Launch.opened.equals(Arrays.asList("open vanilla"));
+  System.out.println("PASS game flow: switch list from the launcher's ready editions and this build, cancel/current/no-runtime, deferred switch through Launch.exiting, launcher item, back, refusal");
  }
 }
 '''
 
 
 class LauncherGameFlowTest(unittest.TestCase):
-    def java(self, name, source):
-        out = ROOT / 'build/tests/launcher-game-flow' / name
-        out.mkdir(parents=True, exist_ok=True)
-        path = out / (name + '.java')
-        path.write_text(source, encoding='utf8')
-        files = [SOURCE / (n + '.java') for n in ('Games', 'Zip', 'Deflate64', 'Unpacker')]
-        subprocess.run([str(JAVA / 'javac.exe'), '--release', '8', '-encoding', 'UTF-8', '-d', str(out), *map(str, files), str(path)], check=True)
-        subprocess.run([str(JAVA / 'java.exe'), '-ea', '-cp', str(out), 'org.homm5.port.' + name], check=True)
+    @classmethod
+    def setUpClass(cls):
+        cls.activity = (SOURCE / "GameActivity.java").read_text(encoding="utf-8")
 
-    def test_actual_global_folder_selection_registers_all_detected_editions(self):
-        source = (SOURCE / 'Launcher.java').read_text(encoding='utf8')
-        methods = '\n'.join(function(source, signature) for signature in ('private void select(File root)', 'private void chooseFolder(Uri tree)'))
-        self.java('LauncherSelectionCheck', SELECTION.replace('/* ACTUAL */', methods))
+    def test_actual_switch_exit_and_back_routing(self):
+        methods = "\n".join(function(self.activity, signature) for signature in (
+            "    private static void onGameExit()", "    private static void onSwitchGame()",
+            "    private java.util.List<String> readyGames()", "    private void showGameSwitch()",
+            "    private void switchToGame(String edition)", "    private void back()", "    private void toLauncher()",
+            "    private void refuse(String reason)"))
+        out = ROOT / "build/tests/launcher-game-flow"
+        (out / "src/org/homm5/port/launcher").mkdir(parents=True, exist_ok=True)
+        (out / "src/org/homm5/port/launcher/Launch.java").write_text(LAUNCH, encoding="utf-8")
+        (out / "src/org/homm5/port/GameActivity.java").write_text(SWITCH.replace("/* ACTUAL */", methods), encoding="utf-8")
+        subprocess.run([str(JAVA / "javac.exe"), "--release", "8", "-encoding", "UTF-8", "-d", str(out / "classes"),
+                        str(SOURCE / "Games.java"), str(out / "src/org/homm5/port/launcher/Launch.java"),
+                        str(out / "src/org/homm5/port/GameActivity.java")], check=True)
+        result = subprocess.run([str(JAVA / "java.exe"), "-ea", "-cp", str(out / "classes"), "org.homm5.port.GameActivity"],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("PASS game flow", result.stdout)
 
-    def test_actual_game_switch_dialog_and_native_exit_routing(self):
-        source = (SOURCE / 'GameActivity.java').read_text(encoding='utf8')
-        launcher = (SOURCE / 'Launcher.java').read_text(encoding='utf8')
-        methods = '\n'.join(function(source, signature) for signature in (
-            'private static void onGameExit()', 'private static void onSwitchGame()',
-            'private void showGameSwitch()', 'private void switchToGame(String edition)'))
-        fixture = SWITCH.replace('/* ACTUAL */', methods)
-        fixture = fixture.replace('/* READY */', function(launcher, 'static List<String> readyGames('))
-        fixture = fixture.replace('/* CLASSES */', function(launcher, 'static Class<? extends GameActivity> gameClass('))
-        self.java('GameActivity', fixture)
+    def test_launch_is_attached_first_and_told_how_the_start_went(self):
+        create = function(self.activity, "    @Override protected void onCreate(Bundle state)")
+        body = re.sub(r"/\*.*?\*/", "", create[create.index("super.onCreate(state);") + len("super.onCreate(state);"):], flags=re.S)
+        first = next(line.strip() for line in body.splitlines() if line.strip())
+        self.assertEqual(first, "launch = attachLauncher();")       # before the native library and its thread
+        self.assertLess(create.index("attachLauncher()"), create.index("NativeLibrary.load("))
+        self.assertIn("getOnBackInvokedDispatcher().registerOnBackInvokedCallback(", create)   # target SDK 36+
+        self.assertIn("launch.failed(reason)", create)               # the engine could not be loaded
+        self.assertIn("Launch.attach(this)", function(self.activity, "    private Launch attachLauncher()"))
+        start = function(self.activity, "    private void startGame()")
+        for refusal in ("refuse(String.format(", "refuse(text(T_RUNTIME_MISSING))"):
+            self.assertLess(start.index(refusal), start.index("launch.starting()"))
+        self.assertLess(start.index("launch.starting()"), start.index('SessionLog.begin(this, data)'))
+        self.assertLess(start.index("launch.starting()"), start.index("nativeStart(gameDir"))
+        self.assertIn("File gameDir = gameFolder();", start)
+        self.assertIn("Games.installed(gameDir, gameEdition())", start)
+        self.assertIn('if ("toe".equals(gameEdition())) nativeNewCreatureFramework(optionOn("new_creature_framework"));', start)
+        self.assertIn('        nativeLanPeers(option("lan_peers"));', start)     # every engine exports it
+        self.assertIn('        nativeRefreshRates(displayRefreshRates());', start)
+        self.assertIn("        SessionLog.begin(this, data);", start)    # every edition, its own userdata folder
+        self.assertNotIn('"toe".equals(gameEdition())) SessionLog', start)
+        self.assertIn("Assets.overlay(this, skipIntro(), gameEdition())", start)
+        folder = function(self.activity, "    private File gameFolder()")
+        self.assertIn("launch.folder(PART_GAME)", folder)
+        self.assertIn("getStringExtra(EXTRA_GAME)", folder)        # tools keep their own folder
+        ready = self.activity[self.activity.index("            if (ready) {"):self.activity.index("                View done = loading;")]
+        self.assertIn("launch.firstFrame(game);", ready)          # where the old start marker was written
+        exit_ = function(self.activity, "    private static void onGameExit()")
+        self.assertIn("activity.launch.exiting(0, next);", exit_)   # the engine's own exit() follows
+        self.assertNotIn("killProcess", self.activity)
+        renew = function(self.activity, "    @Override protected void onNewIntent(Intent intent)")
+        self.assertIn("launch.firstFrame(null);", renew)
+        destroy = function(self.activity, "    @Override protected void onDestroy()")
+        self.assertIn("unregisterOnBackInvokedCallback(", destroy)
+        for old in ("Launcher.", "RendererPolicy", "Renderers.", "markStarted", "startupMarker"):
+            self.assertNotIn(old, re.sub(r"/\*.*?\*/", "", self.activity, flags=re.S))
 
-    def test_global_picker_precedes_launch_cards_without_per_card_choose_buttons(self):
-        source = (SOURCE / 'Launcher.java').read_text(encoding='utf8')
-        build = function(source, 'private void build()')
-        cards = function(source, 'private void refreshEditions(')
-        self.assertLess(build.index('archiveButton = button('), build.index('column.addView(editionCards)'))
-        self.assertLess(build.index('folderButton = button('), build.index('column.addView(editionCards)'))
-        self.assertNotIn('T_SELECT_GAME', cards)
-        self.assertIn('playEdition(id)', cards)
+    def test_only_opengl_es_while_dxvk_stays_disabled(self):
+        choose = function(self.activity, "    private void chooseRenderer()")
+        self.assertIn('new File(getApplicationInfo().nativeLibraryDir, "libh5dxvk.so").isFile()', choose)
+        self.assertIn('"toe".equals(gameEdition())', choose)
+        start = function(self.activity, "    private void startGame()")
+        self.assertIn("if (!GLES.equals(renderer)) {", start)
+        self.assertLess(start.index("nativeRenderer(nativeMode(renderer)"), start.index("nativeStart("))
+        # The engine's bridge needs HOMM5_DXVK, whose define stays inside a comment.
+        bridge = (ROOT / "android/host/d3d9_dxvk.c").read_text(encoding="utf-8")
+        guard = "#if defined(VOID_ANDROID_APP) && defined(HOMM5_DXVK)"
+        self.assertEqual(bridge.count(guard), 1)
+        head = bridge[:bridge.index(guard)]
+        self.assertIn("#define HOMM5_DXVK\n */", head)
+        self.assertNotIn("HOMM5_DXVK", re.sub(r"/\*.*?\*/", "", head, flags=re.S))
+        # port.json offers no Vulkan mode, so the launcher has no renderer card and no driver check.
+        spec = (ROOT / "android/port.json").read_text(encoding="utf-8")
+        self.assertNotIn('"kind": "vulkan"', spec)
+        self.assertNotIn('"kind": "turnip"', spec)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

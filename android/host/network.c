@@ -12,7 +12,7 @@
  * machine's own name resolving to its LAN addresses. Calls that wait release
  * the guest machine. */
 #include "host.h"
-#if defined(VOID_ANDROID_APP) && !defined(HOMM5_LEGACY_UI)
+#ifdef VOID_ANDROID_APP
 #include <jni.h>
 #endif
 #include <arpa/inet.h>
@@ -250,7 +250,6 @@ static int interfaces_recent(net_interface *out, int max)
     return n;
 }
 
-#ifndef HOMM5_LEGACY_UI
 /* LAN over Tailscale or another VPN (option port_lan_vpn, off by default). A
  * tunnel has no broadcast and Tailscale spreads its members over 100.64.0.0/10,
  * so a small discovery broadcast also goes to the peers the player listed in
@@ -371,21 +370,16 @@ static void vpn_first(net_interface *list, int n)
             break;
         }
 }
-#endif
 
 /* LAN addresses first (wlan, then any other), loopback last; with the VPN
- * option (ToE) the tunnel comes before them. */
+ * option the tunnel comes before them. */
 static int local_addresses(uint32_t *out, int max)
 {
     net_interface list[16];
     int n = interfaces(list, 16), count = 0;
-#ifndef HOMM5_LEGACY_UI
     vpn_first(list, n);
     int tunnel = n && void_port_lan_vpn() && vpn_interface(&list[0]);
     if (tunnel && count < max) out[count++] = list[0].address;
-#else
-    int tunnel = 0;
-#endif
     for (int pass = 0; pass < 3; ++pass)
         for (int i = tunnel; i < n && count < max; ++i) {
             int loopback = (list[i].flags & IFF_LOOPBACK) != 0, wlan = !strncmp(list[i].name, "wlan", 4);
@@ -926,12 +920,10 @@ static uint32_t do_send(uint32_t s, uint32_t buffer, uint32_t size, uint32_t fla
     if (blocking) void_blocking_end();
     trace_packet(slot, s, "sendto", to ? &in : NULL, (const uint8_t *)GPTR(buffer), sent);
     if (sent >= 0 && to && is_broadcast(in.sin_addr.s_addr)) echo_broadcast(slot, fd, GPTR(buffer), size, host_flags, in.sin_port);
-#ifndef HOMM5_LEGACY_UI
     if (to && size <= 64 && void_port_lan_vpn() && is_broadcast(in.sin_addr.s_addr)) {
         ssize_t peers = vpn_broadcast(fd, GPTR(buffer), size, host_flags, in.sin_port);
         if (sent < 0 && peers >= 0) sent = peers;
     }
-#endif
     if (sent < 0) {
         uint32_t e = fail_errno();
         if (socket_error != WSA_EWOULDBLOCK)
@@ -1023,9 +1015,7 @@ static uint32_t do_wsaioctl(uint32_t s, uint32_t code, uint32_t out, uint32_t ou
     if (code == 0x4004747Fu) {                           /* SIO_GET_INTERFACE_LIST: INTERFACE_INFO[] */
         net_interface list[16];
         int n = interfaces(list, 16);
-#ifndef HOMM5_LEGACY_UI
         vpn_first(list, n);
-#endif
         uint32_t need = 76u * (uint32_t)n;
         if (!out || out_size < need || !void_vm_writable(out, need)) return fail(WSA_EFAULT);
         memset(GPTR(out), 0, need);
@@ -1167,7 +1157,7 @@ WINAPI_EXPORT("iphlpapi.dll", GetAdaptersInfo, 2)
     return 0;
 }
 
-#if defined(VOID_ANDROID_APP) && !defined(HOMM5_LEGACY_UI)
+#ifdef VOID_ANDROID_APP
 JNIEXPORT void JNICALL Java_org_homm5_port_GameActivity_nativeLanPeers(JNIEnv *env, jobject self, jstring peers)
 {
     (void)self;

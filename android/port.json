@@ -1,0 +1,126 @@
+{
+  "schema": 1,
+  "app": {
+    "label": "Heroes V",
+    "title": "Heroes of Might and Magic V",
+    "subtitle": "Heroes V / Hammers of Fate / Tribes of the East",
+    "logTag": "HeroesV",
+    "storage": "HeroesV",
+    "github": "phys-winner/pc_decomp_homm5",
+    "languages": ["en", "ru"],
+    "hooks": "org.homm5.port.LauncherHooks",
+    "allFilesAccess": true,
+    "localNetwork": true,
+    "autoLaunch": true,
+    "processes": {"launcher": ":launcher"}
+  },
+  "theme": {
+    "background": ["#142230", "#0A1018", "#020305"],
+    "card": "#EB16141A",
+    "cardStroke": "#6EEBCB7F",
+    "cell": "#2E2C34",
+    "accent": "#EBCB7F",
+    "accentDark": "#A07828",
+    "primaryFill": "#402C0E",
+    "text": "#FFFFFF",
+    "muted": "#A5A5B2",
+    "error": "#FF7D6E",
+    "titleFont": "serif-bold"
+  },
+  "distributions": [
+    {
+      "id": "toe",
+      "title": {"en": "Tribes of the East", "ru": "Повелители Орды"},
+      "version": "3.1",
+      "activity": "org.homm5.port.GameActivity",
+      "renderers": ["gles"],
+      "intro": {"default": true},
+      "parts": [
+        {
+          "id": "game",
+          "title": {"en": "Game files", "ru": "Файлы игры"},
+          "folder": "{storage}/game",
+          "marker": "bin/H5_Game.exe",
+          "required": ["bin/H5_Game.exe", "data/data.pak", "data/a2p1-data.pak"],
+          "needed": ["bin/", "bina1/", "data/", "dataa1/", "datals/", "music/", "video/", "profiles/", "maps/",
+                     "usercampaigns/", "usermods/", "hwcursors/", "duelpresets/"]
+        }
+      ]
+    },
+    {
+      "id": "hof",
+      "title": {"en": "Hammers of Fate", "ru": "Владыки Севера"},
+      "version": "2.1",
+      "activity": "org.homm5.port.HofGameActivity",
+      "renderers": ["gles"],
+      "intro": {"default": true},
+      "parts": [
+        {
+          "id": "game",
+          "title": {"en": "Game files", "ru": "Файлы игры"},
+          "folder": "{storage}/game-hof",
+          "marker": "bina1/H5_Game.exe",
+          "required": ["bina1/H5_Game.exe", "data/data.pak", "dataa1/a1-data.pak", "dataa1/a1p1-data.pak"],
+          "needed": ["bin/", "bina1/", "data/", "dataa1/", "datals/", "music/", "video/", "profiles/", "maps/",
+                     "usercampaigns/", "usermods/", "hwcursors/", "duelpresets/"]
+        }
+      ]
+    },
+    {
+      "id": "vanilla",
+      "title": "Heroes of Might and Magic V",
+      "version": "1.6",
+      "activity": "org.homm5.port.VanillaGameActivity",
+      "renderers": ["gles"],
+      "intro": {"default": true},
+      "parts": [
+        {
+          "id": "game",
+          "title": {"en": "Game files", "ru": "Файлы игры"},
+          "folder": "{storage}/game-vanilla",
+          "marker": "bin/H5_Game.exe",
+          "required": ["bin/H5_Game.exe", "data/data.pak", "data/p3c-data.pak", "DataLS/p6-data.pak"],
+          "needed": ["bin/", "bina1/", "data/", "dataa1/", "datals/", "music/", "video/", "profiles/", "maps/",
+                     "usercampaigns/", "usermods/", "hwcursors/", "duelpresets/"]
+        }
+      ]
+    }
+  ],
+  "renderers": {
+    "default": "gles",
+    "modes": [
+      {"id": "gles", "kind": "gles", "title": "OpenGL ES",
+       "description": {"en": "The port's own Direct3D 9 on OpenGL ES 3.2: works everywhere.",
+                       "ru": "Собственный рендерер порта: Direct3D 9 на OpenGL ES 3.2, работает везде."}}
+    ]
+  },
+  "options": [
+    {"key": "new_creature_framework", "type": "bool", "default": "0", "only": ["toe"],
+     "title": "Tribes of the East: New Creature Framework",
+     "hint": {"en": "MMH5.5 patches: creature limit 999 for mods with new creatures. Only with such a mod installed: without its creature files the game does not start.",
+              "ru": "Патчи MMH5.5: лимит существ 999 для модов с новыми существами. Только с установленным модом: без его файлов существ игра не запустится."}},
+    {"key": "lan_peers", "type": "text", "default": "",
+     "title": {"en": "LAN over Tailscale/VPN: players", "ru": "LAN через Tailscale/VPN: игроки"},
+     "hint": {"en": "For a network game across Tailscale: the other players' Tailscale (100.x.y.z) addresses or MagicDNS names, separated by spaces, commas or lines. The game sends its LAN search to them. Also turn on Settings → Additional → «LAN over Tailscale/VPN» in the game on every device.",
+              "ru": "Для сетевой игры через Tailscale: адреса Tailscale (100.x.y.z) или имена MagicDNS других игроков через пробел, запятую или с новой строки. Поиск сетевых игр отправляется и на них. Также включите в игре Настройки → Дополнительные → «LAN через Tailscale/VPN» на каждом устройстве."}}
+  ],
+  "cleanup": {
+    "categories": [
+      {"id": "editor", "part": "game", "title": {"en": "Map editor and its documentation", "ru": "Редактор карт и его документация"},
+       "globs": ["editor/", "editor documentation/", "bin/H5_MapEditor.exe", "bina1/H5_MapEditor.exe"]},
+      {"id": "installers", "part": "game", "title": {"en": "Installers, uninstallers and Windows libraries", "ru": "Установщики, деинсталляторы и библиотеки Windows"},
+       "globs": ["unins*", "setup*", "directx/", "_commonredist/", "__redist/", "redist/", "vcredist*", "*.msi", "__support/", "support/"]},
+      {"id": "docs", "part": "game", "title": {"en": "Manuals and readme files", "ru": "Руководства и файлы readme"},
+       "globs": ["*.pdf", "*.rtf", "*.txt", "*.doc", "*.htm", "*.html", "manual/", "manuals/", "docs/", "documentation/"]},
+      {"id": "store", "part": "game", "title": {"en": "Shop and Windows launcher files at the top of the game folder", "ru": "Файлы магазинов и запуска Windows в корне папки игры"},
+       "globs": ["goggame-*", "webcache.zip", "*.exe", "*.dll", "*.ico", "*.url", "*.lnk", "*.info", "*.hashdb", "*.dat", "*.msg", "*.bmp", "*.vdf"]}
+    ]
+  },
+  "textures": {"backend": "org.homm5.port.TexconvBackend"},
+  "hints": {
+    "gameFiles": {"en": "A ZIP archive of the installed game (only the folders the game reads are unpacked) or the folder of the installation: the one with bin and data, and bina1/dataa1 for Hammers of Fate. A folder holding several games is taken for each of them.",
+                  "ru": "ZIP-архив установленной игры (распаковываются только папки, которые читает игра) или папка установки — та, где лежат bin и data, а для Hammers of Fate также bina1/dataa1. Папка, где установлено несколько игр, подойдёт для каждой из них."},
+    "options": {"en": "Render scale, interface scale and camera sensitivity are in the game: Settings → Additional.",
+                "ru": "Масштаб рендера, интерфейса и чувствительность камеры — в самой игре: Настройки → Дополнительные."}
+  }
+}

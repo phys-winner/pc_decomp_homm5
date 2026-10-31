@@ -436,7 +436,7 @@ public class TouchControlsCheck {
         clear(); t.onTouchEvent(one(0,1,300,300));
         t.onSizeChanged(1600,900,1280,800); kinds(0,10);
         advance(700); assert queue.isEmpty();
-        // ToE: an unmoved two-contact chord lifted inside the chord time is a two-finger tap (21, not 9);
+        // An unmoved two-contact chord lifted inside the chord time is a two-finger tap (21, not 9);
         // a slow pair stays the resting pair (9); a finger added 200 ms or later is a second finger (11).
         clear();edition = "toe";
         TouchLayer tap=new TouchLayer(new Context());
@@ -456,13 +456,19 @@ public class TouchControlsCheck {
         tap.onTouchEvent(two(5,1,1,300,300,2,500,320));kinds(0,11);
         tap.onTouchEvent(two(6,1,1,300,300,2,500,320));kinds(0,11,12,19);
         tap.onTouchEvent(one(1,1,300,300));advance(700);assert queue.isEmpty();clear();
-        edition = "vanilla";   // legacy engines keep the 450 ms hold rule and never get kind 21
-        tap.onTouchEvent(one(0,1,300,300));advance(250);
-        tap.onTouchEvent(two(5,1,1,300,300,2,500,320));kinds(0,8);advance(40);
-        tap.onTouchEvent(two(6,1,1,300,300,2,500,320));tap.onTouchEvent(one(1,1,300,300));kinds(0,8,9,7);
-        advance(700);assert queue.isEmpty();clear();
+        for (String legacy : new String[] {"vanilla", "hof"}) {   // the 1.6/2.1 engines take both as well
+            edition = legacy;
+            tap.onTouchEvent(one(0,1,300,300));advance(40);
+            tap.onTouchEvent(two(5,1,1,300,300,2,500,320));kinds(0,8);advance(120);
+            tap.onTouchEvent(two(6,1,1,300,300,2,500,320));advance(40);
+            tap.onTouchEvent(one(1,1,300,300));kinds(0,8,21,7);advance(700);assert queue.isEmpty();clear();
+            tap.onTouchEvent(one(0,1,300,300));advance(250);
+            tap.onTouchEvent(two(5,1,1,300,300,2,500,320));kinds(0,11);
+            tap.onTouchEvent(two(6,1,1,300,300,2,500,320));kinds(0,11,12,19);
+            tap.onTouchEvent(one(1,1,300,300));advance(700);assert queue.isEmpty();clear();
+        }
         System.out.println("PASS actual touch classifier: immediate tap/double, three-finger chord, hold/drag, re-based multi-finger "
-            + "transform and tilt, pointer IDs, abort, full Surface, ToE two-finger tap and early second finger");
+            + "transform and tilt, pointer IDs, abort, full Surface, two-finger tap and early second finger in every edition");
     }
     public static void main(String[] args) { new TouchControlsCheck().check(); }
     /* ACTUAL_TOUCH_LAYER */

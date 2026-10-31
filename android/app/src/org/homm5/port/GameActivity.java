@@ -14,6 +14,7 @@ import android.graphics.drawable.GradientDrawable;
 import android.hardware.input.InputManager;
 import android.os.Bundle;
 import android.os.Build;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -47,10 +48,18 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.HashSet;
+import org.homm5.port.launcher.Launch;
 
-/** Finger gestures are resolved by the game's own UI, orders and camera code. */
+/** Finger gestures are resolved by the game's own UI, orders and camera code. The launcher base
+ *  (android/port.json, org.homm5.port.launcher) starts each edition's activity: its game folder,
+ *  options and opening videos come through Launch, which also learns how the start went. */
 public class GameActivity extends Activity implements SurfaceHolder.Callback {
     protected String gameEdition() { return "toe"; }
+    /** The launcher's part of an edition that holds the installed game (port.json). */
+    static final String PART_GAME = "game";
+    /** A tool's own game folder for this start (am start ... --es game PATH), as before the launcher. */
+    static final String EXTRA_GAME = "game";
+    private static final String GLES = "gles";
 
     private static native void nativeStart(String game, String data, String images, String overlay, String cache,
             int width, int height, boolean verbose);
@@ -69,7 +78,8 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private static native void nativeNewCreatureFramework(boolean enabled);
     private static native void nativeRefreshRates(float[] rates);
     private static native void nativeLanPeers(String peers);
-    /** Tribes of the East's renderer (android/host/d3d9_dxvk.c): mode as RendererPolicy.nativeMode. */
+    /** Tribes of the East's renderer (android/host/d3d9_dxvk.c): 0 OpenGL ES, 1 DXVK, 2 DXVK on Turnip
+     *  (android/dxvk/bridge_abi.h). */
     private static native void nativeRenderer(int mode, String libraryDir, String cacheDir);
     /** The mode the session renders with once Direct3D was created (-1 before; 0 OpenGL ES). */
     private static native int nativeRendererActive();
@@ -89,7 +99,17 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private HardwareInput hardware;
     private android.app.AlertDialog gamepadHelp;
     private android.app.AlertDialog gameSwitchDialog;
-    private volatile Intent pendingGameLaunch;
+    /* The switch dialog's choice, opened when the engine has saved its profile and exits
+       (onGameExit): another edition, or null for the launcher itself. */
+    private volatile boolean switchRequested;
+    private volatile String pendingSwitch;
+    /* The launcher's record of this start (folders, options, first frame, exit); null without the
+       launcher's assets in the APK. */
+    private Launch launch;
+    /* The launcher's language ("en", "ru", ...) for this activity's own words; null: the system's. */
+    private static volatile String language;
+    private Object backCallback;
+    private boolean firstFrameShown;
     private GestureProbe gestureProbe;
     /* Wi-Fi chips drop broadcast and multicast frames to save power unless an
        app holds this: the LAN game finds its sessions by UDP broadcast. */
@@ -115,19 +135,29 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private float loadingShown;
     private boolean nativeReady;
     private boolean resumed;
-    /* The renderer of this start (RendererPolicy; OpenGL ES for the other editions). The DXVK
-       modes keep one surface for the activity's life and hand it back on onStart (surfaceHidden). */
-    private String renderer = RendererPolicy.GLES;
-    private boolean surfaceHidden, rendererReported;
-    private android.app.AlertDialog rendererDialog;
+    /* The renderer of this start: OpenGL ES, while DXVK/Turnip stay disabled (port.json offers no
+       other mode, the APK carries no DXVK). The DXVK modes keep one surface for the activity's life
+       and hand it back on onStart (surfaceHidden). */
+    private String renderer = GLES;
+    private boolean surfaceHidden;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
+        /* The launcher's hand-over first, before any native code: this start's distribution, folders
+           and options (PORT_* in the environment too) and its record. */
+        launch = attachLauncher();
+        language = launch != null ? launch.language() : null;
         requestWindowFeature(Window.FEATURE_NO_TITLE);
+        /* Target SDK 36+: on Android 16+ the system's back is no onBackPressed() and no KEYCODE_BACK. */
+        if (Build.VERSION.SDK_INT >= 33) {
+            android.window.OnBackInvokedCallback back = this::back;
+            backCallback = back;
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, back);
+        }
         game = new FrameLayout(this);
         createLoading();
         loadingBar.setIndeterminate(true);
-        loadingText.setText(Locale.getDefault().getLanguage().equals("ru") ? "Подготовка игры…" : "Preparing game…");
+        loadingText.setText(text(T_PREPARING));
         setContentView(game);
         new Thread(() -> {
             try {
@@ -135,96 +165,74 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                 runOnUiThread(() -> {
                     if (isFinishing() || isDestroyed()) return;
                     nativeReady = true;
-                    prepareRenderer();
+                    chooseRenderer();
+                    startGame();
                 });
             } catch (java.io.IOException | UnsatisfiedLinkError e) {
                 android.util.Log.e("HeroesV", "native library: " + e);
                 runOnUiThread(() -> {
                     if (isFinishing() || isDestroyed()) return;
+                    String reason = String.valueOf(e.getMessage() != null ? e.getMessage() : e);
+                    if (launch != null) launch.failed(reason);
                     new android.app.AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
-                        .setMessage(e.getMessage()).setPositiveButton(android.R.string.ok, (dialog, which) -> finish())
-                        .setOnCancelListener(dialog -> finish()).show();
+                        .setMessage(reason).setPositiveButton(android.R.string.ok, (dialog, which) -> toLauncher())
+                        .setOnCancelListener(dialog -> toLauncher()).show();
                 });
             }
         }, "native-library").start();
     }
 
+    private Launch attachLauncher() {
+        try {
+            return Launch.attach(this);
+        } catch (RuntimeException noLauncher) {
+            android.util.Log.w("HeroesV", "launcher: " + noLauncher);
+            return null;
+        }
+    }
+
+    /** The launcher started this edition again while it runs (its icon, or a switch back to it): the
+     *  game goes on, and this start, too, has long shown its first screen. */
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        if (!firstFrameShown) return;
+        Launch again = attachLauncher();
+        if (again != null) {
+            launch = again;
+            launch.firstFrame(null);
+        }
+    }
+
+    /** Leaves for the launcher, which shows this edition (and why it did not start, when it did not). */
+    private void toLauncher() {
+        Launch.openLauncher(this, gameEdition());
+        finish();
+    }
+
+    /** Refuses this start before the engine runs: the reason goes to the launcher's card. */
+    private void refuse(String reason) {
+        android.util.Log.w("HeroesV", "start refused: " + reason);
+        if (launch != null) launch.failed(reason);
+        toLauncher();
+    }
+
     /* ------------------------------------------------------------ renderer */
 
-    /** Tribes of the East: the renderer is fixed before the engine starts. While nobody has chosen
-     *  a mode (the launcher picks the best one once its driver check has finished, or the player
-     *  does), a start that would run on OpenGL ES offers the best mode once. No restart is needed:
-     *  nothing has created Direct3D yet. */
-    private void prepareRenderer() {
-        /* DXVK/Turnip support is commented out (RendererPolicy.ENABLED): OpenGL ES, as for the other editions. */
-        if (!RendererPolicy.ENABLED || !"toe".equals(gameEdition())) { startGame(); return; }
-        String chosen = Renderers.chosen(this);
-        boolean undecided = chosen.isEmpty()
-            || (RendererPolicy.GLES.equals(chosen) && Renderers.AUTO.equals(Renderers.origin(this)));
-        if (!undecided || Renderers.offered(this) || !Renderers.needsProbe(this)) { startRenderer(chosen); return; }
-        if (Renderers.report(this) != null) { offerRenderer(chosen); return; }
-        Renderers.probe(this);
-        loadingText.setText(Renderers.ru() ? "Проверка видеодрайвера…" : "Checking the graphics driver…");
-        final long until = SystemClock.uptimeMillis() + 6000;
-        handler.postDelayed(new Runnable() {
-            @Override public void run() {
-                if (isFinishing() || isDestroyed()) return;
-                if (Renderers.report(GameActivity.this) == null && SystemClock.uptimeMillis() < until) {
-                    handler.postDelayed(this, 250);
-                    return;
-                }
-                offerRenderer(chosen);
-            }
-        }, 250);
+    /** Tribes of the East's renderer is fixed before the engine starts: the launcher's choice
+     *  (port.json "renderers"). DXVK/Turnip stay disabled: port.json offers OpenGL ES only and the
+     *  APK carries the DXVK bridge only when built with --dxvk, so every start renders with OpenGL ES. */
+    private void chooseRenderer() {
+        String chosen = launch != null ? launch.renderer() : null;
+        boolean dxvk = "dxvk".equals(chosen) || "turnip".equals(chosen);
+        renderer = dxvk && "toe".equals(gameEdition()) && Build.VERSION.SDK_INT >= 30
+            && new File(getApplicationInfo().nativeLibraryDir, "libh5dxvk.so").isFile() ? chosen : GLES;
     }
 
-    private void offerRenderer(String chosen) {
-        java.util.Map<String, String> report = Renderers.report(this);
-        if (report == null) { startRenderer(chosen); return; }   /* not checked in time: next start */
-        String best = RendererPolicy.best(Renderers.statuses(this, report), report);
-        if (RendererPolicy.GLES.equals(best)) {
-            if (chosen.isEmpty()) Renderers.choose(this, RendererPolicy.GLES, Renderers.AUTO);
-            startRenderer(RendererPolicy.GLES);
-            return;
-        }
-        boolean ru = Renderers.ru();
-        String title = RendererPolicy.title(best);
-        rendererDialog = new android.app.AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
-            .setTitle(ru ? "Режим отрисовки" : "Renderer")
-            .setMessage(String.format(ru
-                ? "Игра запускается на OpenGL ES, а этому устройству доступен %1$s.\n\n%2$s\n\n%3$s\n\nПереключиться? Выбор можно изменить в лаунчере."
-                : "The game starts on OpenGL ES, and %1$s is available on this device.\n\n%2$s\n\n%3$s\n\nSwitch? The launcher can change it later.",
-                title, RendererPolicy.description(best, ru), RendererPolicy.limits(ru)))
-            .setPositiveButton(ru ? "Переключить на " + title : "Switch to " + title, (dialog, which) -> {
-                Renderers.choose(this, best, Renderers.OFFER);
-                Renderers.markOffered(this);
-                startRenderer(best);
-            })
-            .setNegativeButton(ru ? "Оставить OpenGL ES" : "Keep OpenGL ES", (dialog, which) -> {
-                Renderers.choose(this, RendererPolicy.GLES, Renderers.USER);
-                Renderers.markOffered(this);
-                startRenderer(RendererPolicy.GLES);
-            })
-            .setCancelable(false)
-            .create();
-        rendererDialog.setOnDismissListener(dialog -> rendererDialog = null);
-        rendererDialog.show();
-    }
+    /** android/dxvk/bridge_abi.h: HOMM5_RENDERER_GLES / _DXVK / _TURNIP. */
+    private static int nativeMode(String mode) { return "dxvk".equals(mode) ? 1 : "turnip".equals(mode) ? 2 : 0; }
 
-    /** A chosen DXVK mode that is known not to run here any more starts on OpenGL ES; without a
-     *  current check (just updated) the choice stands, and the engine falls back if DXVK fails. */
-    private void startRenderer(String chosen) {
-        if (isFinishing() || isDestroyed()) return;
-        if ("toe".equals(gameEdition()) && RendererPolicy.valid(chosen) && !RendererPolicy.GLES.equals(chosen)) {
-            java.util.Map<String, String> report = Renderers.report(this);
-            RendererPolicy.Status status = RendererPolicy.status(Renderers.statuses(this, report), chosen);
-            renderer = status.available || (report == null && Renderers.needsProbe(this)) ? chosen : RendererPolicy.GLES;
-            if (!renderer.equals(chosen)) android.util.Log.w("HeroesV", "renderer " + chosen + " unavailable: " + status.reason);
-        }
-        startGame();
-    }
-
-    private boolean dxvkSurface() { return !RendererPolicy.GLES.equals(renderer) && Build.VERSION.SDK_INT >= 30; }
+    private boolean dxvkSurface() { return !GLES.equals(renderer) && Build.VERSION.SDK_INT >= 30; }
 
     private void startGame() {
         currentActivity = new WeakReference<>(this);
@@ -260,7 +268,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         setContentView(game);
 
         preferences = getSharedPreferences(Games.preferences(gameEdition()), MODE_PRIVATE);
-        File base = Launcher.baseDir();
+        File base = baseDir();
         gestureProbe = GestureProbe.register(this, touch, base);
         try {
             android.net.wifi.WifiManager wifi = (android.net.wifi.WifiManager) getApplicationContext()
@@ -274,14 +282,18 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         }
         File data = new File(base, Games.userdata(gameEdition()));
         data.mkdirs();
-        File gameDir = Launcher.chosenGame(this, getIntent(), gameEdition());
-        if (gameDir == null) {
-            startActivity(new Intent(this, Launcher.class).putExtra("game_exited", true).putExtra("edition", gameEdition()));
-            finish();
+        File gameDir = gameFolder();
+        if (gameDir == null || !Games.installed(gameDir, gameEdition())) {
+            refuse(String.format(Locale.ROOT, text(T_FILES_MISSING), Games.title(gameEdition()),
+                gameDir != null ? gameDir.getPath() : "?"));
+            return;
+        }
+        if (!Assets.runtimeAvailable(this, base, gameEdition())) {
+            refuse(text(T_RUNTIME_MISSING));
             return;
         }
         File images = Assets.images(this, base, gameEdition());
-        File overlay = Assets.overlay(this, Launcher.skipIntro(this), gameEdition());
+        File overlay = Assets.overlay(this, skipIntro(), gameEdition());
         File cache = new File(getCacheDir(), Games.cache(gameEdition()));
         cache.mkdirs();
         /* The saved scales seed the game's port variables before it registers them. */
@@ -289,24 +301,24 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         nativeRenderScale(savedFloat("render_scale", 1));
         nativeCameraSensitivity(savedFloat("camera_sensitivity", 1));
         /* MMH5.5's New Creature Framework patches exist for the 3.1 engine only (android/host/ncf.c). */
-        if ("toe".equals(gameEdition())) nativeNewCreatureFramework(Launcher.newCreatureFramework(this));
-        /* ToE's frame rate combobox lists the display's own rates (port_settings.c). */
-        if ("toe".equals(gameEdition())) nativeRefreshRates(displayRefreshRates());
+        if ("toe".equals(gameEdition())) nativeNewCreatureFramework(optionOn("new_creature_framework"));
+        /* The frame rate combobox lists the display's own rates (port_settings.c). */
+        nativeRefreshRates(displayRefreshRates());
         /* Tailscale/VPN players for the LAN search, used with the game's option (network.c). */
-        if ("toe".equals(gameEdition())) nativeLanPeers(Launcher.lanPeers(this));
+        nativeLanPeers(option("lan_peers"));
         /* So is the DXVK renderer (android/host/d3d9_dxvk.c): its libraries were extracted with the APK. */
-        if (RendererPolicy.ENABLED && "toe".equals(gameEdition())) {
-            nativeRenderer(RendererPolicy.nativeMode(renderer), getApplicationInfo().nativeLibraryDir, getCacheDir().getAbsolutePath());
-            Renderers.startedWith(this, renderer);
+        if (!GLES.equals(renderer)) {
+            nativeRenderer(nativeMode(renderer), getApplicationInfo().nativeLibraryDir, getCacheDir().getAbsolutePath());
             android.util.Log.i("HeroesV", "renderer " + renderer);
         }
         android.util.Log.i("HeroesV", "game " + gameDir + ", images " + images + ", overlay " + overlay);
-        /* Until this start shows its first screen, the icon opens the launcher: a start that
+        /* The engine starts now: an earlier refusal of this edition's start no longer applies. Until
+           this start shows its first screen (firstFrame), the icon opens the launcher: a start that
            crashes or hangs must not be repeated by every later tap on the icon. */
-        if (!Launcher.startupMarker(this, gameEdition()).delete() && Launcher.startupMarker(this, gameEdition()).exists())
-            android.util.Log.w("HeroesV", "startup marker stays");
-        /* ToE keeps the previous sessions' logs and how they ended (the engine appends to this one). */
-        if ("toe".equals(gameEdition())) SessionLog.begin(this, data);
+        if (launch != null) launch.starting();
+        /* Every edition keeps its previous sessions' logs and how they ended, in its own userdata
+           folder (the engine appends to this one: <userdata>/homm5.log). */
+        SessionLog.begin(this, data);
         nativeStart(gameDir.getAbsolutePath(), data.getAbsolutePath(), images.getAbsolutePath(),
                 overlay != null ? overlay.getAbsolutePath() : null, cache.getAbsolutePath(), 0, 0,
                 new File(base, "verbose").exists());
@@ -314,6 +326,29 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         if (resumed && lanLock != null && !lanLock.isHeld()) lanLock.acquire();
         startLoading();
     }
+
+    /** /sdcard/HeroesV (port.json "app.storage"): the editions' userdata, development copies, flag files. */
+    static File baseDir() { return new File(Environment.getExternalStorageDirectory(), "HeroesV"); }
+
+    /** The edition's game folder: a tool's own (am start ... --es game PATH), else the launcher's part
+     *  "game" (the player's choice, or port.json's default /sdcard/HeroesV/game[-edition]). */
+    private File gameFolder() {
+        String extra = getIntent().getStringExtra(EXTRA_GAME);
+        if (extra != null && Games.installed(new File(extra), gameEdition())) return new File(extra);
+        File chosen = launch != null ? launch.folder(PART_GAME) : null;
+        return chosen != null ? chosen : new File(baseDir(), Games.pathKey(gameEdition()));
+    }
+
+    /** port.json's options as the player set them in the launcher. */
+    private String option(String key) {
+        String value = launch != null ? launch.option(key) : null;
+        return value != null ? value.trim() : "";
+    }
+
+    private boolean optionOn(String key) { return "1".equals(option(key)) || "true".equals(option(key)); }
+
+    /** "Skip the opening videos" of this edition's card (on by default, as before the launcher). */
+    private boolean skipIntro() { return launch == null || launch.skipIntro(); }
 
     private float savedFloat(String key, float fallback) {
         try { return preferences.getFloat(key, fallback); }
@@ -405,16 +440,16 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         if (key != null) activity.preferences.edit().putFloat(key, value).apply();
     }
 
-    /* The native exit has saved the profile; the launcher survives in its own process. */
+    /* The native exit has saved the profile (android_main.c calls this on the game thread right
+       before exit()): the launcher opens in its own process, and starts the edition chosen in the
+       switch dialog. The engine ends this process itself, so Android records its own exit status
+       for SessionLog. */
     private static void onGameExit() {
         GameActivity activity = currentActivity.get();
         if (activity != null) {
-            Intent next = activity.pendingGameLaunch;
-            if (next == null) next = new Intent(activity, Launcher.class)
-                    .putExtra("game_exited", true)
-                    .putExtra("edition", activity.gameEdition())
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
-            activity.startActivity(next);
+            String next = activity.switchRequested ? activity.pendingSwitch : null;
+            if (activity.launch != null) activity.launch.exiting(0, next);
+            else Launch.openLauncher(activity, next != null ? next : activity.gameEdition(), next != null);
         }
     }
 
@@ -425,10 +460,25 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         });
     }
 
+    /** The editions that can start now: their files in place (the launcher's state) and their
+     *  engine, images and overlay in this build. */
+    private java.util.List<String> readyGames() {
+        java.util.List<String> ready = new java.util.ArrayList<>(), found;
+        try {
+            found = Launch.ready(this);
+        } catch (RuntimeException e) {
+            android.util.Log.w("HeroesV", "ready games: " + e);
+            found = java.util.Collections.emptyList();
+        }
+        File base = baseDir();
+        for (String id : found) if (Games.valid(id) && Assets.runtimeAvailable(this, base, id)) ready.add(id);
+        return ready;
+    }
+
     private void showGameSwitch() {
-        if (isFinishing() || isDestroyed() || gameSwitchDialog != null || pendingGameLaunch != null) return;
+        if (isFinishing() || isDestroyed() || gameSwitchDialog != null || switchRequested) return;
         releaseAll();
-        java.util.List<String> installed = Launcher.readyGames(this);
+        java.util.List<String> installed = readyGames();
         String[] titles = new String[installed.size()];
         for (int i = 0; i < titles.length; ++i) titles[i] = Games.title(installed.get(i))
                 + (installed.get(i).equals(gameEdition()) ? text(T_CURRENT_GAME) : "");
@@ -446,33 +496,29 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         gameSwitchDialog.show();
     }
 
+    /** edition: another edition to start, or null for the launcher itself. */
     private void switchToGame(String edition) {
-        if (pendingGameLaunch != null || gameEdition().equals(edition)) return;
-        Intent target;
-        if (edition == null) {
-            target = new Intent(this, Launcher.class).putExtra("game_exited", true)
-                    .putExtra("show_launcher", true).putExtra("edition", gameEdition())
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
-        } else {
-            File folder = Launcher.chosenGame(this, null, edition);
-            if (folder == null || !Assets.runtimeAvailable(this, Launcher.baseDir(), edition)) return;
-            // Launcher owns its preferences in another process; let it record and start the selection.
-            target = new Intent(this, Launcher.class).putExtra("game_exited", true)
-                    .putExtra("edition", edition).putExtra("launch_edition", edition)
-                    .putExtra(Launcher.EXTRA_GAME, folder.getAbsolutePath())
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
-        }
-        // The engine saves its profile and closes before onGameExit starts this target.
-        pendingGameLaunch = target;
+        if (switchRequested || gameEdition().equals(edition)) return;
+        // Its files or this build may have changed since the list was shown.
+        if (edition != null && !readyGames().contains(edition)) return;
+        // The engine saves its profile and closes before onGameExit opens the launcher, which
+        // records and starts the choice (Launch.exiting).
+        pendingSwitch = edition;
+        switchRequested = true;
         nativeRequestGameSwitch();
     }
 
-    /** "Back" is the game's own Escape: its menu and its dialogs' cancel. */
-    @Override public void onBackPressed() {
-        if (!nativeReady) { super.onBackPressed(); return; }
+    /** "Back" is the game's own Escape: its menu and its dialogs' cancel. Before the engine runs it
+     *  leads back to the launcher. */
+    private void back() {
+        if (!nativeReady) { toLauncher(); return; }
         releaseAll();
         pulseKey(ESC);
     }
+
+    /** Android before 16, or predictive back turned off: the old path. */
+    @SuppressWarnings("deprecation")
+    @Override public void onBackPressed() { back(); }
 
     @Override public void surfaceCreated(SurfaceHolder holder) {
         refreshSurface = null;
@@ -528,7 +574,8 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         if (hardware != null) ((InputManager)getSystemService(Context.INPUT_SERVICE)).unregisterInputDeviceListener(hardware);
         if (gamepadHelp != null) gamepadHelp.dismiss();
         if (gameSwitchDialog != null) gameSwitchDialog.dismiss();
-        if (rendererDialog != null) rendererDialog.dismiss();
+        if (Build.VERSION.SDK_INT >= 33 && backCallback != null)
+            getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback((android.window.OnBackInvokedCallback) backCallback);
         handler.removeCallbacksAndMessages(null);
         if (gestureProbe != null) unregisterReceiver(gestureProbe);
         if (lanLock != null && lanLock.isHeld()) lanLock.release();
@@ -592,9 +639,10 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             loadingBar.setProgress(Math.round(loadingShown * 1000));
             loadingText.setText(String.format(Locale.getDefault(), "%s  %d%%", text(T_LOADING), Math.round(loadingShown * 100)));
             if (ready) {
-                try { Launcher.markStarted(GameActivity.this, gameEdition()); }
-                catch (java.io.IOException e) { android.util.Log.w("HeroesV", "startup marker: " + e); }
-                reportRenderer();
+                /* This build's start of this edition reached its first screen: the icon may go
+                   straight into the game again (port.json "autoLaunch"); an update notice shows once. */
+                firstFrameShown = true;
+                if (launch != null) launch.firstFrame(game);
                 if (work > 50) preferences.edit().putInt("startup_work", work).apply();
                 View done = loading;
                 loading = null;
@@ -607,21 +655,11 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         }
     };
 
-    /** The first screen is up, so Direct3D exists: a DXVK mode that fell back to OpenGL ES is told
-     *  once here and in the launcher (homm5.log has the reason). */
-    private void reportRenderer() {
-        if (rendererReported || !"toe".equals(gameEdition()) || RendererPolicy.GLES.equals(renderer)) return;
-        rendererReported = true;
-        if (nativeRendererActive() != RendererPolicy.GLES_NATIVE) { Renderers.clearFallback(this); return; }
-        Renderers.fellBack(this, renderer);
-        android.widget.Toast.makeText(this, String.format(Renderers.ru()
-            ? "%s не запустился, игра идёт на OpenGL ES" : "%s did not start; the game runs on OpenGL ES",
-            RendererPolicy.title(renderer)), android.widget.Toast.LENGTH_LONG).show();
-    }
-
-    private static final int T_LOADING = 0, T_SWITCH_GAME = 1, T_OPEN_LAUNCHER = 2, T_CANCEL = 3, T_CURRENT_GAME = 4;
+    private static final int T_LOADING = 0, T_SWITCH_GAME = 1, T_OPEN_LAUNCHER = 2, T_CANCEL = 3, T_CURRENT_GAME = 4,
+        T_PREPARING = 5, T_FILES_MISSING = 6, T_RUNTIME_MISSING = 7;
+    /** This activity's words in the launcher's language (Russian or English; the system's before it). */
     private static String text(int id) {
-        String lang = Locale.getDefault().getLanguage();
+        String lang = language != null ? language : Locale.getDefault().getLanguage();
         boolean ru = "ru".equals(lang) || "uk".equals(lang) || "be".equals(lang);
         switch (id) {
         case T_LOADING: return ru ? "Загрузка" : "Loading";
@@ -629,6 +667,10 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         case T_OPEN_LAUNCHER: return ru ? "Открыть лаунчер" : "Open launcher";
         case T_CANCEL: return ru ? "Отмена" : "Cancel";
         case T_CURRENT_GAME: return ru ? " (текущая)" : " (current)";
+        case T_PREPARING: return ru ? "Подготовка игры…" : "Preparing game…";
+        case T_FILES_MISSING: return ru ? "%1$s: в папке %2$s нет файлов игры — выберите папку или архив игры в лаунчере."
+                                        : "%1$s: the game's files are not in %2$s; choose the game's folder or archive in the launcher.";
+        case T_RUNTIME_MISSING: return ru ? "Эта игра недоступна в установленной сборке." : "This game is not available in the installed build.";
         default: return "";
         }
     }
@@ -811,13 +853,11 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                 + "существа под первым пальцем. Поднимите второй палец, чтобы закрыть её и продолжить наведение; "
                 + "если первым поднять наводящий палец, приказа не будет. Быстрое касание двумя пальцами "
                 + "отменяет приказ. При расстановке войск отряды перетаскиваются между полем и ячейками запаса.\n"
-                + ("toe".equals(gameEdition())
-                    ? "Портрет на шкале инициативы выделяется касанием; второе касание этого портрета открывает карточку "
-                        + "существа, каждое следующее переключает описание и эффекты, касание в другом месте закрывает её.\n"
-                        + "Двойное касание мини-карты (или касание её двумя пальцами) включает и выключает подсветку объектов.\n"
-                        + "Книга заклинаний: свайп влево или вправо листает страницы, вверх или вниз — закладки; касание "
-                        + "рядом с закладкой выбирает её.\n"
-                    : "")
+                + "Портрет на шкале инициативы выделяется касанием; второе касание этого портрета открывает карточку "
+                + "существа, каждое следующее переключает описание и эффекты, касание в другом месте закрывает её.\n"
+                + "Двойное касание мини-карты (или касание её двумя пальцами) включает и выключает подсветку объектов.\n"
+                + "Книга заклинаний: свайп влево или вправо листает страницы, вверх или вниз — закладки; касание "
+                + "рядом с закладкой выбирает её.\n"
                 + "Два пальца — перемещение, масштаб и поворот камеры; два пальца рядом вверх-вниз — наклон. "
                 + "Одновременное короткое касание поля тремя пальцами — исходные наклон и поворот; в бою также положение камеры.\n\n"
                 + "Разделение армий\n\n"
@@ -1198,7 +1238,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                 TWO_FINGER_CANCEL = 9, ABORT = 10, SECOND_BEGIN = 11, SECOND_TAP = 12, SECOND_HOLD = 13,
                 THREE_FINGER_TAP = 14, TILT = 15, SECOND_END = 19, FIRST_END = 20, TWO_FINGER_TAP = 21;
         private static final long HOLD_MS = 450, MULTI_TAP_MS = 300, CHORD_JOIN_MS = 120, CHORD_TAP_MS = 300;
-        /* ToE: a finger added this long after the first is a second finger (combat card, troop split)
+        /* A finger added this long after the first is a second finger (combat card, troop split)
            rather than the start of a two-finger camera gesture, whose fingers land together. */
         private static final long SECOND_MS = 200;
         private int pointer = -1, secondPointer = -1;
@@ -1513,8 +1553,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                 if (first < 0) { cancelGesture(); return true; }
                 cancelHold();
                 secondPointer = event.getPointerId(index);
-                boolean late = "toe".equals(gameEdition()) && !chordCandidate
-                        && event.getEventTime() - event.getDownTime() >= SECOND_MS;
+                boolean late = !chordCandidate && event.getEventTime() - event.getDownTime() >= SECOND_MS;
                 if (holding || panning || late) {
                     secondaryCandidate = true; secondaryHeld = false;
                     secondaryDownX = secondaryX = event.getX(index);
@@ -1565,8 +1604,8 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                 cancelHold();
                 cancelSecondaryHold();
                 if (multi) {
-                    if (pairTap && !transformed && !tilting && "toe".equals(gameEdition())
-                            && event.getEventTime() - chordDownTime <= CHORD_TAP_MS) emit(TWO_FINGER_TAP, lastX, lastY);
+                    if (pairTap && !transformed && !tilting && event.getEventTime() - chordDownTime <= CHORD_TAP_MS)
+                        emit(TWO_FINGER_TAP, lastX, lastY);
                     else if (!transformed && !tilting) emit(TWO_FINGER_CANCEL, lastX, lastY);
                     emit(END, lastX, lastY);
                 } else {

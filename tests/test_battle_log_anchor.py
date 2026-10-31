@@ -31,7 +31,8 @@ class BattleLogAnchorTest(unittest.TestCase):
                 scale = adapted.read_text()
                 helpers = '\n'.join(function(scale, name) for name in (
                     'static float scale_native_position(', 'static float scale_size(',
-                    'static float scale_anchor_shift(', 'static int scale_named(', 'static void scale_place('))
+                    'static float scale_clamp(', 'static float scale_anchor_shift(', 'static int scale_named(',
+                    'static void scale_place('))
                 helpers = ('static struct {uint32_t screen;} viewport;\n'
                            'static int void_vm_readable(uint32_t a,uint32_t n) '
                            '{return a>=0x100&&(uint64_t)a+n<=sizeof memory;}\n'

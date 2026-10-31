@@ -175,7 +175,7 @@ static void choose(const char *text) {   /* the string copier's assignment of an
 }
 int main(void) {
     static const char *const names[8] = {"port_ui_scale", "port_render_scale", "port_camera_sensitivity", "port_fps_limit", "port_cursor_offset_x", "port_cursor_offset_y", "port_touch_cursor", "port_lan_vpn"};
-    /* ToE frame-rate items: half rate, then the display's rates (rounded, deduplicated, 45..240). */
+    /* Frame-rate items: half rate, then the display's rates (rounded, deduplicated, 45..240). */
     static const float modes[] = {120.0f, 59.94f, 90.0f, 60.0f, 24.0f, 300.0f, 119.88f};
     void_port_set_refresh_rates(modes, 7);
     assert(!strcmp(port_text_defaults[0], "30;60;90;120") && !strcmp(port_text_defaults[1], "60"));
@@ -208,7 +208,7 @@ int main(void) {
         assert(r->storage == port_storage + 4u * (uint32_t)i && r->value == port_defaults[i] && !strcmp(r->text, texts[i]));
         assert(MEMF(r->storage) == port_defaults[i]);
     }
-    /* ToE: the frame-rate list (level 0) and choice (profile) as engine strings, empty until copied. */
+    /* The frame-rate list (level 0) and choice (profile) as engine strings, empty until copied. */
     assert(!strcmp(registered[9].name, "port_fps_items") && registered[9].level == 0 && registered[9].copier == 0x00499700u);
     assert(!strcmp(registered[9].text, "30;60;90;120") && registered[9].storage == port_text_storage);
     assert(!strcmp(registered[10].name, "port_fps_choice") && registered[10].level == 2 && registered[10].copier == 0x00499700u);
@@ -248,7 +248,7 @@ int main(void) {
         if (which == 1) assert(render_applied == value);
         if (which == 2) assert(void_port_camera_sensitivity() == value);
         if (which < 3) assert(port_applied[which] == value);
-        else if (which == 3) assert(void_port_fps_limit() == 60.0f);   /* ToE reads port_fps_choice */
+        else if (which == 3) assert(void_port_fps_limit() == 60.0f);   /* the limit reads port_fps_choice */
         else if (which < 6) assert(void_port_cursor_offset(which == 5) == value);
         else assert(void_port_touch_cursor() == (value >= 0.5f));
     }
@@ -267,7 +267,7 @@ int main(void) {
     MEMF(port_storage + 16) = NAN; assert(void_port_cursor_offset(0) == 0.0f);
     MEMF(port_storage + 24) = NAN; assert(!void_port_touch_cursor());
     assert(!port_lock);
-    puts("PASS actual port settings: ToE frame-rate strings from display rates, LAN VPN switch, Java seeds, first registration adds port_ui/render/camera as level-2 profile floats with %g defaults (caller registers kept), later ones pass through, pump applies/reports each change once with UI/render/camera clamps and every options value");
+    puts("PASS actual port settings: frame-rate strings from display rates, LAN VPN switch, Java seeds, first registration adds port_ui/render/camera as level-2 profile floats with %g defaults (caller registers kept), later ones pass through, pump applies/reports each change once with UI/render/camera clamps and every options value");
     return 0;
 }
 '''
@@ -283,17 +283,16 @@ class PortSettingsTest(unittest.TestCase):
         for category in categories[:2]:
             self.assertFalse(any(o.findtext("ID", "").startswith("port_") for o in category.findall(".//Options/Item")))
         self.assertEqual([o.findtext("ID") for o in categories[2].findall(".//Options/Item")],
-                         [o[0] for o in port_ui.OPTIONS + port_ui.TOE_OPTIONS])
+                         [o[0] for o in port_ui.OPTIONS])
         kinds = {o.findtext("ID"): o.findtext("Type") for o in categories[2].findall(".//Options/Item")}
         self.assertEqual((kinds["port_render_scale"], kinds["port_ui_scale"], kinds["port_fps_limit"]), ("OPTION_COMBO_BOX",) * 3)
         self.assertEqual((kinds["port_touch_cursor"], kinds["port_lan_vpn"]), ("OPTION_CHECK_BOX",) * 2)
         rates = categories[2].find(".//Options/Item[ID='port_fps_limit']")
         self.assertEqual((rates.findtext("ItemsGlobalVar"), rates.findtext("UseItemNameAsValue"), rates.findtext("GlobalVar1")),
                          ("port_fps_items", "true", "port_fps_choice"))
-        for edition in ("vanilla", "hof"):   # legacy pages keep the scrollers and no network switch
+        for edition in ("vanilla", "hof"):   # the same widgets and network switch in every edition
             legacy = ET.fromstring(port_ui.patch_uiconsts(original, edition)).findall("GameOptions/Categories/Item")[2]
-            self.assertEqual({o.findtext("Type") for o in legacy.findall(".//Options/Item")}, {"OPTION_SCROLLER"})
-            self.assertEqual([o.findtext("ID") for o in legacy.findall(".//Options/Item")], [o[0] for o in port_ui.OPTIONS])
+            self.assertEqual(ET.tostring(legacy), ET.tostring(categories[2]))
         self.assertEqual(len(categories[2].findall("Pages/Item")), 2)  # Native two-column templates have valid initial widths.
         self.assertEqual(tree.findtext(".//Options/Item[ID='tooltip_delay']/DefaultValue1"), "0")
         members = port_ui.launcher_buttons(game)
@@ -343,12 +342,24 @@ class PortSettingsTest(unittest.TestCase):
         subprocess.run([str(JAVA / "java.exe"), "-ea", "-cp", str(out), "PortSettingsCheck"], check=True)
 
     def test_native_registration_and_pump(self):
-        source = (ROOT / "android/host/port_settings.c").read_text(encoding="utf-8")
+        import json
+        import port_patches
+        for edition in ("toe", "vanilla", "hof"):
+            with self.subTest(edition=edition):
+                self.native_registration_and_pump(edition, port_patches, json)
+
+    def native_registration_and_pump(self, edition, port_patches, json):
+        path = ROOT / "android/host/port_settings.c"
+        addresses = {}
+        if edition != "toe":   # 1.6/2.1: the contract-adapted source with their registration, copiers and allocator
+            path, _ = port_patches.adapt_host_source(path, ROOT / "build/tests" / ("port-settings-" + edition), edition)
+            addresses = json.loads((ROOT / "config" / (edition + ".patches.json")).read_text(encoding="utf-8"))["addresses"]
+        source = path.read_text(encoding="utf-8")
         for name in ("host.h", "touch.h"):
             source = source.replace(f'#include "{name}"\n', "")
         options = {option[1]: option for option in port_ui.OPTIONS}
         names = ("port_ui_scale", "port_render_scale", "port_camera_sensitivity", "port_fps_limit", "port_cursor_offset_x", "port_cursor_offset_y", "port_touch_cursor")
-        self.assertEqual(set(options), set(names))
+        self.assertEqual(set(options), set(names) | {"port_lan_vpn"})   # the VPN switch is checked on its own
         rows, counts = [], []
         for name in names:
             values = options[name][7]
@@ -356,7 +367,11 @@ class PortSettingsTest(unittest.TestCase):
             rows.append("{" + ",".join(f"{value!r}f" for value in values) + "}")
             counts.append(str(len(values)))
         harness = NATIVE_HARNESS.replace("/* OPTION_VALUES */", ",".join(rows)).replace("/* OPTION_COUNTS */", ",".join(counts))
-        compile_probe("port_settings", harness, {"port_settings_impl.h": source})
+        for toe in ("008791F0", "00499700", "00499630", "00C11400"):
+            if edition != "toe":
+                self.assertNotIn("0x" + toe + "u", source)
+                harness = harness.replace("0x" + toe + "u", "0x" + addresses[toe] + "u").replace("sub_" + toe, "sub_" + addresses[toe])
+        compile_probe("port_settings-" + edition, harness, {"port_settings_impl.h": source})
 
     def test_frame_limit_option_labels(self):
         option = next(row for row in port_ui.OPTIONS if row[0] == "port_fps_limit")
@@ -387,6 +402,25 @@ class PortSettingsTest(unittest.TestCase):
         background = ET.fromstring(members[prefix + "PortLogo.(BackgroundSimpleScallingTexture).xdb"])
         self.assertEqual(background.findtext("Size/y"), "768")  # Original artwork crop.
         self.assertIn("FrontA2", background.find("Texture").get("href"))
+
+    def test_scenario_selection_frame_is_transparent_in_every_edition(self):
+        window = b'''<WindowSimple ObjectRecordID="1"><Name>selection</Name><Visible>true</Visible>
+        <Priority>1</Priority><Shared href="old"/><Placement><Position><First><x>5</x><y>2</y></First>
+        </Position></Placement></WindowSimple>'''
+        shared = b'<WindowSimpleShared ObjectRecordID="2"><Flags><Transparent>false</Transparent></Flags><Background href="old"/></WindowSimpleShared>'
+        icon = b'<WindowTextViewShared><Children/></WindowTextViewShared>'
+        for edition in ("toe", "vanilla", "hof"):   # the same resources exist in every edition's data
+            with self.subTest(edition=edition), patch.object(
+                    port_ui, "source_resource", side_effect=[(window,"base"),(shared,"base"),(icon,"base")]):
+                members = port_ui.scenario_selection("unused", edition)
+                selected = ET.fromstring(members["UI/PortChoiceSelection.(WindowSimple).xdb"])
+                self.assertEqual(selected.findtext("Name"), "PortChoiceSelection")
+                self.assertEqual(selected.findtext("Visible"), "false")
+                self.assertEqual(selected.findtext("Placement/Position/First/x"), "0")
+                self.assertNotIn("ObjectRecordID", selected.attrib)
+                style = ET.fromstring(members["UI/PortChoiceSelection.(WindowSimpleShared).xdb"])
+                self.assertEqual(style.findtext("Flags/Transparent"), "true")
+                self.assertTrue(style.find("Background").get("href").startswith("/UI/"))
 
     def test_jni_and_frame_wiring(self):
         java = (ROOT / "android/app/src/org/homm5/port/GameActivity.java").read_text(encoding="utf8")

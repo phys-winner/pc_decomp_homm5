@@ -225,7 +225,11 @@ static float scale_clamp(float lo, float size, float view)
 static float scale_anchor_shift(uint32_t mode, float lo, float size, float frame_lo, float frame_hi, float view)
 {
     float frame = frame_hi - frame_lo;
-    if (frame <= view + 0.5f) return 0;
+    if (frame <= view + 0.5f) {
+        /* Self-positioned dialogs may retain their old position after the root has resized. */
+        if (mode != 2 && size <= view) return scale_clamp(lo, size, view) - lo;
+        return 0;
+    }
     float centre = (lo + size * 0.5f - frame_lo) / frame, shift;
     if (mode == 2 || (mode != 1 && centre > 0.6f)) shift = view - frame_hi;
     else if (mode == 1 || centre >= 0.4f) shift = (view - frame) * 0.5f - frame_lo;
@@ -387,7 +391,7 @@ typedef struct {
     float view_w, view_h;
     float need_w, need_h;          /* the largest elements: sizes do not change with the scale */
     float combat_left, combat_right;
-    int anchor, modal;             /* move them; else only measure (the original 100% layout) */
+    int anchor;                    /* move them; else only measure (the original 100% layout) */
     unsigned remaining, moved;
     unsigned stacks, map_army;
     float stack_top, stack_bottom, hud_top, map_top, map_bottom;
@@ -437,9 +441,10 @@ static void scale_anchor(uint32_t parent, unsigned depth, scale_pass *pass)
         float x = MEMF(child + 0x64), y = MEMF(child + 0x68);
         int native = scale_near(x, position[0]) && scale_near(y, position[1]);
         int placed = scale_near(x, position[0] + shift[0]) && scale_near(y, position[1] + shift[1]);
-        /* A modal keeps its size even after its own code repositions it; otherwise
-           fitting alternates between scales and aborts every pending click. */
-        if ((native || placed || pass->modal) && size[0] >= 1 && size[1] >= 1) {
+        /* Every shown element is measured, also one its own code repositions (a modal, or an adventure
+           dialog such as level-up that centres itself without a modal loop): otherwise fitting
+           alternates between scales and aborts every pending click. */
+        if (size[0] >= 1 && size[1] >= 1) {
             /* Keep a far-edge inset too, so moving one panel cannot cover its siblings. */
             float inset_x = MEM32(placement + 0x9C) == 2 ? fmaxf(0, -MEMF(placement + 0x88)) : 0;
             float inset_y = MEM32(placement + 0x94) == 2 ? fmaxf(0, -MEMF(placement + 0x8C)) : 0;
@@ -474,8 +479,6 @@ static void scale_anchor(uint32_t parent, unsigned depth, scale_pass *pass)
 static int scale_fits(uint32_t root, int anchor, float width, float height, float base_w, float base_h, int percent)
 {
     scale_pass pass = {.view_w = width, .view_h = height, .anchor = anchor, .remaining = 4096, .hud_top = height, .map_bottom = height};
-    uint32_t modal = scale_read32(fit.screen + 0x14C);
-    pass.modal = modal && void_vm_readable(modal, 4) && scale_read32(modal) != modal;
     if (!scale_is_root(root)) return 0;
     scale_anchor(root, 0, &pass);
     /* Both ends of the combat HUD must fit together, not merely on their own. */
@@ -494,6 +497,59 @@ static int scale_fits(uint32_t root, int anchor, float width, float height, floa
 }
 
 /* ------------------------------------------------------------------ text */
+
+static void_fn original_list_layout;
+
+/* Scrollable text rows must grow with wrapped columns before the native list places the next row. */
+static int scale_text_rows(uint32_t list)
+{
+    uint32_t holder = scale_read32(list + 0x15C), begin = scale_read32(holder + 0xA4), end = scale_read32(holder + 0xA8);
+    if (!begin || end < begin || (end - begin) % 4 || end - begin > 16384 || !void_vm_readable(begin, end - begin)) return 0;
+    int changed = 0;
+    for (uint32_t at = begin; at < end; at += 4) {
+        uint32_t row = MEM32(at), placement = scale_placement(row);
+        uint32_t a = scale_read32(row + 0xA4), b = scale_read32(row + 0xA8);
+        if (!placement || !MEM8(placement + 0x70) || !a || b <= a || (b - a) % 4 || b - a > 128 ||
+            !void_vm_readable(a, b - a)) continue;
+        float height = 0;
+        int text_only = 1;
+        for (uint32_t child = a; child < b; child += 4) {
+            uint32_t window = MEM32(child), p = scale_placement(window);
+            if (scale_read32(scale_read32(window) + 4) != 0x00B95AC0u || !p || MEM32(p + 0x94) != 0) {
+                text_only = 0; break;
+            }
+            if (!MEM8(p + 0x70)) continue;
+            float y = MEMF(p + 0x8C), h = MEMF(p + 0xA8);
+            if (!isfinite(y) || !isfinite(h) || y < 0 || h < 0 || y + h > 4096) { text_only = 0; break; }
+            height = fmaxf(height, ceilf(y + h));
+        }
+        if (text_only && height > 0 && height != MEMF(placement + 0xA8) && void_vm_writable(placement + 0xA8, 4)) {
+            MEMF(placement + 0xA8) = height;
+            changed = 1;
+        }
+    }
+    return changed;
+}
+
+static void scale_list_layout(void)
+{
+    static unsigned depth;
+    uint32_t list = g_ecx;
+    original_list_layout();
+    if (!depth && scale_read32(list) == 0x00E94034u) {
+        ++depth;
+        void_regs saved;
+        void_regs_save(&saved);
+        uint32_t bar = scale_read32(list + 0x154), method = scale_read32(scale_read32(bar + 0xF8) + 0x18);
+        if (method && void_dispatch_find(method) && !(void_call_guest_this(method, bar + 0xF8, 0, NULL) & 0xFFu) &&
+            scale_text_rows(list)) {
+            void_call_guest_this(0x008888E0u, list, 0, NULL);
+            void_call_guest_this(0x00887BA0u, list, 0, NULL);
+        }
+        void_regs_load(&saved);
+        --depth;
+    }
+}
 
 static int scale_has_text(uint32_t begin, uint32_t end)
 {
@@ -532,6 +588,17 @@ static void scale_refresh_window(uint32_t window, unsigned depth, unsigned *rema
             !void_vm_readable(begin, end - begin)) break;
         uint32_t child = MEM32(begin + i * 4);
         if (child != window) scale_refresh_window(child, depth + 1, remaining);
+    }
+    if (table == 0x00E94034u && original_list_layout) {
+        void_regs saved;
+        void_regs_save(&saved);
+        uint32_t bar = scale_read32(window + 0x154), method = scale_read32(scale_read32(bar + 0xF8) + 0x18);
+        if (method && void_dispatch_find(method) && !(void_call_guest_this(method, bar + 0xF8, 0, NULL) & 0xFFu) &&
+            scale_text_rows(window)) {
+            void_call_guest_this(0x008888E0u, window, 0, NULL);
+            void_call_guest_this(0x00887BA0u, window, 0, NULL);
+        }
+        void_regs_load(&saved);
     }
 }
 
@@ -582,6 +649,10 @@ void void_touch_scale_pump(void)
         !void_dispatch_find(0x008385A0u)) return;
     if (MEMF(0x00F74BE8u) != 1024.0f || MEMF(0x00F74BECu) != 768.0f) return;
     static int layout_hooked;
+    if (!original_list_layout) {
+        original_list_layout = void_dispatch_find(0x008885D0u);
+        if (original_list_layout) void_dispatch_add(0x008885D0u, scale_list_layout);
+    }
     if (!layout_hooked && void_dispatch_find(0x00A50560u) == (void_fn)sub_00A50560) {
         void_dispatch_add(0x00A50560u, scale_layout_override);
         layout_hooked = 1;

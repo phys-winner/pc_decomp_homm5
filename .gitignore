@@ -117,5 +117,7 @@
 .env.*
 local.properties
 port.json
+# The launcher spec (public), unlike the machine's port.json above.
+!/android/port.json
 STATE.md
 AGENTS.md

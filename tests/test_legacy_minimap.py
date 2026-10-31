@@ -48,7 +48,7 @@ class LegacyMinimapTest(unittest.TestCase):
         source = (ROOT / 'android/host/touch_scale.c').read_text()
         scale = '\n'.join(function(source, name) for name in (
             'static float scale_native_position(', 'static float scale_size(',
-            'static int scale_near(', 'static float scale_anchor_shift('))
+            'static int scale_near(', 'static float scale_clamp(', 'static float scale_anchor_shift('))
         compiler, _, _ = build_windows.compiler_environment()
         for edition, spec in SPECS.items():
             with self.subTest(edition=edition):

@@ -3,6 +3,10 @@
     python tools/build_game_apk.py [--install] [--serial SERIAL]
 The libraries come from tools/build_android.py --shared and travel as ARM64-filtered
 XZ assets, unpacked once per build. Game data and profiles live under /sdcard/HeroesV.
+The home-screen entry is the shared launcher base (../launcher, found through
+PORT_LAUNCHER, the android/launcher submodule or a checkout beside this project), built into the
+APK from android/port.json: its sources in org.homm5.port.launcher, the manifest's two markers
+expanded, assets/launcher (port.json, build.json).
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -15,11 +19,40 @@ import subprocess
 import sys
 import tempfile
 import zipfile
-from android_tools import SDK, TOOLS, ANDROID_JAR, JAVA_HOME, ADB, CLANG
+from android_tools import SDK, TOOLS, JAVA_HOME, ADB, CLANG
 from editions import EDITION_IDS, edition_spec, generated_root, module_manifest, build_root, override_files
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "build/android-game"
+# Target SDK 37 (the launcher base): aapt2 links and javac compiles against this platform.
+ANDROID_JAR = SDK / "platforms/android-37.0/android.jar"
+
+
+def launcher_base(root=None):
+    """The launcher base: PORT_LAUNCHER, else the android/launcher submodule, else ../launcher."""
+    root = Path(root or ROOT)
+    candidates = [Path(os.environ["PORT_LAUNCHER"])] if os.environ.get("PORT_LAUNCHER") else []
+    candidates += [root / "android/launcher", root.parent / "launcher"]
+    return next((path for path in candidates if (path / "tools/launcher.py").is_file()), None)
+
+
+def launcher_tool(base):
+    """The base's tools/launcher.py as a module (prepare, validate, build_probe)."""
+    if str(base / "tools") not in sys.path:
+        sys.path.insert(0, str(base / "tools"))
+    import launcher
+    if Path(launcher.__file__).resolve().parent != (base / "tools").resolve():
+        raise SystemExit(f"Another launcher module was imported ({launcher.__file__}), not {base / 'tools/launcher.py'}")
+    return launcher
+
+
+def rebase(prepared, old, new):
+    """launcher.prepare()'s paths after its folder moved."""
+    move = lambda path: str(Path(new) / Path(path).relative_to(old))
+    return dict(prepared, sources=[move(p) for p in prepared["sources"]], manifest=move(prepared["manifest"]),
+                assets=move(prepared["assets"]))
+
+
 LICENSE_FILES = {
     "GPL-3.0.txt": "LICENSE",
     "THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
@@ -194,8 +227,9 @@ def main():
     parser.add_argument("--thinlto-jobs", type=int, default=None, metavar="N",
                         help="pass the ThinLTO backend worker limit to build_android.py")
     parser.add_argument("--protocol-check", action="store_true", help="build_android.py validation build (see there)")
-    # DXVK/Turnip support is commented out (2026-10-29, RendererPolicy.ENABLED in the app): the APK
-    # carries the renderer only when asked to, and the launcher offers it only with ENABLED.
+    # DXVK/Turnip support is commented out (2026-10-29): the APK carries the renderer only when asked
+    # to, and the launcher offers it only when android/port.json lists its modes (it lists OpenGL ES only;
+    # with Vulkan modes this script also builds the launcher's driver check, libportprobe.so).
     parser.add_argument("--dxvk", action="store_true",
                         help="package the Tribes of the East DXVK renderer (tools/build_dxvk.py); off: OpenGL ES only")
     parser.add_argument("--no-dxvk", action="store_true", help=argparse.SUPPRESS)   # the default now
@@ -205,10 +239,21 @@ def main():
     if not os.environ.get("JAVA_HOME"):
         parser.error("set JAVA_HOME to a JDK installation")
     for tool in (TOOLS / "aapt2.exe", TOOLS / "d8.bat", TOOLS / "zipalign.exe",
-                 TOOLS / "apksigner.bat", ANDROID_JAR, JAVA_HOME / "bin/javac.exe",
-                 JAVA_HOME / "bin/keytool.exe"):
+                 TOOLS / "apksigner.bat", ANDROID_JAR, JAVA_HOME / "bin/javac.exe"):
         if not tool.is_file():
-            parser.error(f"missing build tool: {tool}; check ANDROID_HOME and JAVA_HOME")
+            parser.error(f"missing build tool: {tool}; check ANDROID_HOME and JAVA_HOME (the platform android-37.0 is needed)")
+    # Players update over this key's signature: it is never generated anew.
+    keystore = ROOT / "build/android/debug.keystore"
+    if not keystore.is_file():
+        parser.error(f"missing signing key: {keystore}; restore it (a new key would not install over players' APKs)")
+    base = launcher_base()
+    if base is None:
+        parser.error("the launcher base is missing: set PORT_LAUNCHER, add it as android/launcher or check it out beside the project")
+    port_launcher = launcher_tool(base)
+    try:
+        port_launcher.validate(json.loads((ROOT / "android/port.json").read_text(encoding="utf-8")))
+    except (OSError, ValueError) as failure:
+        parser.error(f"android/port.json: {failure}")
     from port_patches import validate_packaged_native
     for edition in EDITION_IDS:
         for row in module_manifest(edition, ROOT):
@@ -255,12 +300,22 @@ def main():
         for license_file in dxvk_licenses:
             shutil.copy2(license_file, staged / "licenses" / license_file.name)
         (staged / "edition-patches.json").write_text(json.dumps(receipts, indent=2) + "\n", encoding="utf-8")
+        # The launcher base: its sources in this game's package, the manifest with its markers
+        # expanded, assets/launcher (port.json, build.json with versionName/versionCode/commit/time).
+        prepared_at = Path(temporary) / "launcher"
+        try:
+            prepared = port_launcher.prepare(ROOT / "android/port.json", ROOT / "android/app/AndroidManifest.xml", prepared_at)
+        except (OSError, ValueError) as failure:
+            raise SystemExit(f"The launcher base could not be prepared: {failure}") from failure
+        shutil.copytree(Path(prepared["assets"]) / "launcher", staged / "launcher")
         if OUT.exists():
             OUT.resolve().relative_to(ROOT.resolve())
             shutil.rmtree(OUT)
         (OUT / "classes").mkdir(parents=True)
         (OUT / "dex").mkdir()
         shutil.move(staged, OUT / "assets")
+        shutil.move(prepared_at, OUT / "launcher")
+        prepared = rebase(prepared, prepared_at, OUT / "launcher")
     assets = OUT / "assets"
     resources = ROOT / "android/app/res"
     compiled_resources = []
@@ -268,12 +323,18 @@ def main():
         archive = OUT / "resources.zip"
         run(TOOLS / "aapt2.exe", "compile", "--dir", resources, "-o", archive)
         compiled_resources = [archive]
-    run(TOOLS / "aapt2.exe", "link", "-I", ANDROID_JAR, "--manifest", ROOT / "android/app/AndroidManifest.xml",
+    run(TOOLS / "aapt2.exe", "link", "-I", ANDROID_JAR, "--manifest", prepared["manifest"],
         "-A", assets, *compiled_resources, "-o", OUT / "base.apk")
-    sources = sorted((ROOT / "android/app/src").rglob("*.java"))
+    # The launcher's Vulkan driver check exists only for Vulkan renderers; port.json offers OpenGL ES only.
+    probe = port_launcher.build_probe(OUT / "probe", prepared["package"]) if prepared["probe"] else None
+    sources = sorted((ROOT / "android/app/src").rglob("*.java")) + [Path(p) for p in prepared["sources"]]
     run(JAVA_HOME / "bin/javac.exe", "--release", "8", "-encoding", "UTF-8", "-cp", ANDROID_JAR, "-d", OUT / "classes", *sources)
     classes = sorted((OUT / "classes").rglob("*.class"))
-    run(TOOLS / "d8.bat", "--lib", ANDROID_JAR, "--min-api", "26", "--output", OUT / "dex", *classes, shell=False)
+    # d8.bat runs through cmd.exe, whose command line ends at 8191 characters: with the launcher's
+    # classes the list no longer fits, so it goes in an argument file (one input a line).
+    inputs = OUT / "d8-inputs.txt"
+    inputs.write_text("".join(f"{path}\n" for path in classes), encoding="utf-8")
+    run(TOOLS / "d8.bat", "--lib", ANDROID_JAR, "--min-api", "26", "--output", OUT / "dex", "@" + str(inputs), shell=False)
     unsigned = OUT / "unsigned.apk"
     shutil.copy(OUT / "base.apk", unsigned)
     with zipfile.ZipFile(unsigned, "a", zipfile.ZIP_DEFLATED) as apk:
@@ -292,15 +353,13 @@ def main():
         # DXVK, its bridge, libc++_shared and the adrenotools/Turnip set; deflated, like the others.
         for library in dxvk_libraries:
             apk.write(library, "lib/arm64-v8a/" + library.name)
+        if probe is not None:
+            apk.write(probe, "lib/arm64-v8a/" + probe.name)
     aligned = OUT / "aligned.apk"
     # -P 16: uncompressed native code on 16 KiB boundaries (Android 15+ 16 KiB page devices).
     run(TOOLS / "zipalign.exe", "-f", "-P", "16", "4", unsigned, aligned)
-    keystore = ROOT / "build/android/debug.keystore"
-    if not keystore.exists():
-        keystore.parent.mkdir(parents=True, exist_ok=True)
-        run(JAVA_HOME / "bin/keytool.exe", "-genkeypair", "-keystore", keystore, "-storepass", "android",
-            "-keypass", "android", "-alias", "androiddebugkey", "-keyalg", "RSA", "-keysize", "2048",
-            "-validity", "10000", "-dname", "CN=Heroes V Port")
+    if not keystore.is_file():
+        raise SystemExit(f"The signing key disappeared during packaging: {keystore}")
     apk = OUT / "heroes-v.apk"
     run(TOOLS / "apksigner.bat", "sign", "--ks", keystore, "--ks-pass", "pass:android", "--key-pass", "pass:android",
         "--out", apk, aligned)

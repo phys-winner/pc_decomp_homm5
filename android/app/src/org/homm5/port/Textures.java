@@ -1,24 +1,15 @@
 package org.homm5.port;
 
-import android.content.Context;
-import android.content.Intent;
-import android.opengl.EGL14;
-import android.opengl.EGLConfig;
-import android.opengl.EGLContext;
-import android.opengl.EGLDisplay;
-import android.opengl.EGLExt;
-import android.opengl.EGLSurface;
-import android.opengl.GLES20;
-
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Locale;
 
-/** The launcher's texture conversion (android/texconv, libtexconv.so): the
- *  game's DXT textures, which some GPUs cannot sample, re-encoded once into
- *  ETC2 or ASTC (each installed data bank's own zz_port_textures*.pak), and later, if wanted, the
- *  originals removed from the game's archives. One operation at a time:
- *  {@link #current}, kept alive by {@link TextureService}. */
+/** The texture conversion (android/texconv, libtexconv.so): the game's DXT
+ *  textures, which some GPUs cannot sample, re-encoded once into ETC2 or ASTC
+ *  (each installed data bank's own zz_port_textures*.pak), and later, if wanted, the
+ *  originals removed from the game's archives. One operation at a time
+ *  ({@link #current}); the launcher base runs it through TexconvBackend on its
+ *  background work and decides with its own GPU probe whether the card shows. */
 final class Textures {
     static final int ETC2 = 1, ASTC = 2;
     static final int IDLE = 0, SCANNING = 1, CONVERTING = 2, FINISHING = 3, REMOVING = 4, DONE = 5, FAILED = 6, CANCELLED = 7;
@@ -50,64 +41,6 @@ final class Textures {
             }
         }
         return loaded;
-    }
-
-    /* -------------------------------------------------------------- the GPU */
-
-    /** What the GPU samples natively, probed once with an off-screen GLES 3 context. */
-    static final class Gpu {
-        boolean probed, s3tc, astc;
-        String renderer = "";
-    }
-
-    private static Gpu gpu;
-
-    static synchronized Gpu gpu() {
-        if (gpu != null) return gpu;
-        Gpu g = new Gpu();
-        EGLDisplay display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY);
-        EGLContext context = EGL14.EGL_NO_CONTEXT;
-        EGLSurface surface = EGL14.EGL_NO_SURFACE;
-        try {
-            int[] version = new int[2];
-            if (display != EGL14.EGL_NO_DISPLAY && EGL14.eglInitialize(display, version, 0, version, 1)) {
-                int[] attributes = {EGL14.EGL_RENDERABLE_TYPE, EGLExt.EGL_OPENGL_ES3_BIT_KHR,
-                    EGL14.EGL_SURFACE_TYPE, EGL14.EGL_PBUFFER_BIT, EGL14.EGL_NONE};
-                EGLConfig[] configs = new EGLConfig[1];
-                int[] count = new int[1];
-                if (EGL14.eglChooseConfig(display, attributes, 0, configs, 0, 1, count, 0) && count[0] > 0) {
-                    context = EGL14.eglCreateContext(display, configs[0], EGL14.EGL_NO_CONTEXT,
-                        new int[] {EGL14.EGL_CONTEXT_CLIENT_VERSION, 3, EGL14.EGL_NONE}, 0);
-                    surface = EGL14.eglCreatePbufferSurface(display, configs[0],
-                        new int[] {EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE}, 0);
-                    if (context != EGL14.EGL_NO_CONTEXT && surface != EGL14.EGL_NO_SURFACE
-                            && EGL14.eglMakeCurrent(display, surface, surface, context)) {
-                        String extensions = GLES20.glGetString(GLES20.GL_EXTENSIONS);
-                        String renderer = GLES20.glGetString(GLES20.GL_RENDERER);
-                        if (extensions != null) {
-                            g.probed = true;
-                            g.s3tc = extensions.contains("GL_EXT_texture_compression_s3tc")
-                                || (extensions.contains("GL_ANGLE_texture_compression_dxt3")
-                                    && extensions.contains("GL_ANGLE_texture_compression_dxt5"));
-                            g.astc = extensions.contains("GL_KHR_texture_compression_astc_ldr");
-                        }
-                        if (renderer != null) g.renderer = renderer;
-                    }
-                }
-            }
-        } catch (Throwable e) {
-            android.util.Log.w("HeroesV", "textures: GPU probe: " + e);
-        } finally {
-            if (display != EGL14.EGL_NO_DISPLAY) {
-                EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT);
-                if (surface != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(display, surface);
-                if (context != EGL14.EGL_NO_CONTEXT) EGL14.eglDestroyContext(display, context);
-                EGL14.eglTerminate(display);
-            }
-        }
-        android.util.Log.i("HeroesV", "textures: GPU " + g.renderer + " s3tc " + g.s3tc + " astc " + g.astc);
-        gpu = g;
-        return g;
     }
 
     /* ----------------------------------------------------------- the state */
@@ -284,14 +217,5 @@ final class Textures {
             cancelled = true;
             nativeCancel();
         }
-    }
-
-    static Job start(Context c, File game, int kind, int format) {
-        if (current != null && !current.finished) return null;
-        Job job = new Job(game, kind, format);
-        current = job;
-        new Thread(job, "textures").start();
-        c.startForegroundService(new Intent(c, TextureService.class));
-        return job;
     }
 }

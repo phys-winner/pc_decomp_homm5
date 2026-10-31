@@ -8,7 +8,7 @@
  * TOUCH_THREE_FINGER_TAP is one simultaneous, stationary three-contact chord.
  * TOUCH_SECOND_END, the resting second finger lifted while the first goes on;
  * TOUCH_FIRST_END, the first finger lifted while the second rests, followed by TOUCH_ABORT.
- * TOUCH_TWO_FINGER_TAP (ToE): two contacts within 120 ms, lifted within 300 ms, unmoved; it replaces
+ * TOUCH_TWO_FINGER_TAP: two contacts within 120 ms, lifted within 300 ms, unmoved; it replaces
  * the TOUCH_TWO_FINGER_CANCEL of a resting pair and precedes TOUCH_END. */
 enum {
     TOUCH_BEGIN, TOUCH_TAP, TOUCH_DOUBLE_TAP, TOUCH_PAN, TOUCH_TRANSFORM,
@@ -18,11 +18,7 @@ enum {
     TOUCH_THREE_FINGER_TAP, TOUCH_TILT, TOUCH_POINTER, TOUCH_PAD_CAMERA, TOUCH_POINTER_CLICK,
     TOUCH_SECOND_END, TOUCH_FIRST_END, TOUCH_TWO_FINGER_TAP
 };
-#ifndef HOMM5_LEGACY_UI
 #define TOUCH_KIND_LAST TOUCH_TWO_FINGER_TAP
-#else
-#define TOUCH_KIND_LAST TOUCH_FIRST_END
-#endif
 typedef struct {
     int kind;
     float x, y, dx, dy, scale, rotation;

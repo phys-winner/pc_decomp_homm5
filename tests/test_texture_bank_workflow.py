@@ -15,7 +15,6 @@ import java.lang.reflect.*;
 import java.util.*;
 import java.util.concurrent.*;
 
-class TextureService {}
 public class BankCheck {
  static final Map<String,long[]> status=new HashMap<>();
  static final List<String> calls=Collections.synchronizedList(new ArrayList<>());
