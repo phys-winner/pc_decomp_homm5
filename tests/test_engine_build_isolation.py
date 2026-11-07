@@ -47,18 +47,52 @@ class EngineBuildIsolation(unittest.TestCase):
             source.write_bytes(body)
             for edition in ("vanilla", "hof"):
                 with self.subTest(edition=edition), ExitStack() as stack:
-                    stack.enter_context(patch.multiple(builder, EDITION=edition, OUT=directory / edition,
-                                                      ACTIVE_NATIVE_OVERRIDES=()))
+                    builder.configure_edition(edition)
+                    stack.callback(builder.configure_edition, "toe")
+                    plans = directory / edition
+                    plans.mkdir()
+                    (plans / "summary.json").write_text(json.dumps(dict(edition=edition, flags_in=[], flags_out=[],
+                        regs={}, problems=[], names=[], helpers={}, fragments=[])))
+                    (plans / "x87.json").write_text(json.dumps({'__edition__': edition}))
+                    stack.enter_context(patch.multiple(builder, OUT=plans, ACTIVE_NATIVE_OVERRIDES=()))
+                    stack.enter_context(patch.object(builder, "protocol_root", return_value=plans))
                     adapter = stack.enter_context(patch("port_patches.adapt_generated_source",
                                                          side_effect=lambda text, *_: text))
-                    for name in ("index_region", "localize_backedges", "separate_guest_state", "apply_protocol",
-                                 "call_protocol", "apply_x87", "x87_plan", "mark_frame_begin_scene", "cutscene_projection"):
+                    for name in ("mark_frame_begin_scene", "cutscene_projection"):
                         stack.enter_context(patch.object(builder, name, side_effect=AssertionError("ToE pass: " + name)))
                     prepared, _ = builder.override_source(source, local_xmm=True)
                     result = prepared.read_bytes()
-                    self.assertIn(b"RECOMP_BACKEDGE(); RECOMP_CALL(sub_00C362E0);", result)
+                    self.assertIn(b"RECOMP_BACKEDGE(); RECOMP_CALL_P(sub_00C362E0, 0xFFu, 0xFFu, 1,", result)
+                    self.assertNotIn(b"uint32_t l_backedges", result)
+                    self.assertNotIn(b"RECOMP_SEPARATE_MEM_ADDR", result)
                     self.assertIn(b"_st[0] = fp_pc(_st[0]);", result)
                     adapter.assert_called_once_with(builder.round_x87_precision(body), "game", edition)
+
+    def test_summaries_reject_another_edition_and_analysis_caches_are_isolated(self):
+        import call_protocol
+        from editions import protocol_root
+        from protocol_transform import Protocol
+        from x87_locals import Plan
+        with tempfile.TemporaryDirectory() as temporary:
+            wrong = Path(temporary) / "summary.json"
+            wrong.write_text(json.dumps({'edition': 'toe'}))
+            for edition in ('vanilla', 'hof'):
+                with self.assertRaisesRegex(ValueError, 'another edition'):
+                    Protocol(wrong, edition=edition)
+                wrong.write_text(json.dumps({'__edition__': 'toe'}))
+                with self.assertRaisesRegex(ValueError, 'another edition'):
+                    Plan(wrong, edition=edition)
+                wrong.write_text(json.dumps({'edition': 'toe'}))
+                try:
+                    call_protocol.IMAGES['game'] = object()
+                    call_protocol.IAT_NAMES[1] = 'stale'
+                    call_protocol.FLAG_ROOTS['sub_008800B0'] = ('stale', '008800B0')
+                    call_protocol.configure_edition(edition)
+                    self.assertEqual(call_protocol.GENERATED, ROOT / 'generated' / edition)
+                    self.assertFalse(call_protocol.IMAGES or call_protocol.IAT_NAMES or call_protocol.FLAG_ROOTS)
+                    self.assertNotEqual(protocol_root(edition), protocol_root('toe'))
+                finally:
+                    call_protocol.configure_edition('toe')
 
     def test_selecting_an_engine_clears_all_address_caches(self):
         try:

@@ -5,6 +5,9 @@
 !/readme.md
 !/LICENSE
 !/THIRD_PARTY_NOTICES.md
+!/licenses/
+/licenses/*
+!/licenses/fidelityfx-fsr.txt
 !/dependencies.json
 !/requirements.txt
 !/port.example.json
@@ -15,6 +18,8 @@
 !/android/**/*.c
 !/android/**/*.cpp
 !/android/**/*.h
+!/android/host/d3d9_thread.inc
+!/android/host/d3d9_thread_check.inc
 !/android/**/*.java
 !/android/**/*.xml
 

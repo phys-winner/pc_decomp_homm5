@@ -10,6 +10,10 @@ HARNESS = r'''
 #include <assert.h>
 #include <math.h>
 #include <stdint.h>
+#define RDEV g_d3d_device
+#define gl_blit d3d_gl_blit
+#define gl_fill d3d_gl_fill
+#define d3d_gl_clear_rects d3d_gl_clear
 #include <stdio.h>
 #include <string.h>
 typedef unsigned GLenum, GLuint, GLbitfield;
@@ -159,7 +163,7 @@ int main(void) {
     /* Live production Clear mutates masks/scissor behind the cache. */
     start=clears;d3d_gl_clear(&d,0,0,7,0xFF123456u,0.5f,3);assert(clears==start+1);verify(&d);
     memory[4]=10;memory[5]=12;memory[6]=20;memory[7]=24;
-    d3d_gl_clear(&d,1,16,1,0,1,0);verify(&d);
+    d3d_gl_clear(&d,1,(const int32_t *)(memory+4),1,0,1,0);verify(&d);
     d3d_gl_clear(&d,0,0,0,0,1,0);verify(&d);
     d.ds=NULL;d3d_gl_clear(&d,0,0,6,0,1,0);verify(&d);d.ds=&ds;verify(&d);
 
@@ -195,9 +199,9 @@ def sources():
     indices.update(map(int, re.search(r"mask_state\[4\] = \{([^}]+)\}", gl_body)[1].split(",")))
     harness = HARNESS.replace("CONSUMED", ",".join(map(str, sorted(indices))))
     return source, harness, {"state.h": valid + invalidate + helpers, "uncached.h": reference,
-                             "clear.h": function(source, "void d3d_gl_clear("),
-                             "blit.h": function(source, "void d3d_gl_blit("),
-                             "fill.h": function(source, "void d3d_gl_fill(")}
+                             "clear.h": function(source, "void d3d_gl_clear_rects("),
+                             "blit.h": function(source, "static void gl_blit("),
+                             "fill.h": function(source, "static void gl_fill(")}
 
 
 class RasterStateCacheTest(unittest.TestCase):
@@ -208,15 +212,15 @@ class RasterStateCacheTest(unittest.TestCase):
     def test_context_present_and_debug_invalidation(self):
         source, _, _ = sources()
         for name, first_mutation in (
-            ("int d3d_gl_init(", "eglCreateContext("),
+            ("static int gl_init(", "eglCreateContext("),
             ("static void follow_window(", "eglMakeCurrent("),
-            ("void d3d_gl_device_destroy(", "glUseProgram("),
-            ("void d3d_gl_present(", "glDisable(GL_SCISSOR_TEST)"),
+            ("static void gl_device_destroy(", "glUseProgram("),
+            ("static void gl_present(", "glDisable(GL_SCISSOR_TEST)"),
         ):
             with self.subTest(function=name):
                 body = function(source, name)
                 self.assertIn("raster_state_valid = 0;", body[:body.index(first_mutation)])
-        draw = function(source, "int d3d_gl_draw(")
+        draw = function(source, "static int gl_draw(")
         debug = draw[draw.index('getenv("VOID_DEBUG_NOALPHA")'):draw.index('getenv("VOID_TRACE_DIFF")')]
         self.assertLess(debug.index("raster_state_valid = 0;"), debug.index("glDisable(GL_DEPTH_TEST)"))
         self.assertLess(debug.index("raster_state_valid = 0;"), debug.index("glDisable(GL_CULL_FACE)"))

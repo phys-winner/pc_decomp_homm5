@@ -26,6 +26,14 @@ typedef struct d3d_surface {
 } d3d_surface;
 struct d3d_device {d3d_surface *backbuffer,*rt[4],*ds;int fbo_dirty;};
 static int window_mode=1,egl_surface=1,egl_display=1,raster_state_valid=1;
+static int active_unit;
+static GLuint unit_tex[32],unit_sampler[32],unit_target[32];
+static void d3d_shader_forget_current(void) {}
+static int void_port_filter(int ui) {(void)ui;return 0;}
+static float void_port_sharpness(void) {return 0;}
+static int d3d_filter_blit(d3d_surface *source,d3d_surface *target,int mode,float sharpness) {
+    assert(source&&target&&!mode&&sharpness==0);return 0;
+}
 static struct {uint32_t max_texture;} d3d_gl_limits={8192};
 static int display_w=2400,display_h=1080,allocations,releases,copies,fail_allocate;
 static int scissor[4],native_calls;
@@ -35,8 +43,7 @@ static void void_log(const char *fmt,...) {(void)fmt;}
 static int eglQuerySurface(int display,int surface,int key,EGLint *out) {
     assert(display==1&&surface==1);*out=key==EGL_WIDTH?display_w:display_h;return 1;
 }
-static d3d_surface *d3d_surface_new(d3d_device *d,uint32_t w,uint32_t h,uint32_t fmt,uint32_t usage,int pool,int samples) {
-    assert(pool==D3DPOOL_DEFAULT&&!samples);d3d_surface *s=calloc(1,sizeof *s);assert(s);
+static d3d_surface *d3d_gl_scratch_new(d3d_device *d,uint32_t w,uint32_t h,uint32_t fmt,uint32_t usage) {d3d_surface *s=calloc(1,sizeof *s);assert(s);
     s->dev=d;s->width=w;s->height=h;s->format=fmt;s->usage=usage;s->gl=++allocations;
     s->fmt=fmt==2?&depth_format:&color_format;last_allocated=s;return s;
 }
@@ -44,9 +51,11 @@ static void glGetTexLevelParameteriv(int target,int level,int key,GLint *out) {
     assert(target==GL_TEXTURE_2D&&!level&&key==GL_TEXTURE_WIDTH);
     *out=fail_allocate?0:(GLint)last_allocated->width;
 }
-static void void_com_release(com_t *s) {++releases;free(s);}
+static void d3d_gl_scratch_free(d3d_surface *s) {++releases;free(s);}
 static void glScissor(GLint x,GLint y,GLsizei w,GLsizei h) {scissor[0]=x;scissor[1]=y;scissor[2]=w;scissor[3]=h;}
 static void d3d_gl_blit(d3d_surface *src,const uint32_t *sr,d3d_surface *dst,const uint32_t *dr,uint32_t filter);
+static d3d_device *d3d_rt_device(void);
+#define RDEV d3d_rt_device()
 /* ACTUAL */
 static void d3d_gl_blit(d3d_surface *src,const uint32_t *sr,d3d_surface *dst,const uint32_t *dr,uint32_t filter) {
     assert(!ui_active&&src->dev->fbo_dirty&&src!=dst);
@@ -55,7 +64,8 @@ static void d3d_gl_blit(d3d_surface *src,const uint32_t *sr,d3d_surface *dst,con
     assert(filter==(src->fmt->depth?1u:2u));++copies;
 }
 static d3d_device *native_device;
-void sub_00A46BC0_lifted(void) {assert(ui_quad_depth);++native_calls;ui_promote(native_device);}
+static d3d_device *d3d_rt_device(void) {return native_device;}
+void sub_00A46BC0_lifted(void) {assert(ui_quad_depth);++native_calls;render_ui=1;render_filter[0]=render_filter[1]=0;render_sharpness=0;ui_promote(native_device);}
 static void end_frame(d3d_device *d) {ui_active=0;ui_depth_source=NULL;d->fbo_dirty=1;raster_state_valid=0;}
 int main(void) {
     d3d_device d={0},other={0};
@@ -107,12 +117,12 @@ class UiResolutionTest(unittest.TestCase):
 
     def test_native_routing_and_lifetime(self):
         source = (ROOT / "android/host/d3d9_gl.c").read_text(encoding="utf8")
-        draw = function(source, "int d3d_gl_draw(")
-        self.assertLess(draw.index("if (ui_quad_depth) ui_promote(d);"), draw.index("d3d_gl_apply_state(d);"))
-        present = function(source, "void d3d_gl_present(")
+        draw = function(source, "static int gl_draw(")
+        self.assertLess(draw.index("if (render_ui) ui_promote(d);"), draw.index("d3d_gl_apply_state(d);"))
+        present = function(source, "static void gl_present(")
         self.assertIn("d3d_surface *bb = ui_surface(dev, dev->backbuffer);", present)
         self.assertLess(present.index("eglSwapBuffers("), present.index("ui_active = 0;"))
-        self.assertIn("ui_release(&ui_color); ui_release(&ui_depth);", function(source, "void d3d_gl_device_destroy("))
+        self.assertIn("ui_release(&ui_color); ui_release(&ui_depth);", function(source, "static void gl_device_destroy("))
 
     def test_quad_override_preserves_original_guest_register_summary(self):
         import sys

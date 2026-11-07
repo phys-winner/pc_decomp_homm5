@@ -57,6 +57,10 @@ WRAPPED = {"glGetString", "glMapBufferRange", "glUnmapBuffer", "glDrawArrays", "
 PRE = r'''
 #define _CRT_SECURE_NO_WARNINGS
 #include <assert.h>
+#define gl_draw d3d_gl_draw
+#define BUF_RT(b) (b)
+#define rt_shadow shadow
+#define rt_locks locks
 #include <stdint.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -103,7 +107,7 @@ typedef struct {uint32_t size,shadow,format;GLuint gl;uint8_t *dirty_pages;int l
 typedef struct {uint16_t stream,offset;uint8_t type,method,usage,usage_index;} d3d_vertex_element;
 typedef struct {int count;d3d_vertex_element elements[8];} d3d_decl;
 typedef struct {int unused;} d3d_shader;
-typedef struct {struct {void *vs,*ps,*decl,*indices,*streams[16];uint32_t stream_stride[16],stream_offset[16],stream_freq[16],rs[256],viewport[4];} st;} d3d_device;
+typedef struct {struct {void *vs,*ps,*decl,*indices,*streams[16];uint32_t stream_stride[16],stream_offset[16],stream_freq[16],rs[256],viewport[4];} st;uint32_t frame;} d3d_device;
 static unsigned char memory[80u*1024u*1024u];
 #define GPTR(a) (memory+(uint32_t)(a))
 static int void_vm_readable(uint32_t a,uint32_t n){return a>0&&(uint64_t)a+n<=sizeof memory;}
@@ -117,7 +121,8 @@ static d3d_device fixture_device;
 static d3d_decl fixture_decl;
 static d3d_buffer fixture_buffers[4];
 static void void_log(const char *format,...){if(!strncmp(format,"[gl] streaming ring: %u",23))++ring_logs;else ++draw_errors;}
-static unsigned ui_quad_depth;
+static unsigned render_ui;
+static void gpu_profile_begin(uint32_t frame){(void)frame;}
 static void ui_promote(d3d_device *d){(void)d;}
 static void d3d_gl_bind_targets(d3d_device *d){(void)d;}
 static void d3d_gl_apply_state(d3d_device *d){(void)d;}
@@ -248,7 +253,7 @@ def fixture(mutant=False):
     helpers = attributes + "\n".join(function(source, name) for name in (
         "static int draw_vertex_bounds(", "static void buffer_flush_vertices(",
         "static int draw_stream_range(", "static int draw_rebase(", "static GLenum gl_mode(")) + ring + sparse
-    draw = without_diagnostic_blocks(function(source, "int d3d_gl_draw("))
+    draw = without_diagnostic_blocks(function(source, "static int gl_draw("))
     if mutant:
         good = "(b->dirty_pages || (sparse_count && !instanced))"
         assert draw.count(good) == 1
@@ -391,14 +396,10 @@ class SparsePixelsTest(unittest.TestCase):
             gl.glViewport(queued*4,0,4,8) if case.get("queued") else gl.glViewport(0,0,8,8)
             self.assertEqual(lib.probe_draw(int(sparse),case.get("primitive",4),int(indexed),0 if draw_up else base&0xffffffff,start_index,0 if draw_up else effective[0],len(draw_refs) if draw_up else count,int(draw_up)),1)
             self.assertEqual(lib.probe_errors(),0)
-        # The ring holds this frame's uploads; client (UP) data never consults it.
+        # The ring holds this frame's uploads, client (UP) data included.
         state, used = lib.probe_ring_state(), lib.probe_ring_used()
-        if up:
-            self.assertIn(state, (0, 1 if ring else -1))
-            self.assertEqual(used, 0)
-        else:
-            self.assertEqual(state, 1 if ring else -1)
-            self.assertEqual(used > 0, ring)
+        self.assertEqual(state, 1 if ring else -1)
+        self.assertEqual(used > 0, ring)
         pixels = (C.c_ubyte*256)()
         gl.glReadPixels(0,0,8,8,0x1908,0x1401,pixels)
         self.assertEqual(gl.glGetError(),0)

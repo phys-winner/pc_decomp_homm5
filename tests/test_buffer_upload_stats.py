@@ -7,6 +7,9 @@ from test_d3d_lifecycle import function
 HARNESS = r'''
 #include <assert.h>
 #include <stdint.h>
+#define BUF_RT(b) (b)
+#define rt_shadow shadow
+#define rt_locks locks
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -149,16 +152,23 @@ int main(void){
 '''
 
 
+def rt_globals():
+    inc=(ROOT/'android/host/d3d9_thread.inc').read_text()
+    a=inc.index('typedef struct {\n    uint64_t records, bytes;')
+    b=inc.index('} d3d_rt_stats_t;',a)+len('} d3d_rt_stats_t;')
+    return inc[a:b]+'\nstatic int d3d_rt_threaded(void){return 0;}\nstatic uint64_t present_game_cpu_ns,present_game_wait_ns;\nstatic d3d_rt_stats_t present_game_stats;\n'
+
+
 def extracted(source):
     declaration=re.search(r'^static uint64_t vb_upload_calls[^;]*;',source,re.M)
     assert declaration
     ring=source[source.index('/* Per-draw uploads go to one persistently mapped buffer'):source.index('static uint32_t enabled_attribs;')]
-    start=source.index('    else for (unsigned stream = 0; stream < 16; ++stream) if (stream_end[stream]) {', source.index('int d3d_gl_draw('))
+    start=source.index('    else for (unsigned stream = 0; stream < 16; ++stream) if (stream_end[stream]) {', source.index('static int gl_draw('))
     end=source.index('    uint32_t want = 0;',start)
-    present=source[source.index('    depth_trace_present(dev);',source.index('void d3d_gl_present(')):]
+    present=source[source.index('    depth_trace_present(dev);',source.index('static void gl_present(')):]
     present=present[:present.index('    if (tracing(dev))')]
     return {'ring_actual.h':ring,
-            'stats_globals.h':'static uint64_t draw_calls;\n'+declaration.group(),
+            'stats_globals.h':'static uint64_t draw_calls;\n'+declaration.group()+rt_globals(),
             'upload_actual.h':function(source,'static void draw_buffer_upload('),
             'consumed_actual.h':source[start:end], 'present_actual.h':present}
 
@@ -173,7 +183,7 @@ class BufferUploadStatsTest(unittest.TestCase):
         for ring in (0, 1):
             with self.subTest(ring=ring):
                 probe('buffer_upload_stats',extracted(source),ring)
-        destroyed=function(source,'void d3d_gl_device_destroy(')
+        destroyed=function(source,'static void gl_device_destroy(')
         self.assertIn('vb_upload_calls = vb_upload_bytes = vb_upload_frame_bytes = vb_upload_peak_bytes = vb_sparse_calls = vb_sparse_saved = 0;',destroyed)
         self.assertIn('ring_release();',destroyed)
 

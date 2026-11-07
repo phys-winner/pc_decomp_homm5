@@ -17,7 +17,7 @@
     "url": "https://github.com/codepdbh/nfsu2-recompiled/blob/62a1d3a17fc7619b9d32df182b4b47d1a4f2e959/patches/pcrecomp/0014-recomp_types-RECOMP_X87_WINDOW-sliding-window-FPU-st.patch",
     "revision": "62a1d3a17fc7619b9d32df182b4b47d1a4f2e959",
     "patch_commit": "486a9a1898f4720b62436b6edc475be513f34419",
-    "author": "sistemas3cecasem <paukarvv@gmail.com>",
+    "author": "sistemas3cecasem",
     "sha256": "740560cd6d8eadd132ddc180c963388b92a4316040e2023b4c0ee4ee4c2db518",
     "directory": "patches/pcrecomp",
     "license": "MIT",
@@ -90,9 +90,9 @@
     "revision": "0cf05780abd7250c2cd713b7749cf32180157cf5",
     "directory": "reference/dxvk",
     "license": "Zlib; the MinGW-w64 DirectX headers are LGPL-2.1-or-later (data structure definitions only, see their README)",
-    "note": "libdxvk_d3d9.so is reused unchanged from the sibling ut3 port (its tools/build_dxvk.py: DXVK Native D3D9 only, NDK 27.2 for android29, an Android WSI, BC features enabled as the GPU has them, small PowerVR occlusion pools, SUBOPTIMAL swapchains kept, embedding hooks exported as ut3_dxvk_set_callbacks_v2/ut3_dxvk_set_vulkan_loader). It reads only DXVK_* variables. tools/build_dxvk.py imports it and the header subset below after checking these hashes; nothing is committed.",
+    "note": "libdxvk_d3d9.so is reused unchanged from the sibling ut3 port (its tools/build_dxvk.py: DXVK Native D3D9 only, NDK 27.2 for android29, an Android WSI, BC features enabled as the GPU has them, small PowerVR occlusion pools, SUBOPTIMAL swapchains kept, embedding hooks exported as ut3_dxvk_set_callbacks_v2/ut3_dxvk_set_vulkan_loader). It reads only DXVK_* variables. tools/build_dxvk.py imports it and the header subset below after checking these hashes; nothing is committed. Updated to the UT3 2026-11-04 build: missing SCALED vertex formats are fetched as UINT/SINT and converted in the vertex shader; per-driver persistent pipeline caches. ABI and upstream/header pins unchanged.",
     "runtime": {
-      "libdxvk_d3d9.so": "034384d5636eeb3f02b8e2d2daee4307c60bff1b981cb15b9e3d0c91a34cb0ec"
+      "libdxvk_d3d9.so": "c04fd016e606e4f6570c1feda033ca6fe293ea9f0cef9df2f63f8fcf6d84afc9"
     },
     "headers": {
       "LICENSE": "8221f636c9298344a6a98a4aa38c15b616d62126d2b0cf40ddc0ba50a57f1f3c",
@@ -112,7 +112,14 @@
       "include/native/windows/unknwn.h": "ab09d54e39a2c83a46745988bb80820530a99159d1d281b9f072d6705800a716",
       "include/native/windows/windows.h": "79bfaa87f4a46e0306e6dee8ec79b1781a81bc0945df4a4b692a51fec7cb7a20",
       "include/native/windows/windows_base.h": "bc7d1a35f957b83eb2340e48610341233f20da4fc2afda9ebfb39ce84f452651"
-    }
+    },
+    "ut3_overlays": {
+      "android/dxvk/scaled_vertex_formats.inc": "6d413d67d0de6069cc75bc24ed7a866ecd2726de3324290400083b0d8f23a5f4",
+      "android/dxvk/scaled_vertex_spirv.inc": "c404f0bab30b3d47c69006dc7bdfa026da30701e06f88891d3a6313ec9288851",
+      "android/dxvk/pipeline_cache.inc": "8f8993b3b678f2271a6e023fc57b8d3dd3768280a2b22cddf8761733bb97015c"
+    },
+    "wsi_sha256": "6e2a15a46055dd2809dc3ccea868be27bf1bbaba384616b26fccc05ea948a39b",
+    "worker_entry_callback_abi": 2
   },
   "adrenotools": {
     "url": "https://github.com/bylaws/libadrenotools",
@@ -122,10 +129,10 @@
     "note": "Helper and hooks built from source by the ut3 port's tools/build_turnip.py (NDK 27.2, android-30, c++_shared, 16 KiB pages) and reused unchanged. They load the Turnip driver in a linker namespace of their own; the system Vulkan driver is not replaced.",
     "runtime": {
       "libadrenotools.so": "48b5306c651eb9be7c2ff264fc0b5abd8fda5c10dbe415946f2a1d11230e8181",
-      "libhook_impl.so": "68d1ba47a9ee1477a916d7856b95116b3c55645afe590f33c61b7dfe608c8b46",
-      "libmain_hook.so": "c30c77db8bbe74ee110bb4b83ed2aba676ac11247e36d8e16a58d84f2d9dd97b",
-      "libfile_redirect_hook.so": "bf2f3ae26e991bb22f75956b53e96a603d6e1bfbdafe4868c9e16526ceccadbf",
-      "libgsl_alloc_hook.so": "451a5ffbb90b21738deb7216d677639f5e6c53e481c94aaa076ac8e5064f0d3d"
+      "libhook_impl.so": "7d2a073e77362a837dd77e107c124947747ddae8d1056c937c6fa9fa852b54a1",
+      "libmain_hook.so": "cda0a61813620c604249cbcbb2f2759191b733f4aa57628964bb6dc57b9ea10f",
+      "libfile_redirect_hook.so": "b85eb679579ec42325e5b9c628a715d9e38b56ce078654507213923de3c4e9b8",
+      "libgsl_alloc_hook.so": "e1efe14fa849ef9ef2b9238532fe573a59ef0b687046e45fa10f36e55eefb7d8"
     },
     "licenses": {
       "adrenotools.BSD-2-Clause.txt": "25adc710d81a37eb90a453aec3217eda016407ff4cf9616356ec1d9a10b36098",
@@ -152,5 +159,15 @@
     "runtime": {
       "libc++_shared.so": "f9992c4ba6b7c5a716e3a202fceb1ce029d6a2b0605838ac6b3219f489dd7970"
     }
+  },
+  "fidelityfx_fsr": {
+    "url": "https://github.com/GPUOpen-Effects/FidelityFX-FSR",
+    "version": "1.20210629",
+    "directory": "android/host",
+    "files": {
+      "fsr1.h": "d4fe8a7bced6612317edf5370f7ba702b8623df4c8f58d142d78cc33815fe054"
+    },
+    "license": "MIT",
+    "note": "GLSL ES EASU/RCAS adaptation reused from the sibling stronghold_crusader port, with its full AMD notice retained. Spatial filters only; the fsr3-android RCAS stage uses the same FSR1 kernel. No temporal upscaler or frame generation."
   }
 }

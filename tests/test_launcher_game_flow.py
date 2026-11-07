@@ -1,6 +1,7 @@
 """The game's side of the launcher base: GameActivity's actual switch dialog, native exit routing
 and back key run in Java against a recording Launch, and the order of its Launch calls."""
 import re
+import json
 import subprocess
 import unittest
 
@@ -163,24 +164,19 @@ class LauncherGameFlowTest(unittest.TestCase):
         for old in ("Launcher.", "RendererPolicy", "Renderers.", "markStarted", "startupMarker"):
             self.assertNotIn(old, re.sub(r"/\*.*?\*/", "", self.activity, flags=re.S))
 
-    def test_only_opengl_es_while_dxvk_stays_disabled(self):
+    def test_every_edition_uses_gles_even_with_a_saved_vulkan_choice(self):
         choose = function(self.activity, "    private void chooseRenderer()")
-        self.assertIn('new File(getApplicationInfo().nativeLibraryDir, "libh5dxvk.so").isFile()', choose)
-        self.assertIn('"toe".equals(gameEdition())', choose)
-        start = function(self.activity, "    private void startGame()")
-        self.assertIn("if (!GLES.equals(renderer)) {", start)
-        self.assertLess(start.index("nativeRenderer(nativeMode(renderer)"), start.index("nativeStart("))
-        # The engine's bridge needs HOMM5_DXVK, whose define stays inside a comment.
+        self.assertIn('renderer = GLES;', choose)
+        self.assertNotIn('launch.renderer()', choose)
+        # The backend source remains available, but shipping engines compile its GLES stubs.
         bridge = (ROOT / "android/host/d3d9_dxvk.c").read_text(encoding="utf-8")
         guard = "#if defined(VOID_ANDROID_APP) && defined(HOMM5_DXVK)"
         self.assertEqual(bridge.count(guard), 1)
         head = bridge[:bridge.index(guard)]
-        self.assertIn("#define HOMM5_DXVK\n */", head)
         self.assertNotIn("HOMM5_DXVK", re.sub(r"/\*.*?\*/", "", head, flags=re.S))
-        # port.json offers no Vulkan mode, so the launcher has no renderer card and no driver check.
-        spec = (ROOT / "android/port.json").read_text(encoding="utf-8")
-        self.assertNotIn('"kind": "vulkan"', spec)
-        self.assertNotIn('"kind": "turnip"', spec)
+        self.assertNotIn('"-DHOMM5_DXVK"', (ROOT / "tools/build_android.py").read_text())
+        spec = json.loads((ROOT / "android/port.json").read_text(encoding="utf-8"))
+        self.assertEqual([m['id'] for m in spec['renderers']['modes']], ['gles'])
 
 
 if __name__ == "__main__":

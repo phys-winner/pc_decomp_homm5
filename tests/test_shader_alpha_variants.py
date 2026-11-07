@@ -161,9 +161,12 @@ gl_Position=vec4(p[gl_VertexID],0,1);io_5_0=probeKill;}
 typedef unsigned GLuint;
 typedef int GLint;
 typedef struct { int usage, index; } attribute;
-typedef struct { int attribute_count; attribute *attributes; } parse_data;
+typedef struct { int type,index; } sampler;
+typedef struct { int attribute_count; attribute *attributes; int major_ver,sampler_count; sampler *samplers; } parse_data;
 typedef struct { parse_data *parse; const char *source; } d3d_shader;
-typedef struct { struct { uint32_t rs[256]; } st; } d3d_device;
+typedef struct { int rtype; } d3d_texture;
+enum { D3DRTYPE_CUBETEXTURE=5,D3DRTYPE_VOLUMETEXTURE=4,MOJOSHADER_SAMPLER_2D=0,MOJOSHADER_SAMPLER_CUBE=1,MOJOSHADER_SAMPLER_VOLUME=2 };
+typedef struct { struct { uint32_t rs[256]; void *textures[16]; } st; } d3d_device;
 typedef struct { int type,index,count; } umap_t;
 #include "program.h"
 static program_t *programs[1024], *current_program;
@@ -180,8 +183,12 @@ static program_t *link_program(d3d_shader *vs, d3d_shader *ps, uint32_t mask, GL
  p->bgra_mask=mask;p->ff_id=id;p->alpha_mode=alpha;p->gl=++links;return p;
 }
 #include "gate.h"
+static void prelink_record(d3d_shader *vs,d3d_shader *ps,uint32_t bgra,int alpha){(void)vs;(void)ps;(void)bgra;(void)alpha;}
+static int d3d_gl_ui_filter(void){return 1;}
 #include "bind.h"
 static unsigned function_uploads, reference_uploads;
+static int d3d_gl_ui_drawing(void) { return 0; }
+static int void_port_filter(int ui) { (void)ui; return 1; }
 static float uploaded_reference;
 static void glUniform1i(GLint loc, int value) { assert(loc==24&&value==7);++function_uploads; }
 static void glUniform1f(GLint loc, float value) { assert(loc==23);++reference_uploads;uploaded_reference=value; }
@@ -216,7 +223,7 @@ int main(void) {
  d.st.rs[25]=9;program_t *generic=bind(&d,&v,&p);assert(generic->alpha_mode==9&&links==5);
  d.st.rs[25]=0;assert(bind(&d,&v,&p)==generic&&links==5);
  d.st.rs[25]=7;d.st.rs[24]=120;assert(bind(&d,&v,&p)==cutout&&links==5);
- cutout->uploaded_generation=1;cutout->loc_half=-1;cutout->loc_alpha_func=-1;cutout->loc_alpha_ref=23;
+ cutout->uploaded_generation=1;cutout->loc_half=-1;cutout->loc_alpha_func=-1;cutout->loc_alpha_ref=23;cutout->loc_ui_filter=-1;
  d3d_shader_upload(&d,0,0,7,120);assert(!function_uploads&&reference_uploads==1&&uploaded_reference==120);
  d3d_shader_upload(&d,0,0,7,180);assert(!function_uploads&&reference_uploads==2&&uploaded_reference==180);
  d3d_shader_upload(&d,0,0,7,180);assert(reference_uploads==2);
@@ -226,6 +233,17 @@ int main(void) {
  d.st.rs[15]=1;assert(bind(&d,NULL,&p)->alpha_mode==7&&links==7);
  program_t *ff=bind(&d,&v,NULL);assert(ff->alpha_mode==9&&links==8);
  d.st.rs[15]=0;assert(bind(&d,&v,NULL)==ff&&links==8);
+ sampler slots[]={{0,0},{0,4}};parsed.major_ver=1;parsed.sampler_count=2;parsed.samplers=slots;
+ d3d_texture cube={D3DRTYPE_CUBETEXTURE},volume={D3DRTYPE_VOLUMETEXTURE};
+ d.st.textures[4]=&cube;program_t *cubed=bind(&d,&v,&p);
+ assert(cubed!=opaque&&cubed->bgra_mask==(1u<<24)&&links==9);
+ assert(bind(&d,&v,&p)==cubed&&links==9);
+ d.st.textures[4]=&volume;program_t *volumed=bind(&d,&v,&p);
+ assert(volumed!=cubed&&volumed->bgra_mask==(2u<<24)&&links==10);
+ d.st.textures[4]=NULL;assert(bind(&d,&v,&p)==opaque&&links==10);
+ d.st.textures[4]=&cube;parsed.major_ver=2;assert(bind(&d,&v,&p)==opaque&&links==10);
+ parsed.major_ver=1;d.st.textures[4]=NULL;d.st.textures[3]=&cube;
+ assert(bind(&d,&v,&p)==opaque&&links==10);
  for(int i=0;i<1024;++i)while(programs[i]){program_t *q=programs[i];programs[i]=q->next;free(q);}
  puts("PASS alpha modes 7-4-2 cache reuse, dynamic ref120-180 upload without function uniform, generic invalid and unchanged FF pixels");
  return 0;
@@ -233,7 +251,7 @@ int main(void) {
 '''
         program = text[text.index("typedef struct program {"):text.index("static program_t *programs[")]
         compile_probe("shader_alpha_cache", harness, {"gate.h": function(text, "static int alpha_test_mode("),
-                      "bind.h": function(text, "int d3d_shader_bind2("), "program.h": program,
+                      "bind.h": function(text, "static uint32_t legacy_sampler_types(") + function(text, "int d3d_shader_bind2("), "program.h": program,
                       "upload.h": function(text, "void d3d_shader_upload(")})
 
 

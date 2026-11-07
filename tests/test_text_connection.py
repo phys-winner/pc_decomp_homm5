@@ -46,16 +46,19 @@ public class TextConnectionCheck {
     }
     static class EditorInfo {static final int IME_ACTION_DONE=6;}
     static class KeyEvent {
-        static final int ACTION_DOWN=0,ACTION_UP=1,ACTION_MULTIPLE=2,KEYCODE_DEL=67,KEYCODE_FORWARD_DEL=112,KEYCODE_ENTER=66;
-        int action,code,unicode;String characters;
+        static final int ACTION_DOWN=0,ACTION_UP=1,ACTION_MULTIPLE=2,KEYCODE_DEL=67,KEYCODE_FORWARD_DEL=112,KEYCODE_ENTER=66,KEYCODE_GRAVE=68;
+        int action,code,unicode,repeat;String characters;
         KeyEvent(int a,int c){action=a;code=c;}
         KeyEvent(int a,int c,int u){this(a,c);unicode=u;}
         KeyEvent(String text){action=ACTION_MULTIPLE;characters=text;}
         int getAction(){return action;}int getKeyCode(){return code;}
+        int getRepeatCount(){return repeat;}
         int getUnicodeChar(){return unicode;}String getCharacters(){return characters;}
     }
     static List<String> edits=new ArrayList<>();
     static boolean accept=true;
+    static int consoleToggles;
+    static void nativeHardwareKey(int key,boolean down){assert key==0xC0&&down;consoleToggles++;}
     static boolean nativeText(int generation,String text){edits.add("T:"+generation+":"+text);return accept;}
     static boolean nativeTextKey(int generation,int key,int count){edits.add("K:"+generation+":"+key+":"+count);return accept;}
     static int nativeTextCancel(){return 100;}
@@ -71,6 +74,10 @@ public class TextConnectionCheck {
         assert c.setComposingText("старое",1);c=connect(12);
         TextConnection stale=new TextConnection(11);stale.composing="stale";
         assert !stale.finishComposingText()&&!stale.commitText("stale",1)&&!stale.deleteSurroundingText(1,0);
+        KeyEvent grave=new KeyEvent(0,68,96);
+        assert !stale.sendKeyEvent(grave)&&consoleToggles==0;
+        assert c.sendKeyEvent(grave)&&c.sendKeyEvent(new KeyEvent(1,68,96));
+        grave.repeat=1;assert c.sendKeyEvent(grave)&&consoleToggles==1&&edits.isEmpty();
         assert edits.isEmpty();
         assert c.setComposingText("абв",1)&&c.deleteSurroundingText(2,0)&&edits.isEmpty();
         assert c.finishComposingText()&&edits.equals(Arrays.asList("T:12:а"));edits.clear();

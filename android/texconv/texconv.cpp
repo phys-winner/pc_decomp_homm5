@@ -1567,16 +1567,16 @@ extern "C" int texconv_decode_dxt(uint32_t fourcc, const uint8_t *blocks, uint32
     return 0;
 }
 
-/* One level of a converted DDS back to RGBA (tests and quality checks). */
+/* One level of a converted DDS back to RGBA (CPU texture loading and quality checks). */
 extern "C" int texconv_decode_converted(const uint8_t *dds, uint64_t size, uint32_t level, uint8_t *rgba)
 {
     Dds d;
-    if (size < 128 || memcmp(dds, "DDS ", 4) || le32(dds + 36) != TEXCONV_MARKER) return -1;
-    d.height = le32(dds + 12);
-    d.width = le32(dds + 16);
-    d.fourcc = le32(dds + 84);
+    if (!dds || !rgba || !parse_dds(dds, size, d) || le32(dds + 36) != TEXCONV_MARKER ||
+        le32(dds + 40) != TEXCONV_VERSION ||
+        (d.fourcc != TEXCONV_ETC2_RGB && d.fourcc != TEXCONV_ETC2_RGBA &&
+         d.fourcc != TEXCONV_ASTC_4x4 && d.fourcc != TEXCONV_ASTC_5x5 && d.fourcc != TEXCONV_ASTC_6x6)) return -1;
     uint32_t original = le32(dds + 44), levels = le32(dds + 48);
-    if (level >= levels || !is_dxt(original)) return -1;
+    if (level >= levels || levels != d.mips || !is_dxt(original)) return -1;
     uint64_t offset = 128;
     for (uint32_t l = 0; l < level; ++l) {
         uint32_t w, h;

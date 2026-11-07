@@ -136,7 +136,6 @@ class LauncherMenuTest(unittest.TestCase):
         processes = {service.get(android + "name"): service.get(android + "process") for service in app.findall("service")}
         # Import, cleanup and texture work live in the launcher's memory (Work.current, kept by its service).
         self.assertEqual(processes.pop("org.homm5.port.launcher.Work$WorkService"), launcher.get(android + "process"))
-        # The renderer's driver check (a process of its own) only comes with Vulkan renderers: none while DXVK is off.
         self.assertEqual(processes, {})
 
     def test_native_menu(self):

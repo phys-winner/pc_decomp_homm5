@@ -313,7 +313,7 @@ void d3d_stateblock_apply(d3d_stateblock *sb);
 
 /* d3d9_gl.c */
 /* GL implementation limits, filled by d3d_gl_init (0 before). */
-typedef struct { uint32_t max_texture, max_3d_texture, max_draw_buffers; int astc_ldr; } d3d_gl_limits_t;
+typedef struct { uint32_t max_texture, max_3d_texture, max_draw_buffers; int astc_ldr; float max_anisotropy; } d3d_gl_limits_t;
 extern d3d_gl_limits_t d3d_gl_limits;
 int d3d_gl_init(void);
 void d3d_gl_device_destroy(void);
@@ -324,6 +324,10 @@ void d3d_gl_forget_texture(GLuint tex);
 void d3d_gl_forget_buffer(GLuint buffer);
 void d3d_gl_upload_unit(void);
 void d3d_gl_apply_state(d3d_device *dev);
+int d3d_gl_ui_drawing(void);
+void d3d_gl_filter_done(d3d_device *dev);
+int d3d_filter_blit(d3d_surface *source, d3d_surface *target, int mode, float sharpness);
+void d3d_filter_reset(void);
 int d3d_gl_draw(d3d_device *dev, uint32_t primitive, uint32_t start_vertex, uint32_t vertex_count,
     uint32_t prim_count, int indexed, uint32_t base_vertex, uint32_t start_index, uint32_t min_index,
     const void *up_vertices, uint32_t up_stride, const void *up_indices, int up_index32);
@@ -340,6 +344,7 @@ int d3d_shader_bind(d3d_device *dev, d3d_shader *vs, d3d_shader *ps, uint32_t *a
     int *attribute_usage, int *attribute_index, int *attribute_count, int *needs_bgra);
 uint32_t d3d_shader_bytecode_size(uint32_t va);
 void d3d_shader_reset(void);
+void d3d_shader_forget_current(void);
 
 /* d3d9_texel.c: logical RGBA texels */
 float d3d_half_to_float(uint16_t h);

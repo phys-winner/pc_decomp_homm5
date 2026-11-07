@@ -143,7 +143,6 @@ void void_android_window_ack(uint32_t serial)
     pthread_mutex_unlock(&window_lock);
 }
 
-#ifndef HOMM5_LEGACY_UI
 /* The DXVK renderer (d3d9_dxvk.c): the current window with a reference of its own, taken
  * before nativeSurface can release it; a device keeps presenting into it across a swap. */
 void *void_android_window_acquire(uint32_t *serial)
@@ -155,7 +154,6 @@ void *void_android_window_acquire(uint32_t *serial)
     pthread_mutex_unlock(&window_lock);
     return w;
 }
-#endif
 
 static void *game_main(void *arg)
 {
@@ -302,6 +300,13 @@ JNIEXPORT void JNICALL Java_org_homm5_port_GameActivity_nativeHardwareKey(JNIEnv
 {
     (void)env; (void)self;
     if (vk <= 0 || vk > 255 || !void_vk_to_dik((uint32_t)vk)) return;
+    if (vk == 0xC0) {
+        if (down) {
+            const void_touch_event event = {.kind = TOUCH_CONSOLE_TOGGLE, .scale = 1};
+            void_touch_enqueue(&event);
+        }
+        return;
+    }
     if (down) physical_input_mode();
     void_input_key((uint32_t)vk, down);
 }
@@ -452,6 +457,68 @@ JNIEXPORT jint JNICALL Java_org_homm5_port_GameActivity_nativeTextCancel(JNIEnv 
 {
     (void)env; (void)self;
     return (jint)void_touch_text_cancel();
+}
+
+JNIEXPORT void JNICALL Java_org_homm5_port_GameActivity_nativeCheatAction(JNIEnv *env, jclass type,
+    jint generation, jint action, jint value)
+{
+    (void)env; (void)type;
+    if (generation < 1 || generation > 0xFFFFFF || action < 0 || action > 9 || value < 0 || value > 1000000) return;
+    const void_touch_event event = {.kind = TOUCH_CHEAT_ACTION, .x = (float)action,
+        .y = (float)value, .dx = (float)generation, .scale = 1};
+    void_touch_enqueue(&event);
+}
+
+void void_android_cheats(uint32_t generation, int state)
+{
+    if (!jvm || !activity) return;
+    JNIEnv *env = NULL;
+    int attached = (*jvm)->GetEnv(jvm, (void **)&env, JNI_VERSION_1_6) == JNI_EDETACHED;
+    if (attached && (*jvm)->AttachCurrentThread(jvm, &env, NULL) != JNI_OK) return;
+    if (!env) return;
+    jmethodID callback = (*env)->GetStaticMethodID(env, (jclass)activity, "onCheats", "(II)V");
+    if (callback) (*env)->CallStaticVoidMethod(env, (jclass)activity, callback, (jint)generation, (jint)state);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        void_log("[cheats] Java callback failed");
+    }
+    if (attached) (*jvm)->DetachCurrentThread(jvm);
+}
+
+void void_android_split_zones(int zone, int progress)
+{
+    if (!jvm || !activity) return;
+    JNIEnv *env = NULL;
+    int attached = (*jvm)->GetEnv(jvm, (void **)&env, JNI_VERSION_1_6) == JNI_EDETACHED;
+    if (attached && (*jvm)->AttachCurrentThread(jvm, &env, NULL) != JNI_OK) return;
+    if (!env) return;
+    int width, height; void_input_screen_size(&width, &height);
+    jmethodID callback = (*env)->GetStaticMethodID(env, (jclass)activity, "onTroopZones", "(IIII)V");
+    if (callback) (*env)->CallStaticVoidMethod(env, (jclass)activity, callback,
+        (jint)zone, (jint)progress, (jint)width, (jint)height);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        void_log("[touch] troop zone callback failed");
+    }
+    if (attached) (*jvm)->DetachCurrentThread(jvm);
+}
+
+void void_android_split_hint(int visible)
+{
+    if (!jvm || !activity) return;
+    JNIEnv *env = NULL;
+    int attached = (*jvm)->GetEnv(jvm, (void **)&env, JNI_VERSION_1_6) == JNI_EDETACHED;
+    if (attached && (*jvm)->AttachCurrentThread(jvm, &env, NULL) != JNI_OK) return;
+    if (!env) return;
+    int width, height; void_input_screen_size(&width, &height);
+    jmethodID callback = (*env)->GetStaticMethodID(env, (jclass)activity, "onTroopHint", "(ZII)V");
+    if (callback) (*env)->CallStaticVoidMethod(env, (jclass)activity, callback,
+        (jboolean)visible, (jint)width, (jint)height);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        void_log("[touch] troop hint callback failed");
+    }
+    if (attached) (*jvm)->DetachCurrentThread(jvm);
 }
 
 void void_android_text_focus(int enabled, uint32_t generation)
@@ -697,6 +764,10 @@ uint32_t void_audio_output(const int16_t *frames, uint32_t count)
     if (stream && written == count && void_audio_pause_state() == pause) {
         int64_t queued = AAudioStream_getFramesWritten(stream) - AAudioStream_getFramesRead(stream);
         int32_t size = AAudioStream_getBufferSizeInFrames(stream);
+#ifndef HOMM5_LEGACY_UI
+        /* Bluetooth can expose >400 ms: mixing that far ahead overtakes FMOD's 186 ms ring. */
+        if (audio_normal_output && size > 1920) size = 1920;
+#endif
         if (queued >= 0 && size > 0 && queued < size) wanted = (uint32_t)(size - queued);
     }
     pthread_mutex_unlock(&audio_lock);

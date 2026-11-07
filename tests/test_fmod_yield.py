@@ -49,6 +49,7 @@ static pthread_mutex_t mlock=PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t mcond=PTHREAD_COND_INITIALIZER;
 static uint64_t ticket_next,ticket_serving;
 static __declspec(thread) uint64_t t_lock_wait_ns;
+static __declspec(thread) int t_machine_owned;
 static unsigned yields,progress,owner_steps,seen_step[2],seen_order[2];
 static unsigned handoffs,native_sleeps;
 static void_thread *handoff_owner;

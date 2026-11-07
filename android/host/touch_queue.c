@@ -11,14 +11,26 @@ static unsigned touch_head, touch_count;
 static int touch_dropping, touch_pumping;
 static int pointer_mode_requested;
 
-static void touch_abort_locked(void)
+static void touch_abort_locked(int preserve_commands)
 {
+    /* Dialog focus can cancel contacts after its confirmed command was queued. */
+    void_touch_event pending[TOUCH_QUEUE_CAPACITY];
+    unsigned commands = 0;
+    if (preserve_commands) for (unsigned i = 0; i < touch_count; ++i) {
+        unsigned at = (touch_head + i) % TOUCH_QUEUE_CAPACITY;
+        if (touch_queue[at].kind == TOUCH_CHEAT_ACTION) pending[commands++] = touch_queue[at];
+    }
+    if (commands == TOUCH_QUEUE_CAPACITY) commands = 0;
     pointer_mode_requested = 0;
     touch_queue[0] = (void_touch_event){ TOUCH_ABORT, 0, 0, 0, 0, 1, 0 };
     touch_sequence[0] = ++touch_next;
     touch_head = 0;
     touch_count = 1;
     touch_dropping = 1;
+    for (unsigned i = 0; i < commands; ++i) {
+        touch_queue[touch_count] = pending[i];
+        touch_sequence[touch_count++] = ++touch_next;
+    }
 }
 
 void void_touch_enqueue(const void_touch_event *event)
@@ -28,17 +40,19 @@ void void_touch_enqueue(const void_touch_event *event)
         !isfinite(event->x) || !isfinite(event->y) || !isfinite(event->dx) ||
         !isfinite(event->dy) || !isfinite(event->scale) || event->scale <= 0 ||
         !isfinite(event->rotation) || fabsf(event->rotation) > 3.141593f) {
-        touch_abort_locked();
+        touch_abort_locked(0);
     } else if (event->kind == TOUCH_ABORT || event->kind == TOUCH_POINTER) {
         if (event->kind != TOUCH_POINTER || !pointer_mode_requested) {
-            touch_abort_locked();
+            touch_abort_locked(1);
             touch_queue[0].kind = event->kind;
         }
         if (event->kind == TOUCH_POINTER) pointer_mode_requested = 1;
     } else {
         if (event->kind == TOUCH_BEGIN) { touch_dropping = 0; pointer_mode_requested = 0; }
-        if (!touch_dropping || event->kind == TOUCH_PAD_CAMERA || event->kind == TOUCH_POINTER_CLICK) {
-            if (touch_count == TOUCH_QUEUE_CAPACITY) touch_abort_locked();
+        if (!touch_dropping || event->kind == TOUCH_PAD_CAMERA || event->kind == TOUCH_POINTER_CLICK
+            || event->kind == TOUCH_CHEAT_ACTION
+        ) {
+            if (touch_count == TOUCH_QUEUE_CAPACITY) touch_abort_locked(0);
             else {
                 unsigned index = (touch_head + touch_count++) % TOUCH_QUEUE_CAPACITY;
                 touch_queue[index] = *event;

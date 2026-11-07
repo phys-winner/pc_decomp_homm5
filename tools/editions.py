@@ -6,6 +6,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 EDITION_IDS = ("toe", "vanilla", "hof")
+INSTALLED_IMAGES = ("H5_Game.exe", "granny2.dll")
 
 
 def edition_spec(edition="toe", root=ROOT):
@@ -38,6 +39,11 @@ def build_root(edition="toe", modes=(), root=ROOT):
     edition_spec(edition, root)
     suffix = ([edition] if edition != "toe" else []) + list(modes)
     return Path(root) / ("build/arm64" + ("-" + "-".join(suffix) if suffix else ""))
+
+
+def protocol_root(edition="toe", root=ROOT):
+    edition_spec(edition, root)
+    return Path(root) / ("build/call-protocol" + ("-" + edition if edition != "toe" else ""))
 
 
 def override_files(edition, archive):

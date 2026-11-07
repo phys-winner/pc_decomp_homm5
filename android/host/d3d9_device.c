@@ -1,5 +1,6 @@
 /* IDirect3D9 and IDirect3DDevice9. */
 #include "d3d9_internal.h"
+#include "d3d9_thread.inc"
 #include "dxvk.h"
 #include "input.h"
 #include "touch.h"
@@ -35,10 +36,12 @@ static void fill_caps(uint32_t out)
     uint32_t tex = d3d_gl_limits.max_texture ? d3d_gl_limits.max_texture : 8192;
     uint32_t vol = d3d_gl_limits.max_3d_texture ? d3d_gl_limits.max_3d_texture : 2048;
     uint32_t rts = d3d_gl_limits.max_draw_buffers ? d3d_gl_limits.max_draw_buffers : 4;
+    uint32_t aniso = d3d_gl_limits.max_anisotropy > 0.0f ? (uint32_t)d3d_gl_limits.max_anisotropy : 16;
     if (MEM32(out + 88) > tex) MEM32(out + 88) = tex;      /* MaxTextureWidth */
     if (MEM32(out + 92) > tex) MEM32(out + 92) = tex;      /* MaxTextureHeight */
     if (MEM32(out + 96) > vol) MEM32(out + 96) = vol;      /* MaxVolumeExtent */
     if (MEM32(out + 104) > tex) MEM32(out + 104) = tex;    /* MaxTextureAspectRatio */
+    if (MEM32(out + 108) > aniso) MEM32(out + 108) = aniso; /* MaxAnisotropy */
     if (MEM32(out + 260) > rts) MEM32(out + 260) = rts;    /* NumSimultaneousRTs */
 }
 
@@ -222,11 +225,9 @@ static void_com_class d3d9_class = { "IDirect3D9", 17, d3d9_methods, 0 };
 
 WINAPI_EXPORT("d3d9.dll", Direct3DCreate9, 1)
 {
-#ifndef HOMM5_LEGACY_UI
     /* The launcher's DXVK renderer (d3d9_dxvk.c); 0 when GLES was chosen or DXVK cannot start. */
     uint32_t dxvk = void_dxvk_create9(ARG(0));
     if (dxvk) return dxvk;
-#endif
     d3d9_t *d = (d3d9_t *)calloc(1, sizeof *d);
     uint32_t guest = void_com_wrap(&d->com, &d3d9_class, 0);
     void_log("[d3d9] Direct3DCreate9(%u) = %08X", ARG(0), guest);
@@ -272,6 +273,10 @@ static void default_state(d3d_device *dev, d3d_state *s)
     for (int i = 0; i < 16; ++i) s->stream_freq[i] = 1;
 }
 
+/* What a setter wrote of the device's own state goes to the render thread with
+ * the next draw (d3d9_thread.c); writes into a state block being recorded do not. */
+#define DIRTY(d, lvalue) D3D_RT_DIRTY((d), (lvalue))
+
 static void set_default_viewport(d3d_device *dev, d3d_surface *rt)
 {
     dev->st.viewport[0] = dev->st.viewport[1] = 0;
@@ -282,6 +287,7 @@ static void set_default_viewport(d3d_device *dev, d3d_surface *rt)
     dev->st.scissor[0] = dev->st.scissor[1] = 0;
     dev->st.scissor[2] = rt ? rt->width : 1;
     dev->st.scissor[3] = rt ? rt->height : 1;
+    DIRTY(dev, dev->st.viewport); DIRTY(dev, dev->st.viewport_z); DIRTY(dev, dev->st.scissor);
 }
 
 /* Reference counts the device holds on bound objects, like D3D. */
@@ -410,6 +416,7 @@ COM_METHOD(dev, Reset, 2)
     d3d_state_release(&d->st);
     default_state(d, &d->st);
     set_default_viewport(d, d->backbuffer);
+    d3d_rt_device_reset(d);
     void_log("[d3d9] Reset %ux%u format %u depth %u/%u", d->pp[0], d->pp[1], d->pp[2], d->pp[9], d->pp[10]);
     return D3D_OK;
 }
@@ -657,6 +664,7 @@ COM_METHOD(dev, SetTransform, 3)
     d3d_device *d = DEV;
     uint32_t slot = transform_slot(ARG(1));
     memcpy(target_state(d)->transforms[slot], GPTR(ARG(2)), 64);
+    DIRTY(d, target_state(d)->transforms[slot]);
     if (d->recording) d->recording->rec_transform[slot] = 1;
     return D3D_OK;
 }
@@ -680,6 +688,7 @@ COM_METHOD(dev, MultiplyTransform, 3)
         r[i * 4 + j] = s;
     }
     memcpy(target_state(d)->transforms[slot], r, 64);
+    DIRTY(d, target_state(d)->transforms[slot]);
     return D3D_OK;
 }
 
@@ -690,6 +699,7 @@ COM_METHOD(dev, SetViewport, 2)
     uint32_t vp = ARG(1);
     for (int i = 0; i < 4; ++i) s->viewport[i] = MEM32(vp + 4u * (uint32_t)i);
     memcpy(s->viewport_z, GPTR(vp + 16), 8);
+    DIRTY(d, s->viewport); DIRTY(d, s->viewport_z);
     if (d->recording) d->recording->rec_viewport = 1;
     return D3D_OK;
 }
@@ -707,6 +717,7 @@ COM_METHOD(dev, SetMaterial, 2)
 {
     d3d_device *d = DEV;
     memcpy(target_state(d)->material, GPTR(ARG(1)), 68);
+    DIRTY(d, target_state(d)->material);
     if (d->recording) d->recording->rec_material = 1;
     return D3D_OK;
 }
@@ -717,6 +728,7 @@ COM_METHOD(dev, SetLight, 3)
     d3d_device *d = DEV;
     if (ARG(1) >= 8) return D3D_OK;
     memcpy(target_state(d)->lights[ARG(1)], GPTR(ARG(2)), 104);
+    DIRTY(d, target_state(d)->lights[ARG(1)]);
     if (d->recording) d->recording->rec_light[ARG(1)] = 1;
     return D3D_OK;
 }
@@ -731,6 +743,7 @@ COM_METHOD(dev, LightEnable, 3)
     d3d_device *d = DEV;
     if (ARG(1) >= 8) return D3D_OK;
     target_state(d)->light_enable[ARG(1)] = ARG(2) != 0;
+    DIRTY(d, target_state(d)->light_enable[ARG(1)]);
     if (d->recording) d->recording->rec_light[ARG(1)] = 1;
     return D3D_OK;
 }
@@ -745,6 +758,7 @@ COM_METHOD(dev, SetClipPlane, 3)
     d3d_device *d = DEV;
     if (ARG(1) >= 6) return D3DERR_INVALIDCALL;
     memcpy(target_state(d)->clip_planes[ARG(1)], GPTR(ARG(2)), 16);
+    DIRTY(d, target_state(d)->clip_planes[ARG(1)]);
     if (d->recording) d->recording->rec_clip[ARG(1)] = 1;
     return D3D_OK;
 }
@@ -761,6 +775,7 @@ COM_METHOD(dev, SetRenderState, 3)
     uint32_t state = ARG(1);
     if (state >= 256) return D3D_OK;
     target_state(d)->rs[state] = ARG(2);
+    DIRTY(d, target_state(d)->rs[state]);
     if (d->recording) d->recording->rec_rs[state] = 1;
     return D3D_OK;
 }
@@ -845,6 +860,7 @@ COM_METHOD(dev, SetTexture, 3)
         return D3D_OK;
     }
     bind_ref(&d->st.textures[slot], host_or_null(ARG(2)));
+    DIRTY(d, d->st.textures[slot]);
     return D3D_OK;
 }
 
@@ -859,6 +875,7 @@ COM_METHOD(dev, SetTextureStageState, 4)
     d3d_device *d = DEV;
     if (ARG(1) >= 8 || ARG(2) >= 33) return D3D_OK;
     target_state(d)->tss[ARG(1)][ARG(2)] = ARG(3);
+    DIRTY(d, target_state(d)->tss[ARG(1)][ARG(2)]);
     if (d->recording) d->recording->rec_tss[ARG(1)][ARG(2)] = 1;
     return D3D_OK;
 }
@@ -876,6 +893,7 @@ COM_METHOD(dev, SetSamplerState, 4)
     int slot = sampler_slot(ARG(1));
     if (slot < 0 || ARG(2) >= 14) return D3D_OK;
     target_state(d)->ss[slot][ARG(2)] = ARG(3);
+    DIRTY(d, target_state(d)->ss[slot][ARG(2)]);
     if (d->recording) d->recording->rec_ss[slot][ARG(2)] = 1;
     return D3D_OK;
 }
@@ -893,6 +911,7 @@ COM_METHOD(dev, SetScissorRect, 2)
     uint32_t r = ARG(1);
     s->scissor[0] = MEM32(r); s->scissor[1] = MEM32(r + 4);
     s->scissor[2] = MEM32(r + 8) - MEM32(r); s->scissor[3] = MEM32(r + 12) - MEM32(r + 4);
+    DIRTY(d, s->scissor);
     if (d->recording) d->recording->rec_scissor = 1;
     return D3D_OK;
 }
@@ -954,6 +973,7 @@ COM_METHOD(dev, DrawPrimitiveUP, 5)
     /* D3D unbinds stream 0 and the index buffer after a UP draw. */
     bind_ref(&d->st.streams[0], NULL);
     d->st.stream_offset[0] = d->st.stream_stride[0] = 0;
+    DIRTY(d, d->st.streams[0]); DIRTY(d, d->st.stream_offset[0]); DIRTY(d, d->st.stream_stride[0]);
     return D3D_OK;
 }
 
@@ -969,6 +989,8 @@ COM_METHOD(dev, DrawIndexedPrimitiveUP, 9)
     bind_ref(&d->st.streams[0], NULL);
     bind_ref(&d->st.indices, NULL);
     d->st.stream_offset[0] = d->st.stream_stride[0] = 0;
+    DIRTY(d, d->st.streams[0]); DIRTY(d, d->st.stream_offset[0]); DIRTY(d, d->st.stream_stride[0]);
+    DIRTY(d, d->st.indices);
     return D3D_OK;
 }
 
@@ -988,6 +1010,7 @@ COM_METHOD(dev, SetVertexDeclaration, 2)
     if (d->recording) { d3d_ref_set(&d->recording->state.decl, host_or_null(ARG(1))); d->recording->rec_decl = 1; return D3D_OK; }
     bind_ref(&d->st.decl, host_or_null(ARG(1)));
     d->st.fvf = 0;
+    DIRTY(d, d->st.decl); DIRTY(d, d->st.fvf);
     return D3D_OK;
 }
 
@@ -1035,8 +1058,10 @@ COM_METHOD(dev, SetFVF, 2)
         return D3D_OK;
     }
     d->st.fvf = fvf;
+    DIRTY(d, d->st.fvf);
     if (!fvf) return D3D_OK;
     bind_ref(&d->st.decl, fvf_declaration(d, fvf));
+    DIRTY(d, d->st.decl);
     return D3D_OK;
 }
 
@@ -1055,6 +1080,7 @@ COM_METHOD(dev, SetVertexShader, 2)
     d3d_device *d = DEV;
     if (d->recording) { d3d_ref_set(&d->recording->state.vs, host_or_null(ARG(1))); d->recording->rec_vs = 1; return D3D_OK; }
     bind_ref(&d->st.vs, host_or_null(ARG(1)));
+    DIRTY(d, d->st.vs);
     return D3D_OK;
 }
 
@@ -1072,8 +1098,9 @@ extern uint32_t d3d_constant_generation;
     uint32_t start = ARG(1), data = ARG(2), count = ARG(3); \
     if (start + count > (limit)) return D3DERR_INVALIDCALL; \
     memcpy(&s->field[start], GPTR(data), (size_t)count * (width)); \
+    d3d_rt_dirty(d, &s->field[start], (size_t)count * (width)); \
     if (d->recording) for (uint32_t i = 0; i < count; ++i) d->recording->rec[start + i] = 1; \
-    d->constants_dirty = 1; ++d3d_constant_generation; return D3D_OK; } while (0)
+    d->constants_dirty = 1; return D3D_OK; } while (0)
 #define CONST_GET(field, limit, width) do { \
     d3d_device *d = DEV; uint32_t start = ARG(1), data = ARG(2), count = ARG(3); \
     if (start + count > (limit)) return D3DERR_INVALIDCALL; \
@@ -1101,6 +1128,7 @@ COM_METHOD(dev, SetStreamSource, 5)
     bind_ref(&d->st.streams[n], host_or_null(ARG(2)));
     d->st.stream_offset[n] = ARG(3);
     d->st.stream_stride[n] = ARG(4);
+    DIRTY(d, d->st.streams[n]); DIRTY(d, d->st.stream_offset[n]); DIRTY(d, d->st.stream_stride[n]);
     return D3D_OK;
 }
 
@@ -1122,6 +1150,7 @@ COM_METHOD(dev, SetStreamSourceFreq, 3)
     d3d_device *d = DEV;
     if (ARG(1) >= 16) return D3DERR_INVALIDCALL;
     target_state(d)->stream_freq[ARG(1)] = ARG(2);
+    DIRTY(d, target_state(d)->stream_freq[ARG(1)]);
     return D3D_OK;
 }
 COM_METHOD(dev, GetStreamSourceFreq, 3) { MEM32(ARG(2)) = ARG(1) < 16 ? DEV->st.stream_freq[ARG(1)] : 1; return D3D_OK; }
@@ -1131,6 +1160,7 @@ COM_METHOD(dev, SetIndices, 2)
     d3d_device *d = DEV;
     if (d->recording) { d3d_ref_set(&d->recording->state.indices, host_or_null(ARG(1))); d->recording->rec_indices = 1; return D3D_OK; }
     bind_ref(&d->st.indices, host_or_null(ARG(1)));
+    DIRTY(d, d->st.indices);
     return D3D_OK;
 }
 
@@ -1161,6 +1191,7 @@ COM_METHOD(dev, SetPixelShader, 2)
     d3d_device *d = DEV;
     if (d->recording) { d3d_ref_set(&d->recording->state.ps, host_or_null(ARG(1))); d->recording->rec_ps = 1; return D3D_OK; }
     bind_ref(&d->st.ps, host_or_null(ARG(1)));
+    DIRTY(d, d->st.ps);
     return D3D_OK;
 }
 
@@ -1289,6 +1320,7 @@ uint32_t d3d_device_create(uint32_t d3d9, uint32_t window, uint32_t behavior, ui
     for (int i = 0; i < 14; ++i) MEM32(pp + 4u * (uint32_t)i) = dev->pp[i];
     default_state(dev, &dev->st);
     set_default_viewport(dev, dev->backbuffer);
+    d3d_rt_device_reset(dev);
     dev->swapchain = d3d_swapchain_create(dev);
     return D3D_OK;
 }
@@ -1322,7 +1354,7 @@ void d3d_device_lifecycle_selftest(void)
         uint32_t fvf[2] = {device, 0x144};
         if (void_call_guest(MEM32(MEM32(device) + 89 * 4), 2, fvf, 1)) void_fatal("SetFVF lifecycle selftest failed");
         uint32_t clear[7] = {device, 0, 0, 3, 0xFF123456, 0x3F800000, 0};
-        if (void_call_guest(MEM32(MEM32(device) + 43 * 4), 7, clear, 1) || glGetError())
+        if (void_call_guest(MEM32(MEM32(device) + 43 * 4), 7, clear, 1) || d3d_gl_error())
             void_fatal("Clear lifecycle selftest failed");
         uint32_t back[5] = {device, 0, 0, 0, out};
         if (void_call_guest(MEM32(MEM32(device) + 18 * 4), 5, back, 1) || !MEM32(out))
@@ -1364,38 +1396,45 @@ void d3d_stateblock_apply(d3d_stateblock *sb)
 {
     d3d_device *d = sb->dev;
     d3d_state *s = &sb->state;
-    FOR_FLAGS(i, sb->rec_rs, 256) d->st.rs[i] = s->rs[i];
-    FOR_FLAGS(i, &sb->rec_ss[0][0], 20 * 14) d->st.ss[i / 14][i % 14] = s->ss[i / 14][i % 14];
-    FOR_FLAGS(i, &sb->rec_tss[0][0], 8 * 33) d->st.tss[i / 33][i % 33] = s->tss[i / 33][i % 33];
-    FOR_FLAGS(i, sb->rec_tex, 20) bind_ref(&d->st.textures[i], s->textures[i]);
+    FOR_FLAGS(i, sb->rec_rs, 256) { d->st.rs[i] = s->rs[i]; DIRTY(d, d->st.rs[i]); }
+    FOR_FLAGS(i, &sb->rec_ss[0][0], 20 * 14) { d->st.ss[i / 14][i % 14] = s->ss[i / 14][i % 14]; DIRTY(d, d->st.ss[i / 14][i % 14]); }
+    FOR_FLAGS(i, &sb->rec_tss[0][0], 8 * 33) { d->st.tss[i / 33][i % 33] = s->tss[i / 33][i % 33]; DIRTY(d, d->st.tss[i / 33][i % 33]); }
+    FOR_FLAGS(i, sb->rec_tex, 20) { bind_ref(&d->st.textures[i], s->textures[i]); DIRTY(d, d->st.textures[i]); }
     FOR_FLAGS(i, sb->rec_stream, 16) {
         bind_ref(&d->st.streams[i], s->streams[i]);
         d->st.stream_offset[i] = s->stream_offset[i];
         d->st.stream_stride[i] = s->stream_stride[i];
         d->st.stream_freq[i] = s->stream_freq[i];
+        DIRTY(d, d->st.streams[i]); DIRTY(d, d->st.stream_offset[i]); DIRTY(d, d->st.stream_stride[i]);
+        DIRTY(d, d->st.stream_freq[i]);
     }
     int constants = 0;   /* shader constants recorded: programs must upload again */
-    FOR_FLAGS(i, sb->rec_vs_f, 256) { memcpy(d->st.vs_f[i], s->vs_f[i], 16); constants = 1; }
-    FOR_FLAGS(i, sb->rec_ps_f, 224) { memcpy(d->st.ps_f[i], s->ps_f[i], 16); constants = 1; }
+    FOR_FLAGS(i, sb->rec_vs_f, 256) { memcpy(d->st.vs_f[i], s->vs_f[i], 16); DIRTY(d, d->st.vs_f[i]); constants = 1; }
+    FOR_FLAGS(i, sb->rec_ps_f, 224) { memcpy(d->st.ps_f[i], s->ps_f[i], 16); DIRTY(d, d->st.ps_f[i]); constants = 1; }
     for (int i = 0; i < 16; ++i) {
-        if (sb->rec_vs_i[i]) { memcpy(d->st.vs_i[i], s->vs_i[i], 16); constants = 1; }
-        if (sb->rec_ps_i[i]) { memcpy(d->st.ps_i[i], s->ps_i[i], 16); constants = 1; }
-        if (sb->rec_vs_b[i]) { d->st.vs_b[i] = s->vs_b[i]; constants = 1; }
-        if (sb->rec_ps_b[i]) { d->st.ps_b[i] = s->ps_b[i]; constants = 1; }
+        if (sb->rec_vs_i[i]) { memcpy(d->st.vs_i[i], s->vs_i[i], 16); DIRTY(d, d->st.vs_i[i]); constants = 1; }
+        if (sb->rec_ps_i[i]) { memcpy(d->st.ps_i[i], s->ps_i[i], 16); DIRTY(d, d->st.ps_i[i]); constants = 1; }
+        if (sb->rec_vs_b[i]) { d->st.vs_b[i] = s->vs_b[i]; DIRTY(d, d->st.vs_b[i]); constants = 1; }
+        if (sb->rec_ps_b[i]) { d->st.ps_b[i] = s->ps_b[i]; DIRTY(d, d->st.ps_b[i]); constants = 1; }
     }
-    FOR_FLAGS(i, sb->rec_transform, 512) memcpy(d->st.transforms[i], s->transforms[i], 64);
-    if (sb->rec_viewport) { memcpy(d->st.viewport, s->viewport, 16); memcpy(d->st.viewport_z, s->viewport_z, 8); }
-    if (sb->rec_scissor) memcpy(d->st.scissor, s->scissor, 16);
-    if (sb->rec_indices) bind_ref(&d->st.indices, s->indices);
-    if (sb->rec_decl) { bind_ref(&d->st.decl, s->decl); }
-    if (sb->rec_fvf) d->st.fvf = s->fvf;
-    if (sb->rec_vs) bind_ref(&d->st.vs, s->vs);
-    if (sb->rec_ps) bind_ref(&d->st.ps, s->ps);
-    if (sb->rec_material) memcpy(d->st.material, s->material, 68);
-    for (int i = 0; i < 8; ++i) if (sb->rec_light[i]) { memcpy(d->st.lights[i], s->lights[i], 104); d->st.light_enable[i] = s->light_enable[i]; }
-    for (int i = 0; i < 6; ++i) if (sb->rec_clip[i]) memcpy(d->st.clip_planes[i], s->clip_planes[i], 16);
-    if (constants) {
-        d->constants_dirty = 1;
-        ++d3d_constant_generation;
+    FOR_FLAGS(i, sb->rec_transform, 512) { memcpy(d->st.transforms[i], s->transforms[i], 64); DIRTY(d, d->st.transforms[i]); }
+    if (sb->rec_viewport) {
+        memcpy(d->st.viewport, s->viewport, 16); memcpy(d->st.viewport_z, s->viewport_z, 8);
+        DIRTY(d, d->st.viewport); DIRTY(d, d->st.viewport_z);
     }
+    if (sb->rec_scissor) { memcpy(d->st.scissor, s->scissor, 16); DIRTY(d, d->st.scissor); }
+    if (sb->rec_indices) { bind_ref(&d->st.indices, s->indices); DIRTY(d, d->st.indices); }
+    if (sb->rec_decl) { bind_ref(&d->st.decl, s->decl); DIRTY(d, d->st.decl); }
+    if (sb->rec_fvf) { d->st.fvf = s->fvf; DIRTY(d, d->st.fvf); }
+    if (sb->rec_vs) { bind_ref(&d->st.vs, s->vs); DIRTY(d, d->st.vs); }
+    if (sb->rec_ps) { bind_ref(&d->st.ps, s->ps); DIRTY(d, d->st.ps); }
+    if (sb->rec_material) { memcpy(d->st.material, s->material, 68); DIRTY(d, d->st.material); }
+    for (int i = 0; i < 8; ++i) if (sb->rec_light[i]) {
+        memcpy(d->st.lights[i], s->lights[i], 104); d->st.light_enable[i] = s->light_enable[i];
+        DIRTY(d, d->st.lights[i]); DIRTY(d, d->st.light_enable[i]);
+    }
+    for (int i = 0; i < 6; ++i) if (sb->rec_clip[i]) { memcpy(d->st.clip_planes[i], s->clip_planes[i], 16); DIRTY(d, d->st.clip_planes[i]); }
+    /* Constants reach the programs through the render thread's copy (it counts
+     * d3d_constant_generation as their pieces arrive). */
+    if (constants) d->constants_dirty = 1;
 }

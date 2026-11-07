@@ -290,7 +290,8 @@ def analyse_full(name, b, summaries):
 
 def analyse(out=X87_JSON):
     start = time.time()
-    functions, bodies, helpers = cp.prepare(ROOT / 'build/call-protocol')
+    out.parent.mkdir(parents=True, exist_ok=True)
+    functions, bodies, helpers = cp.prepare(out.parent)
     summaries = {}
     for round_ in range(40):
         changed = 0
@@ -326,6 +327,7 @@ def analyse(out=X87_JSON):
                        calls={f'{a:08X}': list(v) for a, v in s.calls.items() if v != (0, 0)},
                        delta=s.delta, **({} if s.known else dict(u=1)))
             for name, s in summaries.items() if s.ok}
+    data['__edition__'] = cp.EDITION
     out.write_text(json.dumps(data, separators=(',', ':')) + '\n')
     return summaries
 
@@ -505,8 +507,10 @@ def transform_function(name, body, info):
 
 
 class Plan:
-    def __init__(self, path=X87_JSON):
+    def __init__(self, path=X87_JSON, edition='toe'):
         self.info = json.loads(Path(path).read_text())
+        if self.info.pop('__edition__', 'toe') != edition:
+            raise ValueError('x87 plan belongs to another edition')
         self.stats = Counter()
 
 
@@ -535,4 +539,11 @@ def apply_x87(text, plan):
 
 
 if __name__ == '__main__':
-    analyse()
+    import argparse
+    from editions import EDITION_IDS, protocol_root
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--edition', choices=EDITION_IDS, default='toe')
+    parser.add_argument('--out', type=Path)
+    args = parser.parse_args()
+    cp.configure_edition(args.edition)
+    analyse(args.out or protocol_root(args.edition) / 'x87.json')

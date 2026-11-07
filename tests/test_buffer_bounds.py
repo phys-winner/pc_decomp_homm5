@@ -13,6 +13,11 @@ class BufferBoundsTest(unittest.TestCase):
         out.mkdir(parents=True, exist_ok=True)
         fixture = ROOT / "tests/fixtures"
         prefix = '''#include <stdint.h>
+#define BUF_RT(b) (b)
+#define TEX_RT(t) (t)
+#define rt_shadow shadow
+#define rt_locks locks
+#define rt_lod lod
 #include <stddef.h>
 #include <string.h>
 #include <limits.h>

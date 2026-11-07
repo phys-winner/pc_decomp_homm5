@@ -12,6 +12,8 @@ import struct
 import subprocess
 import unittest
 
+from test_d3d_lifecycle import function
+
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "build/tests/legacy_shaders"
 MOJO = ROOT / "reference/mojoshader"
@@ -60,7 +62,7 @@ def build_mojo():
                                     sdk / f"Lib/{version}/um/x64"]))
     dll = OUT / "mojo_probe.dll"
     host_shader = ROOT / "android/host/d3d9_shader.c"
-    inputs = list(MOJO.rglob("*.h")) + [MOJO / s for s in SOURCES] + [host_shader, Path(__file__)]
+    inputs = list(MOJO.rglob("*.h")) + [MOJO / s for s in SOURCES] + [host_shader, Path(__file__), ROOT / "android/host/d3d9_filter.h", ROOT / "android/host/fsr1.h"]
     if not dll.exists() or dll.stat().st_mtime < max(p.stat().st_mtime for p in inputs):
         host_source = host_shader.read_text(encoding="utf-8")
         # Exercise the exact production source adapters and CTAB fallback.
@@ -75,12 +77,17 @@ def build_mojo():
                          "__declspec(dllexport) char *probe_alpha_variant(const char *s, int m) { return alpha_test_source(s,m); }\n"
                          "__declspec(dllexport) int probe_alpha_mode(const uint32_t *s) { return alpha_test_mode(s); }\n"
                          "__declspec(dllexport) uint8_t *probe_ctab(const uint8_t *s, uint32_t n, int p, uint32_t *out) { return with_synthetic_ctab(s,n,p,out); }\n"
+                         "#include \"mojoshader.h\"\n"
+                         "typedef struct { const uint8_t *bytecode,*parse_code; uint32_t size,parse_size; } d3d_shader;\n" +
+                         function(host_source, "static char *pixel_source(") +
+                         "\n__declspec(dllexport) char *probe_typed_pixel(const uint8_t *code,uint32_t size,uint32_t types) {\n"
+                         " d3d_shader s={code,NULL,size,0};return pixel_source(&s,types);}\n"
                          "__declspec(dllexport) void probe_free(void *p) { free(p); }\n", encoding="utf-8")
         flags = ["/nologo", "/W0", "/std:c11", "/LD", "/O2", "/D_CRT_SECURE_NO_WARNINGS",
                  "/DMOJOSHADER_NO_VERSION_INCLUDE", "/DMOJOSHADER_FLIP_RENDERTARGET",
                  "/DMOJOSHADER_DEPTH_CLIPPING", "/DSUPPORT_PROFILE_HLSL=0", "/DSUPPORT_PROFILE_ARB1=0",
                  "/DSUPPORT_PROFILE_ARB1_NV=0", "/DSUPPORT_PROFILE_METAL=0", "/DSUPPORT_PROFILE_SPIRV=0",
-                 "/DSUPPORT_PROFILE_GLSPIRV=0", "/DSUPPORT_PROFILE_GLSL120=0", "/I" + str(MOJO)]
+                 "/DSUPPORT_PROFILE_GLSPIRV=0", "/DSUPPORT_PROFILE_GLSL120=0", "/I" + str(MOJO), "/I" + str(ROOT / "android/host"), "/FId3d9_filter.h"]
         proc = subprocess.run([str(compiler)] + flags + [str(MOJO / s) for s in SOURCES] + [str(probe)] +
                               ["/Fe:" + str(dll)], cwd=OUT, env=env, text=True, capture_output=True)
         assert proc.returncode == 0, proc.stdout + proc.stderr
@@ -102,6 +109,8 @@ def build_mojo():
     lib.probe_alpha_mode.argtypes = [C.POINTER(C.c_uint32)]
     lib.probe_ctab.restype = C.c_void_p
     lib.probe_ctab.argtypes = [C.c_void_p, C.c_uint, C.c_int, C.POINTER(C.c_uint)]
+    lib.probe_typed_pixel.restype = C.c_void_p
+    lib.probe_typed_pixel.argtypes = [C.c_void_p, C.c_uint, C.c_uint]
     lib.probe_free.argtypes = [C.c_void_p]
     return lib
 

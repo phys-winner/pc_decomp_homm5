@@ -11,6 +11,10 @@ from test_static_tls import ROOT, compile_probe
 
 HARNESS = r'''
 #include <assert.h>
+#define gl_draw d3d_gl_draw
+#define BUF_RT(b) (b)
+#define rt_shadow shadow
+#define rt_locks locks
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -155,7 +159,7 @@ static void glDrawArrays(GLenum mode,GLint first,GLsizei n){(void)mode;(void)fir
 static void glDrawArraysInstanced(GLenum mode,GLint first,GLsizei n,GLsizei instances){(void)mode;(void)first;(void)n;(void)instances;assert(0);}
 static int actual_draw(d3d_device*d,uint32_t vertex_count,uint32_t base_vertex,uint32_t start_index){
  int attr_count=3,attr_usage[3]={0,1,2},attr_index[3]={0};
- uint32_t start_vertex=0,primitive=4,up_stride=0;int indexed=1,up_index32=0;
+ uint32_t start_vertex=0,primitive=4,up_stride=0,up_ring_at=0;int indexed=1,up_index32=0;GLuint up_buffer=0;(void)up_ring_at;(void)up_buffer;
  const void*up_vertices=NULL,*up_indices=NULL;(void)up_stride;
 #include "streams.h"
 #include "draw.h"
@@ -283,11 +287,11 @@ def sparse_headers(source=None):
     sparse = source[source.index("/* Sparse pooled meshes"):source.index("/* A compact immutable data store")]
     ranges = "\n".join(function(source, name) for name in
                        ("static int draw_vertex_bounds(", "static int draw_stream_range(", "static int draw_rebase("))
-    start = source.index("    uint32_t instances =", source.index("int d3d_gl_draw("))
+    start = source.index("    uint32_t instances =", source.index("static int gl_draw("))
     end = source.index("    GLuint trace_query =", start)
     draw = source[source.index("    GLenum mode = gl_mode(primitive);", end):]
     draw = draw[:draw.index("    GLenum e = ")]
-    destroy = function(source, "void d3d_gl_device_destroy(")
+    destroy = function(source, "static void gl_device_destroy(")
     a = destroy.index("    ring_release();")
     z = destroy.index("    vao =", a)
     return {"ring.h": ring, "sparse.h": sparse, "ranges.h": ranges,

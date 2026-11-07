@@ -18,6 +18,21 @@ import org.homm5.port.launcher.PortHooks;
  *  launcher's process and in the game's (Launch.attach), so it never touches the game's activity
  *  or native library. */
 public final class LauncherHooks implements PortHooks {
+    @Override public String installationProblem(Context context, String distribution, String part, File folder) {
+        if (!"game".equals(part) || !Games.valid(distribution) || !storage(context)) return null;
+        Map<String, File> folders = new LinkedHashMap<>();
+        for (String id : Games.IDS) folders.put(id, Launch.folder(context, id, "game"));
+        String problem = Games.conflict(folder, distribution, folders);
+        if (problem == null) return null;
+        boolean ru = context.getResources().getConfiguration().getLocales().get(0).getLanguage().equals("ru");
+        return (ru ? "Обнаружен конфликт дистрибутивов. Tribes of the East должна находиться отдельно от Vanilla и Hammers of Fate. Заново установите смешанные файлы.\n"
+            : "Conflicting game installations detected. Keep Tribes of the East separate from Vanilla and Hammers of Fate, and reinstall mixed files.\n") + problem;
+    }
+
+    @Override public java.util.List<String> missing(Context context, String distribution, String part, File folder) {
+        String problem = installationProblem(context, distribution, part, folder);
+        return problem == null ? java.util.Collections.emptyList() : java.util.Collections.singletonList(problem);
+    }
     static final String OLD_PREFERENCES = "launcher", MIGRATED = "moved_to_launcher_base";
     /** The old launcher's files in the app's private files: start markers and the DXVK renderer's state. */
     static final String[] OLD_FILES = {"game-started", "game-started-vanilla", "game-started-hof", "renderer.properties",

@@ -16,9 +16,9 @@ enum {
     TOUCH_TWO_FINGER_CANCEL, TOUCH_ABORT,
     TOUCH_SECOND_BEGIN, TOUCH_SECOND_TAP, TOUCH_SECOND_HOLD,
     TOUCH_THREE_FINGER_TAP, TOUCH_TILT, TOUCH_POINTER, TOUCH_PAD_CAMERA, TOUCH_POINTER_CLICK,
-    TOUCH_SECOND_END, TOUCH_FIRST_END, TOUCH_TWO_FINGER_TAP
+    TOUCH_SECOND_END, TOUCH_FIRST_END, TOUCH_TWO_FINGER_TAP, TOUCH_CONSOLE_TOGGLE, TOUCH_CHEAT_ACTION
 };
-#define TOUCH_KIND_LAST TOUCH_TWO_FINGER_TAP
+#define TOUCH_KIND_LAST TOUCH_CHEAT_ACTION
 typedef struct {
     int kind;
     float x, y, dx, dy, scale, rotation;
@@ -68,6 +68,12 @@ float void_port_camera_sensitivity(void);
 /* Cursor offsets are fractions of the shorter backbuffer side. */
 float void_port_cursor_offset(int vertical);
 int void_port_touch_cursor(void);
+int void_port_console_enabled(void);
+int void_port_combat_fit(void);
+int void_port_split_hints(void);
+int void_port_split_zones(void);
+int void_port_filter(int ui);
+float void_port_sharpness(void);
 void void_port_settings_pump(void);
 
 #endif

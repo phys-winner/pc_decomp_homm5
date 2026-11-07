@@ -249,6 +249,12 @@ int main(void) {
     assert(wanted==480);                            /* only this chunk is queued */
     stream->read=stream->written+576;reset_script(frames);wanted=void_audio_output(frames,480);
     assert(!wanted);                                /* inconsistent position: no refill */
+    /* Actual Bluetooth route: its 421 ms capacity exceeds FMOD's 186 ms ring.
+     * Filling it by mixing ahead replays PCM before the guest can refill it. */
+    stream->burst=10101;stream->capacity=stream->size=20202;stream->read=stream->written;
+    reset_script(frames);wanted=void_audio_output(frames,480);assert(wanted==1440);
+    stream->read=stream->written-1440;
+    reset_script(frames);assert(!void_audio_output(frames,480));
     /* A partial write, a paused or a failed output asks for nothing. */
     stream->read=stream->written+480;
     reset_script(frames);memset(results,0,sizeof results);results[0]=100;result_count=128;

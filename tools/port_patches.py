@@ -251,8 +251,7 @@ def validate_packaged_native(edition, library, root=ROOT):
 
 
 def validate_overlay(edition, folder, root=ROOT):
-    from port_ui import OPTIONS, PAK_NAME, UICONSTS
-    from town_music import PAK_NAME as MUSIC_PAK, TOWNS_BY_EDITION, ZIP_DATE as MUSIC_DATE
+    from port_ui import options, PAK_NAME, UICONSTS
     folder = Path(folder)
     archive_path = folder / "data" / PAK_NAME
     if not archive_path.is_file():
@@ -265,7 +264,7 @@ def validate_overlay(edition, folder, root=ROOT):
         backgrounds = ET.fromstring(archive.read(name)).findall("VisualStates/Item/Normal/Background")
         if len(backgrounds) != 1 or backgrounds[0].get("href") != "":
             raise ValueError(edition + ": inactive chat background must be empty")
-        for option in OPTIONS:
+        for option in options(edition):
             if constants.count(("<ID>" + option[0] + "</ID>").encode()) != 1:
                 raise ValueError(edition + ": UI patch is missing or duplicated: " + option[0])
         for name in ("UI/DialogueScreen.(WindowScreenShared).xdb",
@@ -318,28 +317,6 @@ def validate_overlay(edition, folder, root=ROOT):
                    window.findtext("Placement/" + axis + "/Second") != "true"
                    for axis in ("HorAllign", "VerAllign")):
                 raise ValueError(edition + ": required hero dial anchors are missing")
-    music_path = folder / "data" / MUSIC_PAK
-    if not music_path.is_file():
-        raise ValueError(edition + ": required town music overlay is missing")
-    manifest_name = "manifest.json" if edition == "toe" else edition + ".json"
-    music_hashes = json.loads((Path(root) / "config/music" / manifest_name).read_text(encoding="utf-8"))
-    towns = TOWNS_BY_EDITION[edition]
-    if set(music_hashes) != set(towns):
-        raise ValueError(edition + ": town music manifest coverage is incomplete")
-    with zipfile.ZipFile(music_path) as music:
-        names = ["Sounds/_(Music)/Towns/" + name for name in towns]
-        if sorted(music.namelist()) != sorted(names):
-            raise ValueError(edition + ": town music resources are missing, duplicated or from another edition")
-        for name in names:
-            original = music.read(name)
-            for field, value in (("MinPausedTime", "1000"), ("MaxPausedTime", "10000")):
-                patched = ("<" + field + ">0</" + field + ">").encode()
-                if original.count(patched) != 1:
-                    raise ValueError(edition + ": town music pause patch is missing: " + name)
-                original = original.replace(patched, ("<" + field + ">" + value + "</" + field + ">").encode())
-            if (hashlib.sha256(original).hexdigest() != music_hashes[name.rsplit("/", 1)[1]] or
-                    music.getinfo(name).date_time != MUSIC_DATE):
-                raise ValueError(edition + ": town music canonical content or override timestamp changed: " + name)
     suffix = edition_spec(edition, root)["profile_suffix"]
     profiles = ("profiles/autoexec" + suffix + ".cfg", "profiles/default_profile/user" + suffix + ".cfg")
     for relative in profiles:
@@ -355,7 +332,7 @@ def validate_overlay(edition, folder, root=ROOT):
     loose_hashes = {}
     if edition != "toe":
         from editions import override_files
-        for archive in (archive_path, music_path):
+        for archive in (archive_path,):
             for relative, contents in override_files(edition, archive).items():
                 if relative == "data/" + archive.name:
                     continue
@@ -363,7 +340,7 @@ def validate_overlay(edition, folder, root=ROOT):
                 if not loose.is_file() or loose.read_bytes() != contents:
                     raise ValueError(edition + ": required loose override is missing or stale: " + relative)
                 loose_hashes[relative] = hashlib.sha256(contents).hexdigest()
-    return dict(edition=edition, features=["profile", "ui_scale", "render_scale", "camera", "cursor", "cutscene_horplus", "audio", "telemetry_disabled", "widescreen_ui"],
-                overlay_sha256=digest(archive_path), town_music_sha256=digest(music_path),
+    return dict(edition=edition, features=["profile", "ui_scale", "render_scale", "camera", "cursor", "cutscene_horplus", "telemetry_disabled", "widescreen_ui"],
+                overlay_sha256=digest(archive_path),
                 loose_sha256=loose_hashes,
                 profile_sha256={relative: digest(folder / relative) for relative in profiles})

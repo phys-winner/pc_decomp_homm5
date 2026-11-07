@@ -36,7 +36,9 @@ class IndexRegionSourceTest(unittest.TestCase):
             mutant=source.replace(b'eax = ecx; /* 0x00C364C8',b'eax = edx; /* 0x00C364C8',1)
             self.assertNotEqual(mutant,source)
             self.assertEqual(region.index_region(mutant),mutant)
-        (ROOT/'build/pc-full/index-region-proof/source-scope.json').write_text(json.dumps(dict(
+        output = ROOT/'build/pc-full/index-region-proof/source-scope.json'
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(dict(
             changed=changed,function_sha256=region.FUNCTION_SHA256,
             implementation_sha256=hashlib.sha256((ROOT/'tools/index_region.py').read_bytes()).hexdigest()),indent=2)+'\n')
 

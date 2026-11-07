@@ -219,10 +219,22 @@ int void_touch_camera_pose(uint32_t screen, int kind, float pose[10], int set_po
 
 static struct {
     uint32_t camera, screen, phase;
-    float height, previous[10], ratio, centre;
-    unsigned stable, stage;
+    float height, ratio, centre;
+    unsigned stage;
+    float idle_rod, idle_pitch, idle_fov, sample_pose[10];
+    unsigned stable, fitted;
 } framing;
 static void_fn original_projection;
+
+static int combat_hud_projection(uint32_t camera)
+{
+    if (framing.phase == 3 || !void_vm_readable(framing.screen, 0x2E4)) return 0;
+    uint32_t state = MEM32(framing.screen + 0x2E0);
+    return state == 0x1000 || (state & 0x188) ||
+        (framing.idle_rod > 0 && fabsf(MEMF(camera + 0x70) - framing.idle_rod) < .05f &&
+         fabsf(MEMF(camera + 0x74) - framing.idle_pitch) < .005f &&
+         fabsf(MEMF(camera + 0x80) - framing.idle_fov) < .05f);
+}
 
 static void camera_projection(void)
 {
@@ -231,7 +243,7 @@ static void camera_projection(void)
         !void_vm_readable(framing.screen, 0xA8) ||
         MEM32(framing.screen) != (framing.phase == 3 ? 0x00E230E4u : 0x00E1DA84u) ||
         MEM32(framing.screen + 0xA4) != camera ||
-        MEMF(0x00F74BE4u) != framing.height || framing.height >= 768 ||
+        MEMF(0x00F74BE4u) != framing.height ||
         !void_vm_writable(camera, 0x98)) {
         original_projection();
         return;
@@ -239,11 +251,28 @@ static void camera_projection(void)
     /* The deployment controller resets its target every frame. Apply the view
        correction only while building the shared render/picking projection. */
     float rod = MEMF(camera + 0x70), centre = MEMF(camera + 0x60);
-    MEMF(camera + 0x70) = rod * framing.ratio;
-    MEMF(camera + 0x60) = centre + framing.centre;
+    int hud = framing.height < 768 && combat_hud_projection(camera);
+    if (framing.height < 768) {
+        if (framing.phase == 3) MEMF(camera + 0x60) = centre + framing.centre;
+        else if (hud) MEMF(camera + 0x60) = centre / framing.ratio + framing.centre;
+    }
+    /* Preserve the supplied PC 16:9 framing (native canvas1366x768), including attack close-ups. */
+    float fov = MEMF(camera + 0x80);
+    uint32_t viewport = ARG(1);
+    if (framing.phase != 3 && void_vm_readable(viewport, 8)) {
+        float w = MEMF(viewport), h = MEMF(viewport + 4);
+        if (isfinite(w) && isfinite(h) && w > 0 && h > 0 && fov > 0 && fov < 180 &&
+            (w / h > 1366.0f / 768.0f || (hud && framing.ratio != 1))) {
+            double tangent = tan(fov * 0.008726646259971648);
+            if (w / h > 1366.0f / 768.0f) tangent *= w / h * (768.0 / 1366.0);
+            if (hud) tangent *= framing.ratio;
+            MEMF(camera + 0x80) = (float)(atan(tangent) * 114.59155902616465);
+        }
+    }
     original_projection();
     MEMF(camera + 0x70) = rod;
     MEMF(camera + 0x60) = centre;
+    MEMF(camera + 0x80) = fov;
 }
 
 void void_touch_adventure_frame(uint32_t screen, float height, float top, float bottom)
@@ -266,13 +295,13 @@ void void_touch_adventure_frame(uint32_t screen, float height, float top, float 
     framing.stage = 2;
 }
 
-/* Deployment fits its army once; battle framing follows only the visible HUD gap. */
+/* Overview, deployment and attack operators retain their original distance and aim. */
 void void_touch_combat_frame(uint32_t screen, float width, float height, float hud_top, float top, float bottom)
 {
     if (!screen) { framing.camera = 0; return; }
     if (!void_vm_readable(screen, 0x3BC) || MEM32(screen) != 0x00E1DA84u ||
         !isfinite(width) || !isfinite(height) || height <= 0 ||
-        !isfinite(hud_top) || hud_top < height * .35f || hud_top >= height ||
+        !isfinite(hud_top) || hud_top < height * .35f || hud_top > height ||
         !isfinite(top) || !isfinite(bottom) || bottom < top) return;
     uint32_t camera = MEM32(screen + 0xA4);
     if (!void_vm_readable(camera, 0x98) || MEM32(camera) != 0x00E44224u) return;
@@ -281,42 +310,45 @@ void void_touch_combat_frame(uint32_t screen, float width, float height, float h
         if (!original_projection) return;
         void_dispatch_add(0x007CD0C0u, camera_projection);
     }
-    if (MEM32(screen + 0x2E0) != 0x1000) {
-        /* Project the arena anchor into the visible HUD gap; creature labels depend on zoom and turn. */
-        framing.camera = camera; framing.screen = screen; framing.phase = 0;
-        framing.height = height;
-        framing.ratio = fminf(1.6f, fmaxf(1.0f, (1.0f - 165.0f / 768.0f) * height / hud_top));
-        framing.centre = (hud_top + 40.0f) / height - 1.0f;
-        framing.stage = 2;
-        return;
-    }
-    float pose[10];
-    if (!void_touch_camera_pose(screen, 1, pose, 0, 0)) return;
-    uint32_t phase = MEM32(screen + 0x2E0) == 0x1000 ? (pose[2] < 0 ? 1 : 2) : 0;
+    uint32_t state = MEM32(screen + 0x2E0);
+    uint32_t phase = state == 0x1000 ? (MEMF(camera + 0x78) < 0 ? 1u : 2u) : 0u;
     if (framing.camera != camera || framing.screen != screen || framing.phase != phase || framing.height != height) {
-        memset(&framing, 0, sizeof framing);
-        framing.camera = camera; framing.screen = screen;
-        framing.phase = phase; framing.height = height;
+        framing.ratio = 1;
+        framing.centre = 0;
+        framing.stable = framing.fitted = 0;
+        framing.idle_rod = 0;
     }
-    if (framing.stage == 2) return;
-    int settled = 1;
-    for (int i = 0; i < 10; ++i) if (fabsf(pose[i] - framing.previous[i]) > .001f) settled = 0;
-    memcpy(framing.previous, pose, sizeof pose);
-    framing.stable = settled ? framing.stable + 1 : 0;
-    if (framing.stable < 12) return;
-    if (!framing.stage) {
-        framing.ratio = fminf(1.6f, fmaxf(1.0f, (1.0f - 165.0f / 768.0f) * height / hud_top));
-        framing.stage = 1; framing.stable = 0;
-        return;
+    framing.camera = camera; framing.screen = screen; framing.phase = phase;
+    framing.height = height;
+    if (state == 0x1000 || (state & 0x188)) {
+        framing.idle_rod = MEMF(camera + 0x70);
+        framing.idle_pitch = MEMF(camera + 0x74);
+        framing.idle_fov = MEMF(camera + 0x80);
     }
-    /* Leave room above count rectangles for the creatures' models. */
-    float target = (hud_top + 40.0f) * .5f;
-    float delta = 2.0f * (target - (top + bottom) * .5f) / height;
-    if (!isfinite(delta) || fabsf(delta) > 2) return;
-    framing.centre = delta;
+    if (height < 768 && hud_top < height && (state == 0x1000 || (state & 0x188))) {
+        if (!phase) {
+            /* Map the original unobscured viewport to the enlarged HUD, keeping its top fixed. */
+            float ratio = fmaxf(1, (1 - (height - hud_top) / 768) * height / hud_top);
+            framing.ratio = ratio;
+            framing.centre = 1 / ratio - 1;
+        } else if (!framing.fitted && bottom > top && top >= 0 && bottom <= height) {
+            float pose[10]; memcpy(pose, GPTR(camera + 0x70), sizeof pose);
+            int stable = 1;
+            for (int i = 0; i < 10; ++i)
+                if (!isfinite(pose[i]) || fabsf(pose[i] - framing.sample_pose[i]) > .0001f) stable = 0;
+            memcpy(framing.sample_pose, pose, sizeof pose);
+            framing.stable = stable ? framing.stable + 1 : 0;
+            if (framing.stable >= 2) {
+                /* Measure once before any shift, so animated labels cannot feed back into the lens. */
+                framing.centre = fminf(0, 2 * (hud_top - height * .015f - bottom) / height);
+                framing.fitted = 1;
+                VLOG("[touch] deployment-hud phase=%u height=%.1f hud=%.1f bottom=%.1f centre=%.3f",
+                     phase, height, hud_top, bottom, framing.centre);
+            }
+        }
+    }
     framing.stage = 2;
-    VLOG("[touch] combat-frame phase=%u zoom=%.2f centre=%.3f hud=%.1f stacks=%.1f..%.1f",
-         phase, framing.ratio, delta, hud_top, top, bottom);
+
 }
 
 /* Two fingers moved up together tilt the view toward the horizon, within the

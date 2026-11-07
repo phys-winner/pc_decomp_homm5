@@ -36,7 +36,7 @@ static int module_count;
 static pthread_mutex_t loader_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* Lifted images, in the Windows build's order and bases. The Windows module
- * name is what the guest asks for; the file is the pre-based private copy. */
+ * name is what the guest asks for; prepared DLLs use pre-based private copies. */
 typedef struct { const char *name; const char *file; uint32_t base; int exe; int optional; } lifted_spec;
 static const lifted_spec lifted[] = {
 #ifdef HOMM5_MODULES_INCLUDE
@@ -366,7 +366,15 @@ int void_modules_init(const char *image_dir)
         snprintf(m->win_path, sizeof m->win_path, "%s\\%s", VIRTUAL_BIN, lifted[i].name);
         m->kind = lifted[i].exe ? MOD_LIFTED_EXE : MOD_LIFTED_DLL;
         char path[1024];
-        snprintf(path, sizeof path, "%s/%s", image_dir, lifted[i].file);
+        /* These two images are unchanged build inputs supplied by the installation. */
+        if (lifted[i].exe || !strcasecmp(lifted[i].file, "granny2.dll")) {
+            char *original = void_path_to_host(m->win_path);
+            if (!original) return 0;
+            snprintf(path, sizeof path, "%s", original);
+            free(original);
+        } else {
+            snprintf(path, sizeof path, "%s/%s", image_dir, lifted[i].file);
+        }
         if (lifted[i].optional && access(path, F_OK)) {
             void_log("[void] optional module %s not installed", lifted[i].name);
             --module_count;

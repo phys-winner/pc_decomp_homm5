@@ -34,6 +34,8 @@ static void glUseProgram(GLuint program) { assert(program == 0); ++unbound; }
 #include "ff.h"
 #include "programs.h"
 static void MOJOSHADER_freeParseData(void *data) { tracked_free(data); }
+static void prelink_forget(d3d_shader *s) {(void)s;}
+static void d3d_rt_call(void (*fn)(void *),const void *p,unsigned n){(void)n;fn((void *)p);}
 #include "shader_destroy.h"
 static void glDeleteProgram(GLuint program) {
     assert(program && program < 1024);
@@ -111,7 +113,7 @@ class D3DLifecycleTest(unittest.TestCase):
         ff_helpers = ff[ff.index("typedef struct {\n    uint32_t inputs"):ff.index("#define APPEND")]
         programs = shaders[shaders.index("typedef struct { int type, index, count; }"):shaders.index("static GLuint compile(")]
         compile_probe("d3d_lifecycle", HARNESS, {"ff.h": ff_helpers, "programs.h": programs,
-                                              "shader_destroy.h": function(shaders, "static void shader_destroy(")})
+                                              "shader_destroy.h": function(shaders, "static void run_shader_destroy(") + function(shaders, "static void shader_destroy(")})
 
 
 if __name__ == "__main__":

@@ -1,0 +1,130 @@
+diff --git a/android/src/port/launcher/PortHooks.java b/android/src/port/launcher/PortHooks.java
+--- a/android/src/port/launcher/PortHooks.java
++++ b/android/src/port/launcher/PortHooks.java
+@@ -14,6 +14,9 @@
+      *  there now, beyond port.json's "required": what depends on the game's own settings (UT3: the
+      *  language chosen in its settings). Empty when nothing is missing. */
+     default List<String> missing(Context context, String distribution, String part, File folder) { return Collections.emptyList(); }
++
++    /** Refuses an incompatible installation destination before any files are changed; null accepts it. */
++    default String installationProblem(Context context, String distribution, String part, File folder) { return null; }
+ 
+     /** The renderer the game would start with when the game keeps the choice in its own settings
+      *  (an in-game options page); null: the launcher keeps it. */
+diff --git a/android/src/port/launcher/Launch.java b/android/src/port/launcher/Launch.java
+--- a/android/src/port/launcher/Launch.java
++++ b/android/src/port/launcher/Launch.java
+@@ -83,6 +83,13 @@
+         return p == null ? null : Install.folder(activity, spec, distribution, p);
+     }
+ 
++    /** A distribution's configured folder, also available to installation checks in game hooks. */
++    public static File folder(Context context, String distribution, String part) {
++        Spec spec = Spec.get(context);
++        Spec.Distribution d = spec.distribution(distribution);
++        Spec.Part p = d != null ? d.part(part) : null;
++        return p == null ? null : Install.folder(context, spec, d, p);
++    }
+ 
+     /** An option of port.json as the player set it, else its default. */
+     public String option(String key) {
+diff --git a/android/src/port/launcher/LauncherActivity.java b/android/src/port/launcher/LauncherActivity.java
+--- a/android/src/port/launcher/LauncherActivity.java
++++ b/android/src/port/launcher/LauncherActivity.java
+@@ -116,6 +116,7 @@
+      *  first frame (port.json "autoLaunch"); a start that crashed opens the launcher instead. */
+     private boolean autoLaunch() {
+         if (!spec.autoLaunch || getIntent().getBooleanExtra(EXTRA_SHOW, false) || Work.busy()) return false;
++        if (installationConflict() != null) return false;
+         if (Launch.running(this, selected)) {
+             /* The game runs (in a task of its own): back to it, no new start record, which would
+                make its earlier first frame look missing. */
+@@ -307,8 +308,20 @@
+         refreshSpace(idle);
+         refreshUpdate();
+         refreshAbout();
+-    }
+-
++        String conflict = idle ? installationConflict() : null;
++        if (conflict != null) note(conflict, true);
++    }
++
++    /** Check every configured distribution before an automatic start can hide a conflict. */
++    private String installationConflict() {
++        for (Spec.Distribution d : spec.distributions) for (Spec.Part p : d.parts) {
++            File folder = Install.folder(this, spec, d, p);
++            if (!folder.isDirectory()) continue;
++            String problem = hooks.installationProblem(this, d.id, p.id, folder);
++            if (problem != null) return problem;
++        }
++        return null;
++    }
+ 
+     private void note(String text, boolean error) {
+         note.setVisibility(text == null ? View.GONE : View.VISIBLE);
+@@ -573,10 +586,16 @@
+         background(() -> Install.discover(spec, dir), found -> {
+             setBusy(null);
+             if (found.isEmpty()) { error(Texts.t(this, Texts.NOTHING_FOUND)); return; }
++            for (Install.Found f : found) {
++                String problem = hooks.installationProblem(this, f.distribution.id, f.part.id, f.folder);
++                if (problem != null) { error(problem); return; }
++            }
+             List<File> sources = new ArrayList<>(), targets = new ArrayList<>();
+             List<List<Glob>> needed = new ArrayList<>();
+             StringBuilder body = new StringBuilder();
+             for (Install.Found f : found) {
++                String problem = hooks.installationProblem(this, f.distribution.id, f.part.id, f.folder);
++                if (problem != null) { refresh(); error(problem); return; }
+                 if (!f.part.fixed) { Install.choose(this, f.distribution, f.part, f.folder); continue; }
+                 File target = Install.folder(this, spec, f.distribution, f.part);
+                 if (sameFile(f.folder, target)) continue;
+@@ -713,6 +732,11 @@
+     }
+ 
+     private void unpack(List<File> targets) {
++        for (int i = 0; pendingPlan != null && i < pendingPlan.size(); ++i) {
++            Install.ArchivePart part = pendingPlan.get(i);
++            String problem = hooks.installationProblem(this, part.distribution.id, part.part.id, targets.get(i));
++            if (problem != null) { error(problem); dropPending(); return; }
++        }
+         Zip zip = pendingZip;
+         List<Install.ArchivePart> plan = pendingPlan;
+         pendingZip = null;   /* the job owns the archive now */
+diff --git a/android/src/port/launcher/Install.java b/android/src/port/launcher/Install.java
+--- a/android/src/port/launcher/Install.java
++++ b/android/src/port/launcher/Install.java
+@@ -384,12 +384,14 @@
+ 
+     /** Unpacks parts of one archive, checking every file's CRC-32; the job owns the archive. */
+     static final class UnpackJob extends Work.Job {
++        final Context context;
+         final Zip zip;
+         final List<ArchivePart> plans;
+         final List<File> targets;
+ 
+         UnpackJob(Context context, Zip zip, List<ArchivePart> plans, List<File> targets) {
+             super(Texts.t(context, Texts.JOB_UNPACK), targets.get(0));
++            this.context = context != null ? context.getApplicationContext() : null;
+             this.zip = zip;
+             this.plans = plans;
+             this.targets = targets;
+@@ -405,6 +407,8 @@
+         }
+ 
+         private void unpack(ArchivePart plan, File target) throws IOException {
++            String problem = context != null ? PortHooks.of(context).installationProblem(context, plan.distribution.id, plan.part.id, target) : null;
++            if (problem != null) throw new IOException(problem);
+             if (Storage.free(target.getParentFile()) < plan.size + (64L << 20)) throw new Failure(Failure.FULL, null);
+             File staged = staging(target);
+             try {
+@@ -431,6 +435,9 @@
+                     if (e.time > 0) out.setLastModified(e.time);
+                 }
+                 check();
++                String stagedProblem = context != null ? PortHooks.of(context).installationProblem(context,
++                    plan.distribution.id, plan.part.id, staged) : null;
++                if (stagedProblem != null) throw new IOException(stagedProblem);
+                 commit(staged, target);
+             } catch (IOException | RuntimeException failure) {
+                 delete(staged);

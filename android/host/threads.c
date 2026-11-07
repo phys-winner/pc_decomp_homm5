@@ -146,6 +146,8 @@ static void tls_thread_callbacks(uint32_t reason)
 /* ---------------------------------------------------------- machine lock */
 /* Time this thread spent waiting for the machine (frame statistics). */
 static __thread uint64_t t_lock_wait_ns;
+static __thread int t_machine_owned;
+int void_machine_is_owned(void) { return t_self && t_self->depth > 0 && t_machine_owned; }
 uint64_t void_lock_wait_ns(void) { return t_lock_wait_ns; }
 
 static uint64_t now_ns(void)
@@ -167,12 +169,14 @@ static void machine_acquire(void)
         t_lock_wait_ns += now_ns() - start;
     }
     pthread_mutex_unlock(&mlock);
+    t_machine_owned = 1;
     /* Android may reset affinity when the app changes lifecycle state. */
     pin_guest_thread();
 }
 
 static void machine_release(void)
 {
+    t_machine_owned = 0;
     pthread_mutex_lock(&mlock);
     ++ticket_serving;
     pthread_cond_broadcast(&mcond);

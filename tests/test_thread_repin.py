@@ -20,6 +20,7 @@ static int big_cores_count, big_cores_once;
 static long capacities[8], frequencies[8];
 static const char *environment;
 static unsigned set_calls, saved, loaded;
+static int t_machine_owned;
 static int lock_depth, affinity_error, mlock, mcond;
 static uint64_t ticket_next,ticket_serving,t_lock_wait_ns;
 typedef struct {int regs,depth;} void_thread;
@@ -63,12 +64,12 @@ int main(void) {
     memcpy(capacities,tablet,sizeof tablet);
     pair();assert(set_calls==1 && applied_mask==0x80 && saved==1 && loaded==1);
     applied_mask=0xFF; /* Reproduce Android's external lifecycle reset. */
-    void_machine_enter();assert(set_calls==2 && applied_mask==0x80);
+    void_machine_enter();assert(set_calls==2 && applied_mask==0x80 && void_machine_is_owned());
     void_machine_enter();assert(set_calls==2); /* Nested guest entry is not acquisition. */
     void_machine_leave();assert(set_calls==2 && guest.depth==1);
-    void_blocking_begin();applied_mask=0xFF;
+    void_blocking_begin();assert(!void_machine_is_owned());applied_mask=0xFF;
     void_blocking_end();assert(set_calls==3 && applied_mask==0x80 && guest.depth==1);
-    void_machine_leave();assert(!guest.depth && !lock_depth);
+    void_machine_leave();assert(!guest.depth && !lock_depth && !void_machine_is_owned());
     applied_mask=0xFF;assert(set_calls==3); /* Host work alone does not repin. */
     affinity_error=1;pair();assert(set_calls==4 && applied_mask==0xFF); /* Nonfatal OS denial. */
     affinity_error=0;pair();assert(set_calls==5 && applied_mask==0x80); /* Retry next acquisition. */
@@ -92,7 +93,7 @@ class ThreadRepinTest(unittest.TestCase):
         signatures=["static void big_cores_init(","static void pin_guest_thread(void)\n{",
                     "static void machine_acquire(","static void machine_release(",
                     "void void_machine_enter(","void void_machine_leave(",
-                    "void void_blocking_begin(","void void_blocking_end("]
+                    "void void_blocking_begin(","void void_blocking_end(","int void_machine_is_owned("]
         # Include the opening brace to distinguish pinning's forward declaration.
         functions="\n".join(body(source,s) for s in signatures)
         compile_probe("thread_repin",HARNESS.replace("/* PRODUCTION */",functions),{})

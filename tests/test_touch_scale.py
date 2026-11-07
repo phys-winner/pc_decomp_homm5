@@ -26,9 +26,14 @@ typedef struct {int kind;float x,y,dx,dy,scale;} void_touch_event;
 typedef void (*void_fn)(void);
 #define VLOG(...) ((void)0)
 static int mapped=1, writable=1, dispatch=1, has_screen=1;
+static unsigned native_combat_frames;
+static float last_combat_height;
 static void void_touch_adventure_frame(uint32_t s,float h,float t,float b) {(void)s;(void)h;(void)t;(void)b;}
 static void void_touch_combat_frame(uint32_t s,float w,float h,float hud,float t,float b) {
-    (void)w;(void)h;(void)hud;(void)t;(void)b;assert(!s);
+    if(!s)return;
+    assert(s==0x22000&&w>0&&h>=384&&hud>=0&&hud<=h&&!t&&!b);
+    last_combat_height=h;
+    ++native_combat_frames;
 }
 static int backbuffer_w=1920,backbuffer_h=1080,aborts,relayouts,queries,gesture_active;
 static int text_refreshes[3], bad_cast, cycle_screens;
@@ -115,6 +120,7 @@ static uint32_t void_call_guest(uint32_t va,int n,const uint32_t *args,int pops)
     MEMF(0x25000-0xF8+0x64)=MEMF(0x25000-0xF8+0x68)=0;
     MEMF(0x72000+0xA4)=MEMF(0xF74BE0);MEMF(0x72000+0xA8)=MEMF(0xF74BE4);
     native_children(0x24000-0xF8);
+    old_w=MEMF(0xF74BE0);old_h=MEMF(0xF74BE4);
     ++relayouts;return 0;
 }
 static uint32_t void_call_guest_this(uint32_t va,uint32_t self,int n,const uint32_t *args) {
@@ -195,7 +201,9 @@ int main(void) {
     MEM32(0x35000)=0x9500;MEM32(0x9504)=0x123456;MEM32(0x35070)=0x40000; /* Nontext VM object is rejected. */
     MEM32(0x36000)=0x9000;MEM32(0x360A4)=0xA200;MEM32(0x360A8)=0xA1FF; /* Invalid child vector. */
     dimensions(1920,1080,1366,768);
-    pump();assert(!aborts&&!relayouts&&!queries); /* Existing 100% is untouched. */
+    MEM32(0x22000)=0xE1DA84;
+    pump();assert(!aborts&&!relayouts&&queries==1&&native_combat_frames==1);
+    MEM32(0x22000)=0; /* Native UI stays in place; the battle projection is still registered. */
 
     void_touch_set_scale(.75f);
     assert(!aborts&&!relayouts); /* UI thread only records the request. */
@@ -221,7 +229,7 @@ int main(void) {
     near(vy/vx,768.0/1366); /* CF7D90's projection input is height/width. */
     int seen_queries=queries;
     for(int i=0;i<20;i++)pump();
-    assert(aborts==1&&relayouts==1&&queries==seen_queries);
+    assert(aborts==1&&relayouts==1&&queries==seen_queries+20);
     assert(text_refreshes[0]==2&&text_refreshes[1]==1&&text_refreshes[2]==1);
     void_touch_set_scale(.75f);pump();assert(relayouts==1);
 
@@ -358,6 +366,11 @@ int main(void) {
     assert(scale_fits(root,0,172400.0f/165,76800.0f/165,1724,768,200)==165);
     MEM8(modal_placement+0x70)=0;
     assert(scale_fits(root,0,172400.0f/165,76800.0f/165,1724,768,200)==200);
+    /* The console owns its off-screen ShowConsole animation and must not drive fitting. */
+    memcpy(GPTR(0x7E000),"Console",7);MEM32(modal_placement+0x58)=0x7E000;MEM32(modal_placement+0x5C)=0x7E007;
+    MEM8(modal_placement+0x70)=1;MEMF(modal_window+0x68)=-400;
+    assert(scale_fits(root,1,862,384,1724,768,200)==200);
+    near(MEMF(modal_window+0x68),-400);MEM8(modal_placement+0x70)=0;
     /* Rounded render resolution cannot change the logical UI size. */
     void_android_display_size=native_size;
     backbuffer_w=1319;backbuffer_h=826;dimensions(1319,826,1227,768);pump();
@@ -394,13 +407,53 @@ int main(void) {
     MEM8(MEM32(elements[1]+0x140)+0x70)=1;MEM32(viewport.screen)=0;
     assert(scale_fits(root,0,832,384,1664,768,200)==200); /* unrelated screens unchanged */
     }
-    puts("PASS native UI scale: record-only setter, readiness, coherent inverse/ray, native relayout, abort-before-change, idempotence, resize recovery, top anchoring and fit");
+    /* Battle projection is armed before any creature label exists, also at enlarged UI. */
+    MEM32(0x22000)=0xE1DA84;
+    unsigned frames_before=native_combat_frames;
+    void_touch_set_scale(1.25f);pump();
+    assert(native_combat_frames>frames_before&&last_combat_height<768);
+    frames_before=native_combat_frames;
+    void_touch_set_scale(2);pump();
+    assert(native_combat_frames>frames_before&&last_combat_height<768);
+    /* Only visible stack labels may steer the once-per-side deployment correction. */
+    uint32_t label=MEM32(elements[0]+0x140);
+    memcpy(GPTR(0x79000),"StackInfo",9);MEM32(label+0x58)=0x79000;MEM32(label+0x5C)=0x79009;
+    MEM8(label+0x70)=1;MEMF(label+0xA8)=20;
+    const float labels[]={-10,30,380,NAN};
+    for(unsigned i=0;i<4;++i){
+        MEMF(label+0x8C)=labels[i];scale_pass pass={.view_w=832,.view_h=384,.remaining=64};
+        scale_anchor(root,0,&pass);
+        assert(pass.stacks==(unsigned)(i==1));
+        if(i==1)assert(pass.stack_top==30&&pass.stack_bottom==50);
+    }
+    puts("PASS native UI scale: record-only setter, readiness, coherent inverse/ray, native relayout, abort-before-change, idempotence, resize recovery, top anchoring and fit, battle lens before labels at UI125/200");
     return 0;
 }
 '''
 
 
 class TouchScaleTest(unittest.TestCase):
+    def test_legacy_stack_bounds(self):
+        import re
+        import sys
+        sys.path.insert(0, str(ROOT / "tools"))
+        import port_patches
+        from test_d3d_lifecycle import function
+        source = (ROOT / "android/host/touch_scale.c").read_text(encoding="utf-8")
+        original = function(source, "static void scale_anchor(")
+        for edition in ("vanilla", "hof"):
+            path, _ = port_patches.adapt_host_source(ROOT / "android/host/touch_scale.c",
+                ROOT / "build/tests" / ("stack-bounds-" + edition), edition)
+            actual = function(path.read_text(), "static void scale_anchor(")
+            # Other fixture screens use ToE VAs; exercise the legacy traversal with the same geometry.
+            inverse = {value: key for key, value in port_patches.load_contract(edition)["addresses"].items()}
+            actual = re.sub(r'(0x|sub_)([0-9A-Fa-f]{8})', lambda m: m[1] + inverse.get(m[2].upper(), m[2]), actual)
+            fixture = source.replace(original, actual)
+            for name in ("host.h", "input.h", "touch.h"):
+                fixture = fixture.replace(f'#include "{name}"\n', '')
+            fixture = '\n'.join(line for line in fixture.splitlines() if not line.startswith("extern int void_android_"))
+            compile_probe("stack-bounds-" + edition, HARNESS, {"touch_scale_impl.h": fixture})
+
     def test_original_ui_scale_contract(self):
         source = (ROOT / "android/host/touch_scale.c").read_text(encoding="utf-8")
         for name in ("host.h", "input.h", "touch.h"):

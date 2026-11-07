@@ -31,9 +31,22 @@ import time
 
 import capstone
 from capstone import x86_const as X
+from editions import EDITION_IDS, generated_root, module_manifest, protocol_root
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST = json.loads((ROOT / 'config/modules.json').read_text())
+EDITION = 'toe'
+GENERATED = generated_root()
+MANIFEST = module_manifest()
+
+
+def configure_edition(edition):
+    global EDITION, GENERATED, MANIFEST
+    EDITION = edition
+    GENERATED = generated_root(edition)
+    MANIFEST = module_manifest(edition)
+    IMAGES.clear()
+    IAT_NAMES.clear()
+    FLAG_ROOTS.clear()
 
 FUNC_RE = re.compile(rb'^void (sub_([0-9A-F]{8}))\(void\) \{\r?$', re.M)
 END_RE = re.compile(rb'\n\}\r?\n')
@@ -225,7 +238,7 @@ class Image:
 
 
 def load_decoded(module, addresses, cache_dir):
-    image_path = ROOT / 'generated/input' / module['file']
+    image_path = GENERATED / 'input' / module['file']
     digest = hashlib.sha256(image_path.read_bytes()).hexdigest()[:16]
     cache = cache_dir / f"decode6-{module['name']}-{digest}.pickle"
     decoded = {}
@@ -285,7 +298,7 @@ def lifted_tag(line):
 def parse_functions():
     functions = {}
     for module in MANIFEST:
-        folder = ROOT / f"generated/{module['name']}-x86"
+        folder = GENERATED / (module['name'] + '-x86')
         for chunk in sorted(folder.glob(module['name'] + '_[0-9][0-9][0-9][0-9].c')):
             text = chunk.read_bytes()
             for match in FUNC_RE.finditer(text):
@@ -339,7 +352,7 @@ IMAGES = {}
 def image_u32(module, va):
     image = IMAGES.get(module['name'])
     if image is None:
-        image = IMAGES[module['name']] = Image(ROOT / 'generated/input' / module['file'])
+        image = IMAGES[module['name']] = Image(GENERATED / 'input' / module['file'])
     offset = va - image.base
     if offset < 0 or offset + 4 > len(image.data):
         return None
@@ -357,7 +370,7 @@ def iat_names():
     if not IAT_NAMES:
         import pefile
         for module in MANIFEST:
-            pe = pefile.PE(str(ROOT / 'generated/input' / module['file']), fast_load=True)
+            pe = pefile.PE(str(GENERATED / 'input' / module['file']), fast_load=True)
             pe.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_IMPORT']])
             for entry in getattr(pe, 'DIRECTORY_ENTRY_IMPORT', []) or []:
                 for imp in entry.imports:
@@ -433,6 +446,9 @@ def build_body(f, decoded, names):
                 flow(i, d.target)
             flow(i, nxt)
         elif d.kind in ('call', 'icall'):
+            if tag == 'op' and d.kind == 'call' and d.target == (nxt & 0xFFFFFFFF):
+                flow(i, nxt & 0xFFFFFFFF)  # Inline CALL-next is a push, with no callee boundary.
+                continue
             if tag == 'tail':
                 exits[i] = ('tail', None)          # call_pop: hands its caller over
                 continue
@@ -616,7 +632,7 @@ def module_entries():
     import pefile
     entries = set()
     for module in MANIFEST:
-        pe = pefile.PE(str(ROOT / 'generated/input' / module['file']), fast_load=True)
+        pe = pefile.PE(str(GENERATED / 'input' / module['file']), fast_load=True)
         pe.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_EXPORT']])
         base = pe.OPTIONAL_HEADER.ImageBase
         entries.add(base + pe.OPTIONAL_HEADER.AddressOfEntryPoint)
@@ -795,7 +811,7 @@ def address_taken(functions, wanted):
     import struct
     found = set()
     for module in MANIFEST:
-        image = Image(ROOT / 'generated/input' / module['file'])
+        image = Image(GENERATED / 'input' / module['file'])
         data = image.data
         for (value,) in struct.iter_unpack('<I', data[:len(data) & ~3]):
             if value in wanted:
@@ -924,14 +940,18 @@ def analyze(out_dir):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--out', type=Path, default=ROOT / 'build/call-protocol/summary.json')
+    parser.add_argument('--edition', choices=EDITION_IDS, default='toe')
+    parser.add_argument('--out', type=Path)
     args = parser.parse_args()
+    configure_edition(args.edition)
+    if args.out is None:
+        args.out = protocol_root(args.edition) / 'summary.json'
     functions, bodies, flags_in, flags_out, problems, cs_in, cs_out, helpers, fragments = analyze(args.out.parent)
     nonabi = {f.va for name, f in functions.items() if cs_in.get(name) or cs_out.get(name)}
     taken = address_taken(functions, nonabi)
     regs = {name: [cs_in.get(name, 0), cs_out.get(name, 0)] for name in sorted(functions)
             if cs_in.get(name) or cs_out.get(name)}
-    summary = dict(functions=len(functions), flags_in=sorted(flags_in), flags_out=sorted(flags_out),
+    summary = dict(edition=args.edition, functions=len(functions), flags_in=sorted(flags_in), flags_out=sorted(flags_out),
                    problems=[dict(function=k[0], address=f'{k[1]:08X}', reason=v)
                              for k, v in sorted(problems.items())],
                    regs=regs, nonabi_address_taken=sorted(f'sub_{va:08X}' for va in taken),

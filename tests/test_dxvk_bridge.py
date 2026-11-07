@@ -1,6 +1,8 @@
 """The DXVK renderer's native boundary: generated tables, the Vulkan requirement check, and strict
 NDK compiles of the bridge (android/dxvk) and of the host glue in every edition build."""
 import re
+from pathlib import Path
+import tempfile
 import subprocess
 import sys
 import unittest
@@ -11,7 +13,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 import build_android
 import generate_dxvk_bridge
 from android_tools import TOOLCHAIN
-from port_patches import legacy_ui_branch
+from port_patches import adapt_host_source, legacy_ui_branch, load_contract
 
 HEADER = ROOT / "reference/dxvk/include/native/directx/d3d9.h"
 VULKAN = TOOLCHAIN / "sysroot/usr/include/vulkan"
@@ -46,6 +48,12 @@ class DxvkBridgeTest(unittest.TestCase):
         for kind, slot, popped in ((1, 16, 32), (2, 16, 12), (2, 17, 24), (2, 41, 8), (2, 42, 8), (2, 60, 8), (2, 61, 12),
                                    (17, 3, 28), (16, 7, 20)):
             self.assertEqual(int(thunk(kind, slot)[2]), popped, (kind, slot))
+        for edition in ("vanilla", "hof"):
+            with tempfile.TemporaryDirectory() as directory:
+                adapted, _ = adapt_host_source(ROOT / "android/host/d3d9_dxvk.c", Path(directory), edition)
+                expected = load_contract(edition)["addresses"]["00A3FB70"]
+                self.assertIn("g_cur_func == 0x" + expected + "u", adapted.read_text())
+                self.assertNotIn("g_cur_func == 0x00A3FB70u", adapted.read_text())
 
     def test_vulkan_requirements_name_what_dxvk_refuses(self):
         out = ROOT / "build/tests/dxvk-requirements"
@@ -107,12 +115,11 @@ int main(void) {
             self.assertEqual(result.returncode, 0, source + "\n" + result.stderr[-4000:])
 
     def test_host_glue_compiles_in_every_edition_build(self):
-        """ToE with and without the activity; Vanilla through its adapted copy (legacy_ui_branch),
-        where none of the DXVK code may remain."""
+        """ToE with and without the activity; all three editions include the Android DXVK bridge."""
         out = ROOT / "build/tests/dxvk-host"
         out.mkdir(parents=True, exist_ok=True)
         (out / "modules.inc").write_text("\n")
-        for edition in ("toe", "vanilla"):
+        for edition in ("toe", "vanilla", "hof"):
             header = out / f"edition-{edition}.h"
             header.write_text(f'#define HOMM5_EDITION "{edition}"\n#define HOMM5_BIN "bin"\n#define HOMM5_PROFILE_SUFFIX ""\n'
                               f'#define HOMM5_MODULES_INCLUDE "{(out / "modules.inc").as_posix()}"\n'
@@ -122,13 +129,13 @@ int main(void) {
                 if edition != "toe":
                     adapted = legacy_ui_branch(source.read_bytes().replace(b"\r\n", b"\n"), True)
                     code = re.sub(rb"/\*.*?\*/|//[^\n]*", b"", adapted, flags=re.S).replace(b'#include "dxvk.h"', b"")
-                    self.assertNotIn(b"dxvk", code.lower(), name)
+                    if name != "android_main.c": self.assertIn(b"dxvk", code.lower(), name)
                     source = out / f"{edition}-{name}"
                     source.write_bytes(adapted)
                     extra = ["-I" + str(ROOT / "android/host")]
-                for app in ((True, False) if edition == "toe" else (True,)):
+                for app, dxvk in ((True, True), (True, False), (False, False)):
                     command = [str(build_android.CLANG), *build_android.HOST_FLAGS, "-include", str(header),
-                               *(["-DVOID_ANDROID_APP"] if app else []), *extra, "-Werror", "-c", str(source), "-o", str(out / "host.o")]
+                               *(["-DVOID_ANDROID_APP"] if app else []), *(["-DHOMM5_DXVK"] if dxvk else []), *extra, "-Werror", "-c", str(source), "-o", str(out / "host.o")]
                     result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
                     self.assertEqual(result.returncode, 0, f"{edition} {name} app={app}\n{result.stderr[-4000:]}")
 

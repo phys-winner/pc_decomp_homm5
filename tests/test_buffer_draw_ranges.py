@@ -20,6 +20,7 @@ typedef struct {
     uint32_t page_count, dirty_page_count;
     int locks;
     uint32_t bounds_count;
+    uint32_t rt_shadow; int rt_locks; uint64_t read_at;
 } d3d_buffer;
 #define BUFFER_PAGE_SIZE 4096u
 #define GL_COPY_WRITE_BUFFER 0x8F37u
@@ -34,12 +35,21 @@ typedef struct {
 #define D3DLOCK_NOOVERWRITE 0x1000u
 #define D3DERR_INVALIDCALL 0x8876086Cu
 #define D3D_OK 0u
+#define BUF_RT(b) (b)
+static void d3d_rt_call(void (*fn)(void *),const void *p,unsigned size){(void)size;fn((void *)p);}
+static uint64_t d3d_rt_position(void){return 0;}
+static int d3d_rt_reached(uint64_t p){assert(!p);return 1;}
+static void d3d_rt_wait_for(uint64_t p){assert(!p);}
+static uint32_t shadow_collect(uint32_t n){(void)n;return 0;}
+static uint32_t void_galloc(uint32_t n){(void)n;abort();}
+static void shadow_retire(uint32_t p,uint32_t n,uint64_t at){(void)p;(void)n;(void)at;abort();}
+static uint64_t shadow_renames,shadow_waits;
 static uint8_t memory[65536], gpu[16384];
 #define GPTR(va) (memory + (va))
 #define MEM32(va) (*(uint32_t *)GPTR(va))
 static d3d_buffer buffer;
-static uint32_t args[5];
-#define ARG(n) args[n]
+static uint32_t arguments[5];
+#define ARG(n) arguments[n]
 #define BUF (&buffer)
 #define COM_METHOD(iface, name, argc) static uint32_t iface##_##name(void)
 static int fail_allocation;
@@ -72,20 +82,20 @@ static void setup(void) {
     free(buffer.dirty_pages);
     memset(&buffer, 0, sizeof buffer);
     buffer.size = 3 * BUFFER_PAGE_SIZE + 97; buffer.usage = D3DUSAGE_DYNAMIC;
-    buffer.shadow = 4096; buffer.gl = 7; buffer.dirty_lo = UINT32_MAX;
+    buffer.shadow = buffer.rt_shadow = 4096; buffer.gl = 7; buffer.dirty_lo = UINT32_MAX;
     for (unsigned i = 0; i < buffer.size; ++i) memory[buffer.shadow + i] = (uint8_t)(i * 7u + 1u);
     memset(gpu, 0xA5, sizeof gpu);
     binds = uploads = orphans = maps = total_bytes = last_offset = last_length = 0; fail_allocation = 0;
 }
 static void lock(uint32_t offset, uint32_t size, uint32_t flags) {
-    args[1] = offset; args[2] = size; args[3] = 64; args[4] = flags;
+    arguments[1] = offset; arguments[2] = size; arguments[3] = 64; arguments[4] = flags;
     assert(buf_Lock() == D3D_OK && MEM32(64) == buffer.shadow + offset);
 }
 static void unlock(void) { assert(buf_Unlock() == D3D_OK); }
 int main(void) {
     setup();buffer.bounds_count=17;lock(0,0,D3DLOCK_READONLY);unlock();assert(buffer.bounds_count==17);
     lock(1,4,D3DLOCK_NOOVERWRITE);assert(!buffer.bounds_count);unlock();
-    buffer.bounds_count=19;args[1]=buffer.size+1;assert(buf_Lock()==D3DERR_INVALIDCALL && buffer.bounds_count==19);
+    buffer.bounds_count=19;arguments[1]=buffer.size+1;assert(buf_Lock()==D3DERR_INVALIDCALL && buffer.bounds_count==19);
     setup(); lock(0, 0, D3DLOCK_NOOVERWRITE); unlock();
     assert(buffer.dirty_pages && buffer.page_count == 4 && buffer.dirty_page_count == 4 && !binds);
     d3d_buffer_flush_range(&buffer, 4108, 4112);
@@ -123,7 +133,7 @@ int main(void) {
     lock(4097, UINT32_MAX, 0); unlock(); /* Clamp without uint32 overflow. */
     assert(buffer.dirty_page_count == 3 && !maps);
     d3d_buffer_flush(&buffer); assert(!buffer.dirty_page_count);
-    args[1] = buffer.size + 1; assert(buf_Lock() == D3DERR_INVALIDCALL && !buffer.locks);
+    arguments[1] = buffer.size + 1; assert(buf_Lock() == D3DERR_INVALIDCALL && !buffer.locks);
     assert(buf_Unlock() == D3DERR_INVALIDCALL);
 
     setup(); fail_allocation = 1; lock(0, 0, D3DLOCK_NOOVERWRITE); unlock();
@@ -135,6 +145,9 @@ int main(void) {
 '''
 
 BOUNDS_HARNESS = r'''
+#define BUF_RT(b) (b)
+#define rt_shadow shadow
+#define rt_locks locks
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -237,7 +250,7 @@ LIFECYCLE_HARNESS = r'''
 #include <stdio.h>
 typedef unsigned GLuint;
 typedef struct {int unused;} void_com_object;
-typedef struct {GLuint gl;uint32_t shadow;void *dirty_pages;} d3d_buffer;
+typedef struct {GLuint gl;uint32_t shadow;void *dirty_pages;uint32_t size;} d3d_buffer;
 typedef struct {GLuint buffer;} attr_state;
 #define FB_UNKNOWN UINT32_MAX
 static attr_state attr_cache[16];
@@ -258,6 +271,10 @@ static void glDeleteBuffers(int count,const GLuint*names){
  ++deletes;
 }
 static void void_gfree(uint32_t p){assert(p==100||p==200);++shadows;}
+static void d3d_rt_call(void (*fn)(void *),const void *p,unsigned n){(void)n;fn((void *)p);}
+static uint64_t d3d_rt_position(void){return 0;}
+static void shadow_retire(uint32_t p,uint32_t n,uint64_t at){(void)n;assert(!at);void_gfree(p);}
+static uint32_t shadow_collect(uint32_t n){assert(!n);return 0;}
 #include "destroy.h"
 int main(void){
  for(unsigned round=0;round<2;++round){
@@ -285,8 +302,8 @@ class BufferDrawRangesTest(unittest.TestCase):
             "dirty.h": function(resource, "static void buffer_dirty_pages("),
             "flush.h": function(resource, "void d3d_buffer_flush("),
             "range.h": function(resource, "void d3d_buffer_flush_range(d3d_buffer *b, uint32_t lo, uint32_t hi)\n{"),
-            "lock.h": function(resource, "COM_METHOD(buf, Lock, 5)"),
-            "unlock.h": function(resource, "COM_METHOD(buf, Unlock, 1)"),
+            "lock.h": function(resource, "typedef struct { d3d_buffer *b; uint32_t offset, size, flags, fresh;") + " lock_args;\n" + function(resource, "static void run_buffer_lock(") + function(resource, "COM_METHOD(buf, Lock, 5)"),
+            "unlock.h": function(resource, "static void run_buffer_unlock(") + function(resource, "COM_METHOD(buf, Unlock, 1)"),
         })
 
     def test_real_draw_bounds_helpers(self):
@@ -303,7 +320,7 @@ class BufferDrawRangesTest(unittest.TestCase):
         resource = (ROOT / "android/host/d3d9_resource.c").read_text(encoding="utf-8")
         compile_probe("buffer_lifecycle", LIFECYCLE_HARNESS, {
             "forget.h": function(gl, "void d3d_gl_forget_buffer("),
-            "destroy.h": function(resource, "static void buffer_destroy("),
+            "destroy.h": function(resource, "static void run_buffer_free(") + function(resource, "static void buffer_destroy("),
         })
 
 

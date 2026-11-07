@@ -164,7 +164,7 @@ class LauncherSpecTest(unittest.TestCase):
                 # The old unpacking's folders (Unpacker.NEEDED), for every edition alike.
                 self.assertEqual(part["needed"], ["bin/", "bina1/", "data/", "dataa1/", "datals/", "music/", "video/", "profiles/",
                                                   "maps/", "usercampaigns/", "usermods/", "hwcursors/", "duelpresets/"])
-        self.assertEqual([m["id"] for m in data["renderers"]["modes"]], ["gles"])   # DXVK/Turnip stay disabled
+        self.assertEqual([m["id"] for m in data["renderers"]["modes"]], ["gles"])
         options = {o["key"]: o for o in data["options"]}
         self.assertEqual(set(options), {"new_creature_framework", "lan_peers"})
         self.assertEqual((options["new_creature_framework"]["type"], options["new_creature_framework"]["default"]), ("bool", "0"))
@@ -178,7 +178,7 @@ class LauncherSpecTest(unittest.TestCase):
     def test_prepared_manifest(self):
         prepared = prepare(ROOT / "build/tests/launcher-base/prepared")
         self.assertEqual(prepared["package"], "org.homm5.port.launcher")
-        self.assertFalse(prepared["probe"], "OpenGL ES only: no Vulkan driver check")
+        self.assertFalse(prepared["probe"], "GLES-only builds do not need a Vulkan driver check")
         root = ET.parse(prepared["manifest"]).getroot()
         sdk = root.find("uses-sdk")
         self.assertEqual((sdk.get(ANDROID + "minSdkVersion"), sdk.get(ANDROID + "targetSdkVersion")), ("26", "37"))
@@ -202,7 +202,7 @@ class LauncherSpecTest(unittest.TestCase):
             self.assertEqual(activities[name].get(ANDROID + "process"), ":" + edition)
             self.assertEqual(activities[name].get(ANDROID + "taskAffinity"), "org.homm5.port." + edition)
         services = {s.get(ANDROID + "name"): s.get(ANDROID + "process") for s in application.findall("service")}
-        self.assertEqual(services, {"org.homm5.port.launcher.Work$WorkService": ":launcher"})   # no :probe
+        self.assertEqual(services, {"org.homm5.port.launcher.Work$WorkService": ":launcher"})
         assets = Path(prepared["assets"]) / "launcher"
         self.assertEqual(json.loads((assets / "port.json").read_text(encoding="utf-8")), spec())
         build = json.loads((assets / "build.json").read_text(encoding="utf-8"))

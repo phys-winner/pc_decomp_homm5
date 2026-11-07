@@ -86,8 +86,9 @@ FAST_REGION = r"""
 """.encode()
 
 
-def index_region(text):
-    match = FUNCTION_START.search(text)
+def index_region(text, spec=None):
+    start = FUNCTION_START if spec is None else re.compile(rb'^void ' + spec['function'].encode() + rb'\(void\) \{\r?$', re.M)
+    match = start.search(text)
     if not match:
         return text
     end = FUNCTION_END.search(text, match.end())
@@ -97,9 +98,12 @@ def index_region(text):
     stop = stop + 1 if stop >= 0 else len(text)
     original = text[match.start():stop]
     body = original.replace(b"\r\n", b"\n")
-    if hashlib.sha256(body.rstrip(b"\n") + b"\n").hexdigest() != FUNCTION_SHA256:
+    digest = FUNCTION_SHA256 if spec is None else spec['sha256']
+    if hashlib.sha256(body.rstrip(b"\n") + b"\n").hexdigest() != digest:
         return text
-    replacement = HOST_GUARD + body.replace(NEEDLE, FAST_REGION + NEEDLE, 1)
+    needle = NEEDLE if spec is None else NEEDLE.replace(b'00C364BA', spec['compare'].encode())
+    fast = FAST_REGION if spec is None else FAST_REGION.replace(b'L_00C36519', b'L_' + spec['end'].encode())
+    replacement = HOST_GUARD + body.replace(needle, fast + needle, 1)
     if b"\r\n" in original:
         replacement = replacement.replace(b"\n", b"\r\n")
     return text[:match.start()] + replacement + text[stop:]

@@ -19,10 +19,11 @@ from index_region import index_region
 from protocol_transform import Protocol, apply_protocol
 from x87_locals import Plan as X87Plan, apply_x87
 from android_tools import NDK, TOOLCHAIN, CLANG
-from editions import EDITION_IDS, edition_spec, generated_root, module_manifest, build_root
+from editions import EDITION_IDS, edition_spec, generated_root, module_manifest, build_root, protocol_root
 
 ROOT = Path(__file__).resolve().parents[1]
 EDITION = "toe"
+LEGACY_OPTIMIZATIONS = {}
 GENERATED = generated_root()
 MANIFEST = module_manifest()
 MODULES = tuple(row["name"] for row in MANIFEST)
@@ -133,11 +134,12 @@ BACKEDGE_HOT_FUNCTIONS = (b"sub_008800B0", b"sub_00C362E0")
 
 # ToE bodies regenerated (lift_homm5.py --function) after build/pgo/homm5.profdata was
 # trained, so their profile hash no longer matches and -Werror=profile-instr-out-of-date
-# would stop the build. Both were cold in training (zero counts). A profile-use build
+# would stop the build. They were cold in training (zero counts). A profile-use build
 # compiles them without profile data; a training build instruments them, and a retrained
-# profile empties this set. Full jump tables (config/game.jump-tables.json): the spell-name
-# switch and DXGetErrorString.
-PGO_RETRAIN = (b"sub_009F0DF0", b"sub_00D3E3F6")
+# profile empties this set. The first two have regenerated full jump tables; the
+# last four contain corrected CALL-next sites (all counters verified zero).
+PGO_RETRAIN = (b"sub_009F0DF0", b"sub_00D3E3F6", b"sub_006AFFFE", b"sub_006B0000",
+               b"sub_00BD55F0", b"sub_00BD56B0")
 PGO_USE = False
 
 
@@ -353,7 +355,10 @@ def call_protocol():
     global _protocol
     if _protocol is None:
         # The UI wrapper changes only host state; its lifted body keeps the exact guest register effects.
-        _protocol = Protocol(full=tuple(name for name in NATIVE_OVERRIDES if name != "sub_00A46BC0"))
+        from port_patches import native_overrides
+        full = (tuple(name for name in NATIVE_OVERRIDES if name != "sub_00A46BC0") if EDITION == "toe"
+                else native_overrides(EDITION, NATIVE_OVERRIDES))
+        _protocol = Protocol(protocol_root(EDITION) / "summary.json", full=full, edition=EDITION)
     return _protocol
 
 
@@ -364,7 +369,7 @@ def x87_plan():
     """Static x87 stack depths (tools/x87_locals.py)."""
     global _x87_plan
     if _x87_plan is None:
-        _x87_plan = X87Plan()
+        _x87_plan = X87Plan(protocol_root(EDITION) / "x87.json", edition=EDITION)
     return _x87_plan
 
 
@@ -372,6 +377,7 @@ def configure_edition(edition):
     """Select one engine's inputs; no address summaries cross this boundary."""
     global EDITION, GENERATED, MANIFEST, MODULES, MODULE_IMAGES, OUT
     global ACTIVE_NATIVE_OVERRIDES, _protocol, _x87_plan
+    global LEGACY_OPTIMIZATIONS
     EDITION = edition
     GENERATED = generated_root(edition, root=ROOT)
     MANIFEST = module_manifest(edition, root=ROOT)
@@ -379,6 +385,11 @@ def configure_edition(edition):
     MODULE_IMAGES = {row["name"]: GENERATED / "input" / row["file"] for row in MANIFEST}
     OUT = build_root(edition, root=ROOT)
     ACTIVE_NATIVE_OVERRIDES = None
+    if edition == "toe":
+        LEGACY_OPTIMIZATIONS = {}
+    else:
+        from port_patches import load_contract
+        LEGACY_OPTIMIZATIONS = load_contract(edition)["optimizations"]
     _images.clear()
     _protocol = _x87_plan = None
 
@@ -497,14 +508,16 @@ def override_source(source, local_xmm):
         text = packed_sse(text)
         text = fast_rep_movs(text)
         if local_xmm:
-            if EDITION == "toe":
-                text = index_region(text)
+            text = index_region(text) if EDITION == "toe" else index_region(text, LEGACY_OPTIMIZATIONS["index_region"])
             text = localize_sse(text)
             if EDITION == "toe":
                 text = localize_backedges(text, BACKEDGE_HOT_FUNCTIONS)
                 text = separate_guest_state(text)
-                text = apply_protocol(text, call_protocol(), module)
-                text = apply_x87(text, x87_plan())
+            else:
+                text = localize_backedges(text, tuple(name.encode() for name in LEGACY_OPTIMIZATIONS["backedges"]))
+                text = separate_guest_state(text, tuple(name.encode() for name in LEGACY_OPTIMIZATIONS["guest_state"]))
+            text = apply_protocol(text, call_protocol(), module)
+            text = apply_x87(text, x87_plan())
         if EDITION == "toe":
             text = mark_frame_begin_scene(text)
             if PGO_USE:
@@ -561,6 +574,18 @@ def host_sources():
     return sorted((ROOT / "android/host").glob("*.c"))
 
 
+def included_digest(source):
+    paths, pending = set(), [source]
+    while pending:
+        path = pending.pop()
+        for name in re.findall(r'#include "([A-Za-z0-9_]+\.inc)"', path.read_text(encoding="utf-8")):
+            included = path.parent / name
+            if included.is_file() and included not in paths:
+                paths.add(included)
+                pending.append(included)
+    return header_digest(sorted(paths))
+
+
 def header_digest(paths):
     digest = hashlib.sha256()
     for path in sorted(paths):
@@ -615,6 +640,7 @@ def main():
     parser.add_argument("--edition", choices=EDITION_IDS, default="toe")
     parser.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 4) - 4))
     parser.add_argument("--host-only", action="store_true", help="Recompile host sources and relink only")
+    parser.add_argument("--rt-check", action="store_true", help="Check GLES calls execute on the render thread")
     parser.add_argument("--shared", action="store_true", help="Link libhomm5.so for the APK instead of the executable")
     parser.add_argument("--global-regs", action="store_true",
                         help="Keep the integer registers in globals (upstream model) instead of RECOMP_LOCAL_REGS")
@@ -729,9 +755,12 @@ def main():
     host_dir = "obj/host-app" if args.shared else "obj/host"
     for source in host_sources():
         obj = OUT / host_dir / (source.stem + ".o")
+        include_digest = included_digest(source)
         source, extra = adapt_host_source(source, OUT, EDITION)
         flags = host_flags + extra
-        fp = hashlib.sha256(json.dumps([sha_file(source), host_digest, compiler_sha, flags]).encode()).hexdigest()
+        if args.rt_check and source.name.startswith("d3d9_"):
+            flags += ["-DVOID_RT_CHECK"]
+        fp = hashlib.sha256(json.dumps([sha_file(source), host_digest, include_digest, compiler_sha, flags]).encode()).hexdigest()
         jobs.append((source, obj, flags, fp))
     # Largest first keeps the pool busy at the end.
     jobs.sort(key=lambda j: -j[0].stat().st_size)

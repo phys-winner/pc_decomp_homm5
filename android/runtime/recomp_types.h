@@ -1210,9 +1210,8 @@ static inline double fp_pop_impl(double* st, int* top) {
 }
 
 #ifdef RECOMP_X87_WINDOW
-/* Rare (the window edge): out of line, so its two block moves are not
- * copied into every push and pop. */
-static __attribute__((noinline, cold)) void fp_window_recentre(void) {
+/* Keep inline: an outlined call changes NaN payload selection in the projection code. */
+static inline void fp_window_recentre(void) {
     int to = RECOMP_X87_SLOTS / 2 - 4;
     memmove(g_st_win + to, g_st_win + g_fp_sp, sizeof g_st);
     memmove(g_st_i64_win + to, g_st_i64_win + g_fp_sp, sizeof g_st_i64);

@@ -16,6 +16,8 @@ from test_mmx_packed import CLANG, ROOT, command, environment, pc_header
 sys.path.insert(0, str(ROOT / 'tools'))
 import build_android as builder
 import index_region as index_pass
+from editions import generated_root, module_manifest
+from port_patches import load_contract
 
 OUTPUT = ROOT / 'build/pc-full/index-region-proof/production'
 NATIVE_SHA = 'f1a679ffb91c3756591556d1e33616542e74a04b09f3926e51575b877dcf33c7'
@@ -47,34 +49,49 @@ def mutate(source, name):
     return source
 
 
-def prepare(out, mutant=None):
+def prepare(out, mutant=None, edition='toe'):
     unchanged_inputs()
     out.mkdir(parents=True, exist_ok=True)
-    raw = (ROOT / 'generated/input/H5_Game.exe').read_bytes()
-    manifest = json.loads((ROOT / 'config/modules.json').read_text())
+    generated = generated_root(edition)
+    raw = (generated / 'input/H5_Game.exe').read_bytes()
+    manifest = module_manifest(edition)
     assert hashlib.sha256(raw).hexdigest() == manifest[0]['sha256']
     pe = pefile.PE(data=raw, fast_load=True)
     try:
-        native = pe.get_data(0xC362E0 - pe.OPTIONAL_HEADER.ImageBase, 606)
+        spec = None if edition == 'toe' else load_contract(edition)['optimizations']['index_region']
+        name = 'sub_00C362E0' if spec is None else spec['function']
+        native = pe.get_data(int(name[4:], 16) - pe.OPTIONAL_HEADER.ImageBase, 606)
     finally:
         pe.close()
-    assert hashlib.sha256(native).hexdigest() == NATIVE_SHA
+    if edition == 'toe':
+        assert hashlib.sha256(native).hexdigest() == NATIVE_SHA
     assert native[-3:] == b'\xC2\x14\x00'
     (out / 'native_code.h').write_text('static const unsigned char original_code[] = {' + ','.join(map(str, native)) + '};\n')
-    canonical = function((ROOT / 'generated/game-x86/game_0641.c').read_text(), 'void sub_00C362E0(void) {') + '\n'
+    canonical = next(function(text, 'void ' + name + '(void) {') + '\n'
+                     for path in (generated / 'game-x86').glob('game_[0-9][0-9][0-9][0-9].c')
+                     if 'void ' + name + '(void) {' in (text := path.read_text()))
     original = canonical.encode()
     canonical = builder.localize_backedges(original).decode()
-    localized = builder.localize_backedges(index_pass.index_region(original)).decode()
+    localized = builder.localize_backedges(index_pass.index_region(original, spec)).decode()
     assert localized != canonical
     if mutant:
         localized = mutate(localized, mutant)
     declarations = '\n'.join('void ' + name + '(void);' for name in sorted(set(re.findall(r'RECOMP_CALL\((\w+)\)', canonical))))
     for prefix, body in (('before', canonical), ('after', localized)):
-        body = body.replace('sub_00C362E0', prefix + '_index')
+        body = body.replace(name, prefix + '_index')
         (out / (prefix + '.c')).write_text('#include "recomp_types.h"\n' + declarations + '\n' + body)
-    (out / 'probe.c').write_text((ROOT / 'tests/fixtures/index_region_probe.c').read_text())
+    harness = (ROOT / 'tests/fixtures/index_region_probe.c').read_text()
+    calls = list(dict.fromkeys(re.findall(r'RECOMP_CALL\((\w+)\)', canonical)))
+    assert len(calls) == 2
+    for before, after in zip(('sub_00C357A0', 'sub_00C67B90'), calls):
+        harness = harness.replace(before, after)
+    flag = {'toe': 0x010D755E, 'vanilla': 0x010B5F2E, 'hof': 0x01042592}[edition]
+    harness = harness.replace('0x010D755E', f'0x{flag:08X}').replace('0x010D0000', f'0x{flag & ~0xFFFF:08X}')
+    (out / 'probe.c').write_text(harness)
     (out / 'recomp_types.h').write_text(pc_header((ROOT / 'android/runtime/recomp_types.h').read_text()))
     (out / 'input-identities.json').write_text(json.dumps(INPUT_IDENTITIES, indent=2) + '\n')
+    return dict(edition=edition, original_pe_sha256=hashlib.sha256(raw).hexdigest(),
+                original_function_sha256=hashlib.sha256(native).hexdigest())
 
 
 def codegen(out):
@@ -116,8 +133,8 @@ def codegen(out):
     return report
 
 
-def probe(out, thin=False, mutant=None, timing=False):
-    prepare(out, mutant)
+def probe(out, thin=False, mutant=None, timing=False, edition='toe'):
+    identity = prepare(out, mutant, edition)
     flags = [CLANG, '/nologo', '/W0', '/O2', '/std:c11', '/D_CRT_SECURE_NO_WARNINGS',
              '/clang:--target=i686-pc-windows-msvc', '/clang:-fno-strict-aliasing', '/clang:-fwrapv', '/clang:-ffp-contract=off',
              '/DVOID_GUEST_BASE=0', '/DRECOMP_X87_WINDOW', '/DPC_INDEX_TIMING=' + str(int(timing))]
@@ -135,8 +152,7 @@ def probe(out, thin=False, mutant=None, timing=False):
     unchanged_inputs()
     proof = codegen(out) if tested.returncode == 0 and not mutant else None
     receipt = dict(thinlto=thin, mutant=mutant, returncode=tested.returncode, stdout=tested.stdout, stderr=tested.stderr,
-                   original_pe_sha256=hashlib.sha256((ROOT / 'generated/input/H5_Game.exe').read_bytes()).hexdigest(),
-                   original_function_sha256=NATIVE_SHA, flags=list(map(str, flags)), codegen=proof,
+                   **identity, flags=list(map(str, flags)), codegen=proof,
                    source_sha256={name: hashlib.sha256((out / name).read_bytes()).hexdigest() for name in ('before.c', 'after.c', 'probe.c', 'recomp_types.h')},
                    executable_sha256=hashlib.sha256((out / 'probe.exe').read_bytes()).hexdigest(), input_identities=INPUT_IDENTITIES)
     if (out / 'native-vectors.bin').exists():
@@ -146,22 +162,22 @@ def probe(out, thin=False, mutant=None, timing=False):
     return tested, proof
 
 
-def android_probe(out, vectors):
+def android_probe(out, vectors, edition='toe'):
     """Build only; the root operator owns all device execution."""
-    prepare(out)
+    identity = prepare(out, edition=edition)
     shutil.copyfile(ROOT / 'android/runtime/recomp_types.h', out / 'recomp_types.h')
     shutil.copyfile(vectors, out / 'native-vectors.bin')
-    compiler = CLANG.with_name('clang.exe')
+    compiler = builder.CLANG
     flags = [compiler, *builder.COMMON, '-O2', '-std=c11', '-D_GNU_SOURCE', '-Werror']
     env, _ = environment('x64')
     for name in ('before', 'after', 'probe'):
         extra = ['-DRECOMP_GENERATED_CODE', '-DRECOMP_LOCAL_REGS', '-DRECOMP_PLAIN_MEMORY', '-DRECOMP_TRACE'] if name != 'probe' else []
         command([*flags, *extra, '-c', name + '.c', '-o', name + '.o'], out, env)
-    command([*flags, 'before.o', 'after.o', 'probe.o', '-o', 'probe-arm64'], out, env)
-    disassembly = command([CLANG.with_name('llvm-objdump.exe'), '-d', '--no-show-raw-insn', out / 'probe-arm64'], out, env)
+    command([*flags, 'before.o', 'after.o', 'probe.o', '-o', 'probe-arm64', '-lm'], out, env)
+    disassembly = command([compiler.with_name('llvm-objdump.exe'), '-d', '--no-show-raw-insn', out / 'probe-arm64'], out, env)
     (out / 'assembly.txt').write_text(disassembly.stdout)
     unchanged_inputs()
-    receipt = dict(device_execution='pending_root', flags=list(map(str, flags)), original_function_sha256=NATIVE_SHA,
+    receipt = dict(device_execution='pending_root', flags=list(map(str, flags)), **identity,
                    guest_base='0x2000000000', target=builder.TARGET,
                    input_identities=INPUT_IDENTITIES,
                    files={name: dict(bytes=(out / name).stat().st_size, sha256=hashlib.sha256((out / name).read_bytes()).hexdigest())
@@ -171,6 +187,16 @@ def android_probe(out, vectors):
 
 
 class IndexRegionTest(unittest.TestCase):
+    def test_legacy_original_whole_functions(self):
+        for edition in ('vanilla', 'hof'):
+            for thin in (False, True):
+                with self.subTest(edition=edition, thinlto=thin):
+                    result, proof = probe(OUTPUT / edition / ('thinlto' if thin else 'o2'), thin=thin, edition=edition)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn('"native_whole_function":"PASS"', result.stdout)
+                    self.assertIn('"mutating_yield":"PASS"', result.stdout)
+                    self.assertTrue(any(not loop['global_mmx_references'] for loop in proof['after']['packed_loops']), proof)
+
     def test_original_whole_function_o2_and_thinlto(self):
         for thin in (False, True):
             with self.subTest(thinlto=thin):

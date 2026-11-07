@@ -6,6 +6,7 @@
  * running the game there; the request then fails as a compile error would. */
 #define _GNU_SOURCE
 #include "d3d9_internal.h"
+#include "d3d9_thread.inc"
 #include "dxvk.h"
 #include <errno.h>
 #include <math.h>
@@ -166,9 +167,7 @@ COM_METHOD(ct, GetConstantElement, 3)
     return 0;
 }
 
-extern uint32_t d3d_constant_generation;
 
-#ifndef HOMM5_LEGACY_UI
 /* A DXVK device (d3d9_dxvk.c) takes the registers through its own Set*ShaderConstant*, clamped
  * as below: type 0 float4, 1 int4, 2 bool. Returns 0 for the GLES device. */
 static int dxvk_constants(uint32_t device, ctable_t *t, int type, uint32_t reg, const void *v, uint32_t count)
@@ -178,45 +177,46 @@ static int dxvk_constants(uint32_t device, ctable_t *t, int type, uint32_t reg, 
     if (reg < limit) void_dxvk_constants(device, t->pixel, type, reg, v, reg + count > limit ? limit - reg : count);
     return 1;
 }
-#endif
 
 /* Write float4 registers of the table's stage. */
 static void write_f(ctable_t *t, uint32_t device, uint32_t reg, const float *v, uint32_t count)
 {
-#ifndef HOMM5_LEGACY_UI
     if (dxvk_constants(device, t, 0, reg, v, count)) return;
-#endif
     (void)device;
     d3d_device *d = g_d3d_device;
     if (!d) return;
     uint32_t limit = t->pixel ? 224 : 256;
-    for (uint32_t i = 0; i < count && reg + i < limit; ++i)
-        memcpy(t->pixel ? d->st.ps_f[reg + i] : d->st.vs_f[reg + i], v + 4 * i, 16);
-    ++d3d_constant_generation;
+    for (uint32_t i = 0; i < count && reg + i < limit; ++i) {
+        float *to = t->pixel ? d->st.ps_f[reg + i] : d->st.vs_f[reg + i];
+        memcpy(to, v + 4 * i, 16);
+        d3d_rt_dirty(d, to, 16);
+    }
 }
 
 static void write_i(ctable_t *t, uint32_t device, uint32_t reg, const int32_t *v, uint32_t count)
 {
-#ifndef HOMM5_LEGACY_UI
     if (dxvk_constants(device, t, 1, reg, v, count)) return;
-#endif
     (void)device;
     d3d_device *d = g_d3d_device;
     if (!d) return;
-    for (uint32_t i = 0; i < count && reg + i < 16; ++i) memcpy(t->pixel ? d->st.ps_i[reg + i] : d->st.vs_i[reg + i], v + 4 * i, 16);
-    ++d3d_constant_generation;
+    for (uint32_t i = 0; i < count && reg + i < 16; ++i) {
+        int32_t *to = t->pixel ? d->st.ps_i[reg + i] : d->st.vs_i[reg + i];
+        memcpy(to, v + 4 * i, 16);
+        d3d_rt_dirty(d, to, 16);
+    }
 }
 
 static void write_b(ctable_t *t, uint32_t device, uint32_t reg, const int32_t *v, uint32_t count)
 {
-#ifndef HOMM5_LEGACY_UI
     if (dxvk_constants(device, t, 2, reg, v, count)) return;
-#endif
     (void)device;
     d3d_device *d = g_d3d_device;
     if (!d) return;
-    for (uint32_t i = 0; i < count && reg + i < 16; ++i) (t->pixel ? d->st.ps_b : d->st.vs_b)[reg + i] = v[i] != 0;
-    ++d3d_constant_generation;
+    for (uint32_t i = 0; i < count && reg + i < 16; ++i) {
+        int32_t *to = &(t->pixel ? d->st.ps_b : d->st.vs_b)[reg + i];
+        *to = v[i] != 0;
+        d3d_rt_dirty(d, to, 4);
+    }
 }
 
 /* Set a constant from `n` floats laid out as D3DX does (row-major elements), on `device`. */
@@ -594,7 +594,6 @@ static void tx_level(int proc, int cube, int face, uint32_t w, uint32_t h, uint3
     }
 }
 
-#ifndef HOMM5_LEGACY_UI
 /* The same fill into a DXVK texture (d3d9_dxvk.c), level by level through its surfaces. */
 static uint32_t dxvk_tx_fill(void *texture, int cube, int proc)
 {
@@ -621,7 +620,6 @@ static uint32_t dxvk_tx_fill(void *texture, int cube, int proc)
     }
     return hr;
 }
-#endif
 
 static uint32_t tx_fill(d3d_texture *t, int proc)
 {
@@ -652,19 +650,15 @@ static uint32_t tx_fill(d3d_texture *t, int proc)
 
 WINAPI_EXPORT(D3DX, D3DXFillTextureTX, 2)
 {
-#ifndef HOMM5_LEGACY_UI
     void *dxvk = void_dxvk_native(ARG(0));
     if (dxvk) return dxvk_tx_fill(dxvk, 0, ((txshader_t *)void_com_host(ARG(1)))->proc);
-#endif
     return tx_fill((d3d_texture *)void_com_host(ARG(0)), ((txshader_t *)void_com_host(ARG(1)))->proc);
 }
 
 WINAPI_EXPORT(D3DX, D3DXFillCubeTextureTX, 2)
 {
-#ifndef HOMM5_LEGACY_UI
     void *dxvk = void_dxvk_native(ARG(0));
     if (dxvk) return dxvk_tx_fill(dxvk, 1, ((txshader_t *)void_com_host(ARG(1)))->proc);
-#endif
     return tx_fill((d3d_texture *)void_com_host(ARG(0)), ((txshader_t *)void_com_host(ARG(1)))->proc);
 }
 
@@ -1026,7 +1020,6 @@ done:
     return D3D_OK;
 }
 
-#ifndef HOMM5_LEGACY_UI
 /* ================================================= DXVK (d3d9_dxvk.c) */
 /* Logical RGBA into a rect of a DXVK surface; 0 when the format has no encoder. */
 static int dxvk_write_rgba(void *surface, const d3d_format *f, const uint32_t *rect, const float *rgba)
@@ -1160,7 +1153,6 @@ static uint32_t dxvk_load_surface(void *dst, uint32_t dst_rect, void *src, uint3
     if (!ok) void_log("[d3dx] D3DXLoadSurfaceFromSurface: format %u destination unsupported", dd[2]);
     return ok ? D3D_OK : D3DERR_INVALIDCALL;
 }
-#endif
 
 /* Shared body of the texture loaders. `cube` selects cube textures. */
 static uint32_t load_texture(uint32_t device, const uint8_t *data, uint32_t size, uint32_t width, uint32_t height,
@@ -1178,7 +1170,6 @@ static uint32_t load_texture(uint32_t device, const uint8_t *data, uint32_t size
         void_log("[d3dx] DDS resource type %u does not match the %s loader", info.rtype, cube ? "cube" : "2D");
         return D3DXERR_INVALIDDATA;
     }
-#ifndef HOMM5_LEGACY_UI
     int dxvk = void_dxvk_native(device) != NULL;
     if (dxvk && info.native) {
         static int warned;
@@ -1186,7 +1177,6 @@ static uint32_t load_texture(uint32_t device, const uint8_t *data, uint32_t size
                                 (const char *)&info.native->fourcc);
         return D3DXERR_INVALIDDATA;
     }
-#endif
     if (info.native) return load_native(data, size, &info, width, height, mips, usage, pool, filter, out, cube);
     const d3d_format *ff = d3d_format_find(info.format);
     /* D3DX_SKIP_DDS_MIP_LEVELS(n, filter): drop the n largest file levels. */
@@ -1208,9 +1198,7 @@ static uint32_t load_texture(uint32_t device, const uint8_t *data, uint32_t size
         VLOG("[d3dx] texture format %u requested for a %u file: kept file format", fmt, info.format);
         fmt = info.format;
     }
-#ifndef HOMM5_LEGACY_UI
     if (dxvk) return dxvk_load_texture(device, data, size, &info, w, h, skip, levels, file_levels, usage, fmt, pool, out, cube);
-#endif
     d3d_texture *t = d3d_texture_new(g_d3d_device, cube ? D3DRTYPE_CUBETEXTURE : D3DRTYPE_TEXTURE, w, h, 1, levels, usage, fmt, pool);
     if (!t) return D3DERR_INVALIDCALL;
     uint32_t offset = info.data_offset;
@@ -1321,7 +1309,6 @@ WINAPI_EXPORT(D3DX, D3DXCreateCubeTextureFromFileExW, 13)
 
 WINAPI_EXPORT(D3DX, D3DXFilterTexture, 4)
 {
-#ifndef HOMM5_LEGACY_UI
     /* (texture, palette, source level, filter): the levels below the source one. */
     void *dxvk = void_dxvk_native(ARG(0));
     if (dxvk) {
@@ -1333,7 +1320,6 @@ WINAPI_EXPORT(D3DX, D3DXFilterTexture, 4)
         if (automatic) { void_dxvk_texture_generate_mips(dxvk); return D3D_OK; }
         return dxvk_filter_levels(dxvk, cube, source + 1, void_dxvk_texture_levels(dxvk));
     }
-#endif
     d3d_texture *t = (d3d_texture *)void_com_host(ARG(0));
     d3d_generate_mips(t);
     return D3D_OK;
@@ -1366,7 +1352,6 @@ WINAPI_EXPORT(D3DX, D3DXLoadSurfaceFromMemory, 10)
         return D3DERR_INVALIDCALL;
     uint32_t dst_w, dst_h, dst_format;
     d3d_surface *dst = NULL;
-#ifndef HOMM5_LEGACY_UI
     /* A DXVK surface (d3d9_dxvk.c): the same conversion, written through the surface itself. */
     void *dxvk = void_dxvk_native(ARG(0));
     uint32_t desc[5];
@@ -1374,7 +1359,6 @@ WINAPI_EXPORT(D3DX, D3DXLoadSurfaceFromMemory, 10)
         if (void_dxvk_surface_desc(dxvk, desc)) return D3DERR_INVALIDCALL;
         dst_w = desc[0]; dst_h = desc[1]; dst_format = desc[2];
     } else
-#endif
     {
         dst = (d3d_surface *)void_com_host(ARG(0));
         if (strcmp(dst->com.cls->name, "IDirect3DSurface9")) return D3DERR_INVALIDCALL;
@@ -1446,9 +1430,7 @@ WINAPI_EXPORT(D3DX, D3DXLoadSurfaceFromMemory, 10)
         pixels = scaled;
     }
     int ok;
-#ifndef HOMM5_LEGACY_UI
     if (dxvk) ok = dxvk_write_rgba(dxvk, dst_fmt, dr, pixels); else
-#endif
     ok = d3d_surface_write_rgba(dst, dr, pixels);
     free(pixels);
     return ok ? D3D_OK : D3DERR_INVALIDCALL;
@@ -1457,10 +1439,8 @@ WINAPI_EXPORT(D3DX, D3DXLoadSurfaceFromMemory, 10)
 /* D3DXLoadSurfaceFromSurface(dst, dstpal, dstrect, src, srcpal, srcrect, filter, colorkey) */
 WINAPI_EXPORT(D3DX, D3DXLoadSurfaceFromSurface, 8)
 {
-#ifndef HOMM5_LEGACY_UI
     void *dxvk = void_dxvk_native(ARG(0));
     if (dxvk) return dxvk_load_surface(dxvk, ARG(2), void_dxvk_native(ARG(3)), ARG(5), ARG(6));
-#endif
     d3d_surface *dst = (d3d_surface *)void_com_host(ARG(0)), *src = (d3d_surface *)void_com_host(ARG(3));
     uint32_t dr[4] = {0, 0, dst->width, dst->height}, sr[4] = {0, 0, src->width, src->height};
     if (ARG(2)) for (int i = 0; i < 4; ++i) dr[i] = MEM32(ARG(2) + 4u * (uint32_t)i);
@@ -1505,10 +1485,8 @@ COM_METHOD(font, AddRef, 1) { return void_com_addref(&FONT->com); }
 COM_METHOD(font, Release, 1) { return void_com_release(&FONT->com); }
 COM_METHOD(font, GetDevice, 2)
 {
-#ifndef HOMM5_LEGACY_UI
     /* The device it was made for; under DXVK g_d3d_device is d3d9_dxvk.c's uncounted shadow. */
     if (void_dxvk_native(FONT->device)) { MEM32(ARG(1)) = FONT->device; void_dxvk_addref(FONT->device); return D3D_OK; }
-#endif
     void_com_addref(&g_d3d_device->com); MEM32(ARG(1)) = g_d3d_device->com.guest; return D3D_OK;
 }
 COM_METHOD(font, GetDescA, 2) { memset(GPTR(ARG(1)), 0, 56); MEM32(ARG(1)) = FONT->height; return D3D_OK; }
@@ -1553,9 +1531,7 @@ COM_METHOD(line, AddRef, 1) { return void_com_addref(&LINE->com); }
 COM_METHOD(line, Release, 1) { return void_com_release(&LINE->com); }
 COM_METHOD(line, GetDevice, 2)
 {
-#ifndef HOMM5_LEGACY_UI
     if (void_dxvk_native(LINE->device)) { MEM32(ARG(1)) = LINE->device; void_dxvk_addref(LINE->device); return D3D_OK; }
-#endif
     void_com_addref(&g_d3d_device->com); MEM32(ARG(1)) = g_d3d_device->com.guest; return D3D_OK;
 }
 COM_METHOD(line, Begin, 1) { return D3D_OK; }

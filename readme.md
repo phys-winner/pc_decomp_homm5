@@ -3,7 +3,7 @@
 Heroes of Might and Magic V, Hammers of Fate and Tribes of the East on Android ARM64 through static
 x86 recompilation, with native touch controls and a Direct3D 9 to OpenGL ES bridge.
 
-**Current version: 0.3.2-dev.** All three engines use ThinLTO; Tribes of the East also uses PGO.
+**Current version: 0.4-dev.** All three engines use ThinLTO and their own device-trained PGO profiles.
 This is an experimental port for sideloading.
 The original game's menus, adventure maps, towns, battles, sound and saves run
 through a local Win32 compatibility host. The game and eight DLLs are translated
@@ -33,22 +33,26 @@ the edition-specific host mappings and required port features; APK packaging
 requires all three patched libraries and resource overlays, including when
 `--skip-native` is used.
 
-Vanilla 1.6 and HoF 2.1 have device smoke coverage for profile creation, scenario
-loading, adventure maps and troop splitting. Original-binary ABI checks and host
-regression tests cover their adapted native entry points. Device gameplay coverage
-is recorded separately from successful generation and compilation.
+Vanilla 1.6 and HoF 2.1 have device coverage for profile creation, scenario
+selection, original saves, adventure maps, battles, deployment and troop splitting.
+The legacy engines use their own call-protocol and x87 analyses, mapped hot paths,
+and PGO profiles; the build verifies that these inputs belong to the selected edition.
+Original-binary ABI checks and host regression tests cover their adapted native entry
+points. These checks and representative gameplay do not establish campaign completion
+or compatibility with every map.
 
 The older games use ToE's widescreen anchor policy with their own window geometry.
 Their font scaling follows ToE's equal horizontal and vertical glyph scale.
-Legacy UI and town-music overrides are also installed as loose resources: expansion
+Legacy UI overrides are also installed as loose resources: expansion
 archives take precedence over a new base PAK. Packaging and CLI deployment verify
 that every loose resource exactly matches its reviewed override archive.
 Ubisoft tracking is disabled before the startup commands in all three editions.
 
 Original EXE/DLL files, resource archives, music, videos, maps and saves are not
-distributed in this repository. The town music XML resources are read
-from the selected edition's original resource banks during packaging, checked
-against its manifest in `config/music/`, and patched in a separate Android overlay.
+distributed in this repository. The APK reads `H5_Game.exe` and `granny2.dll`
+directly from the selected original installation (`bin`, or `bina1` for HoF),
+after checking their size and SHA-256 on a startup worker. It carries the remaining
+prepared DLLs. Town music uses the original resources and pause settings.
 
 ## Current capabilities and limits
 
@@ -71,32 +75,55 @@ against its manifest in `config/music/`, and patched in a separate Android overl
   [NewCreatureFramework.yml](https://github.com/Might-Magic-Heroes-5-5/MMH55/blob/master/Frameworks/NewCreatureFramework/NewCreatureFramework.yml).
   Enable it only for a mod that provides those creatures: without their files the
   game does not start. Vanilla and HoF are unaffected.
-- Every edition renders with OpenGL ES. The experimental DXVK (Vulkan/Turnip)
-  renderer for ToE 3.1 is disabled in this build; see [Renderers](#renderers-tribes-of-the-east).
+- Every edition uses OpenGL ES;
+  see [Renderers](#renderers).
 - ARM64 Android 8.0 or later and OpenGL ES 3.2 are required. The manifest targets
-  API 28; this development package uses legacy external storage access.
+  API 37; Android 11+ uses the launcher's All files access permission, and Android
+  8–10 uses the storage permission.
 - Native libraries and APK packaging support 16 KiB alignment. This does not
   establish testing on a device with 16 KiB memory pages.
 - Campaign completion, every map, every GPU and every Android version have not
   been verified. Development test results are not a complete compatibility claim.
 
-## Renderers (Tribes of the East)
+## Renderers
 
-Every edition, ToE 3.1 included, renders with the port's own Direct3D 9 to
-OpenGL ES 3.2 renderer.
+OpenGL ES 3.2 is the only enabled renderer for all editions. Renderer choices
+saved by older launchers are ignored. The APK excludes DXVK and Turnip libraries
+and does not run a Vulkan driver probe.
 
-An experimental DXVK renderer for ToE (DXVK 2.4.1 on the system Vulkan driver, or
-on a bundled Mesa Turnip driver on Adreno 6xx/7xx GPUs) is disabled for now: on
-the tested Adreno 650 with Turnip the game started, but the screen stayed black
-after the startup device reset. Its sources remain in the repository
-(`android/dxvk`, `android/host/d3d9_dxvk.c`), but the launcher offers only
-OpenGL ES, runs no graphics driver check and the APK carries no DXVK libraries.
-Re-enabling it for development takes the `dxvk`/`turnip` modes in the
-`renderers` of `android/port.json` (the launcher base then adds its Vulkan
-probe), `HOMM5_DXVK` in `android/host/d3d9_dxvk.c` and
-`tools/build_game_apk.py --dxvk`.
+OpenGL ES spatial filters independently reconstruct the
+scene (bilinear, bicubic, or FSR 1 EASU plus adjustable RCAS) and UI textures
+(nearest, bilinear, bicubic, or FSR 1 EASU). UI filtering preserves alpha at
+transparent edges. These spatial filters do not provide temporal accumulation
+or frame generation and apply to the OpenGL ES renderer.
+
+The GLES bridge records commands for a dedicated render thread, which owns the EGL
+context and publishes completed GPU query results without blocking the game thread.
+Dynamic buffers retain D3D9 DISCARD/NOOVERWRITE semantics, and UI/filter targets stay
+at display resolution. For a same-build comparison, put `0` or `1` in the edition's
+`userdata/render-thread` file before launch (`VOID_RENDER_THREAD` takes precedence
+in shell builds). Both modes execute the same commands. `--rt-check` on the native
+or APK builder enables GL thread ownership diagnostics. `VOID_RT_CORES` selects
+`auto` (default), `big`, `next`, or `any` (no additional affinity). Auto uses the
+second capacity tier on SoCs with at least three tiers, the top tier on two-tier
+SoCs with multiple top-tier cores, and the lower tier when the top has one core.
+Homogeneous or unknown capacities keep the inherited scheduling mask. The `[rt]`
+startup log records the selected policy and any affinity failure.
+
+On Snapdragon 865 / Adreno 650, two alternating pairs on the same diagnostic APK
+gave 50.3 -> 59.4 FPS for the near adventure view (about 264 draws) and 34.9 -> 45.9
+for the far view (about 468 draws). Far-view game-thread CPU time fell from 27.0
+to 21.0 ms per frame. These are warmed, stationary views at 2400x1080 output,
+70% scene scale and a 60 FPS cap; they include thermal and scheduling noise and
+do not establish the same gain on other phones or in battles.
 
 ## Build requirements
+
+The shared launcher base must include the installation-conflict hook and the
+static `Launch.folder(context, distribution, part)` accessor. The checkout used
+for this build is already updated. For an older `../launcher`, apply
+`patches/launcher/installation-conflicts.patch` from this repository to that
+base before building.
 
 The current scripts build on **Windows x64**, without Gradle. Install:
 
@@ -170,17 +197,11 @@ python -X utf8 tools/build_game_apk.py --thinlto --no-pgo
 
 Output: **`build/android-game/heroes-v.apk`**.
 
-`tools/build_dxvk.py` stages the ToE DXVK renderer in `build/dxvk`. It downloads
-nothing and rebuilds no DXVK source. It reuses the DXVK, adrenotools and Turnip
-binaries built by the sibling `ut3` port, checks each one against its hash in
-[`dependencies.json`](dependencies.json), imports the needed DXVK Native headers
-into `reference/dxvk`, and compiles `android/dxvk` into `libh5dxvk.so`. `--ut3`,
-`--dxvk-library`, `--turnip-runtime` and `--dxvk-headers` select other locations.
-Run it again after changing `android/dxvk` or `android/host/dxvk_methods.h`;
-`tools/generate_dxvk_bridge.py` regenerates those tables from the pinned header.
-The APK builder packages the stage only with `--dxvk` (the renderer is disabled
-by default, see [Renderers](#renderers-tribes-of-the-east)) and then refuses a
-stale stage. The DXVK libraries add about 6 MB to the APK and 24 MB when installed.
+The archived DXVK/Turnip source and pinned dependencies remain in the repository
+for development. Shipping engines compile the GLES stubs, the launcher exposes
+only GLES, and the default APK omits the Vulkan runtime. `tools/build_dxvk.py`
+and the APK builder's internal `--dxvk` staging option do not enable that backend
+in a shipping engine.
 
 Packaging requires XZ Utils 5.4+ for its ARM64 branch filter (`XZ`, `PATH`, or
 Git for Windows' `mingw64/bin/xz.exe`). All three engines are stored as XZ
@@ -188,7 +209,7 @@ assets with 128 MiB independent chunks. The small bundled XZ Embedded decoder
 unpacks only the selected engine in the background on its first start after
 an update. Its size and SHA-256 are checked before an atomic rename from
 `.part`; later starts reuse the completed copy in private app storage.
-Allow about 131 MB for ToE or 220 MB for each legacy engine, plus the previous
+Allow about 132 MB per engine with the current optimized builds, plus the previous
 copy while replacing it after an update. Compression changes APK size, not
 the game engines, resources or their installed sizes.
 
@@ -198,7 +219,7 @@ catalogs use the matching edition directory, while the original ToE catalog
 paths remain under `config/`. These are all local
 build outputs. Compilation fingerprints sources, headers, compiler and flags
 before reusing objects. The APK builder compiles the texture converter and Java
-launcher, includes the prepared PE images and port overlays, aligns the APK and
+launcher, includes the prepared DLLs and port overlays, aligns the APK and
 signs it with a locally generated development key.
 Native builds remap embedded source paths to repository-relative names.
 
@@ -301,9 +322,10 @@ python tools/deploy.py --edition vanilla --data --serial SERIAL
 `deploy.py` defaults to `toe`; `--edition hof` selects HoF. It validates the
 selected executable's mandatory patch receipt before any device operation and
 again before uploading native code. `--data` copies only that edition's resource
-banks and shared assets, then applies private profile, intro, music and UI
+banks and shared assets, then applies private profile, intro and UI
 overrides. It never modifies the installed PC game. Omitting `--data` updates
-the prepared PE images and executable only. The executable is uploaded through
+the prepared DLLs and executable only. Original EXE/Granny images are read from
+the selected game's `bin` or `bina1`. The executable is uploaded through
 a temporary file and renamed; no game is started automatically.
 
 The script prints a launch command with explicit `--game`, `--data` and
@@ -326,8 +348,9 @@ receipts are `build/deploy-receipt[-vanilla|-hof].json`.
 | Swipe left or right on a scenario's hero, faction, bonus, team or player-state icon | Cycle through the scenario's allowed choices. The active icon stays highlighted with its name and tooltip; heroes also show their specialization description |
 | While aiming in battle, rest a second finger | Show the details card of the creature under the first finger at once; lift the second finger to hide it and keep aiming. Lifting the first finger while the second rests gives no order |
 | While aiming in battle, tap with a second finger | Show the details card until the first finger lifts (no order is given); each further second-finger tap switches once between the card and the creature's effects |
-| Tap a portrait on the battle initiative bar, then tap it again | The first tap selects the portrait (it stays highlighted); the second shows the creature's details card, which stays open without holding; each further tap on the portrait switches between the card and the effects; a touch elsewhere closes it |
+| Tap a portrait on the battle initiative bar, then tap it again after a pause | The first tap selects the portrait (it stays highlighted); the second shows the creature's details card, which stays open without holding; each further tap on the portrait switches between the card and the effects; a touch elsewhere closes it |
 | Hold a map or town object, or the battle initiative bar | Show its tooltip and details card; each second-finger tap on a held initiative bar portrait switches its card once |
+| Double tap a creature portrait on the initiative bar | Issue the original attack action through the portrait |
 | Drag your active shooter onto an enemy in battle | Melee attack instead of a shot, like Ctrl+click on the PC |
 | Brief simultaneous tap with two fingers on the adventure map | Stop the moving hero or cancel an aim |
 | Double tap the minimap, or tap it with two fingers | Toggle the highlighting of objects, like holding Alt on the PC; the camera stays. A single tap on the minimap moves the camera after a short pause (0.4 s) |
@@ -338,6 +361,7 @@ receipts are `build/deploy-receipt[-vanilla|-hof].json`.
 | Swipe from a dropdown, move to an item and release | Select that item; a second finger cancels |
 | Swipe on a slider | Move its value from where it is; a tap or hold does not move it |
 | Swipe a list | Scroll |
+| Drag a troop stack into the visible split zones | Release over Quick split to split it in half; hold over Split one to detach the first unit after 1 second and another every 0.5 seconds, with progress shown. A free army slot is required |
 | Drag troops or artifacts | Transfer between slots, empty slots included; a tap on a stack and then a tap on a slot does the same |
 | Hold a stack and tap any army slot with a second finger; or drag a stack onto an army portrait | Split one creature off per tap, open the split dialog by holding the second finger, collect or distribute a creature type on its own portrait, move stacks to the other army — in towns, hero screens and the caravan, raise-the-dead, joining-creatures, garrison and creature-exchange windows |
 | Aim a selected ability, then release | Confirm the target |
@@ -345,6 +369,14 @@ receipts are `build/deploy-receipt[-vanilla|-hof].json`.
 
 While a creature card is shown, the battle camera stays still: a moving second
 finger does not turn it.
+
+In all three editions, dragging a stack also shows how to open the quantity dialog: keep the
+stack held and hold a free slot with another finger. **Подсказки деления отрядов**
+and **Зоны деления отрядов** under **Настройки → Дополнительные** control the
+instructions and the quick-split regions separately. Disabling regions also
+disables their actions; splitting with a second finger remains available.
+The centred instruction banner follows the text width with small side padding
+and fits inside the viewport on narrow screens.
 
 The main menu's **Управление** guide explains troop splitting, redistribution,
 collection and transfers, along with touch and gamepad controls. Cursor offset
@@ -355,15 +387,35 @@ reachable. Camera gestures and physical pointer input retain their own coordinat
 Field taps are dispatched immediately on release, with no multi-tap wait.
 For the camera reset, place all three fingers within 120 ms and release within
 300 ms, moving each finger no more than 16 dp. Three sequential taps do not reset
-the camera.
+the camera. When **Консоль игры** is enabled, hold the in-game gear button to
+toggle the console, or use the physical `~` key. A short gear tap opens the
+ordinary menu. Three-finger holds have no console action. Opening the console
+selects its text field and brings up the Android keyboard.
+
+With the console switch enabled, hold the adventure screen's scenario-information
+button to open the original cheats menu. It asks before enabling cheats for the
+current map and retains the original turn, ownership and multiplayer restrictions.
+Army choices include six factions in Vanilla, seven in HoF and eight in ToE;
+alternative upgrades are offered only in ToE.
 
 ## In-game Android settings
 
-**Настройки → Дополнительные** holds the port's options. Render scale,
-interface scale and the frame rate limit are dropdowns; the frame rate list is
+**Настройки → Дополнительные** holds the port's options. Render and interface
+scales use native sliders with fixed percentage steps. The frame rate dropdown is
 built from the display's own refresh rates (30 FPS and every supported rate from
 45 to 240 Hz). The touch cursor and **LAN через Tailscale/VPN** are checkboxes.
-All three editions show the same page.
+All three editions include the console switch, separate
+OpenGL ES scene/UI filters and the FSR sharpness slider. Each edition keeps its
+own profile settings. All three editions keep the original battle camera distance and aim,
+with the vertical coverage of its 16:9 PC view on wider displays, including attack
+close-ups. Above 100% UI scale, deployment shifts the army above the reserve bar
+without zooming out; the battle overview compensates only for the extra area
+occupied by the enlarged HUD. Native attack close-ups retain their own framing.
+The **Вмещать поле боя** switch is removed in all three editions; its old saved
+variable remains registered for profile compatibility and no longer changes the camera.
+Vanilla and HoF may share an installation; keep ToE separate:
+the launcher warns about conflicting paths and mixed Vanilla/ToE archives and
+refuses incompatible import destinations before replacing files.
 
 The interface scale is an upper limit: a large panel temporarily uses
 the largest scale at which it fits on screen. Closing it restores the requested
@@ -415,13 +467,14 @@ send `homm5.1.log` (the session that crashed) together with `homm5.log`.
 
 ## Versions and local release files
 
-The current version is `0.3.2-dev` / code `7`. Earlier development builds used
-`0.1-dev`, `0.2-dev`, `0.3-dev` and `0.3.1-dev`. The version is stored in
+The current version is `0.4-dev` / code `8`. Earlier development builds used
+`0.1-dev`, `0.2-dev`, `0.3-dev`, `0.3.1-dev` and `0.3.2-dev`. The version is stored in
 `android/app/AndroidManifest.xml`; increase `android:versionCode` for every
 subsequent published build. Version `0.3-dev` uses code `5` (the replacement
-build supersedes the earlier code `4` APK); `0.3.1-dev` uses code `6`.
+build supersedes the earlier code `4` APK); `0.3.1-dev` uses code `6`, and
+`0.3.2-dev` uses code `7`.
 
-Local release copies use `heroes-v-0.3.2-dev-<sha256-prefix>.apk`, where the suffix
+Local release copies use `heroes-v-0.4-dev-<sha256-prefix>.apk`, where the suffix
 is the first eight characters of the APK's SHA-256, with a companion `.sha256`
 file. The `pub/` directory is ignored. Building and naming an APK does not
 automatically publish it or create a Git tag.
@@ -430,6 +483,19 @@ automatically publish it or create a Git tag.
 
 Changes since 0.3.1-dev:
 
+- The Additional settings include **Вмещать поле боя**, enabled by default.
+  Disable it to keep the original battle camera framing.
+- DXVK/Turnip render into the game's own Android window, including presents that
+  name its guest window handle. PC backbuffer sizes remain available to the older
+  editions; their frame boundary now applies render scale and the full display size.
+- Ghost armour uses the correct cube reflection texture in OpenGL ES. Shader
+  Model 1 programs follow the dimensions of their bound textures, while the
+  ghost's translucent cloth keeps its original alpha blending.
+- Render and interface scale use native sliders that save their actual fractional
+  values. Numeric dropdowns are reserved for settings whose values are item indices.
+- Optional anisotropic filtering respects the driver's extension and reported limit.
+- Lifted CALL-next sequences retain the real guest return address and flags; the
+  generator also preserves the correct sine/cosine order for FSINCOS.
 - Fix Android 17 startup: unpacked native engines are made read-only before
   loading, including engines already cached by an earlier APK. All three editions.
 - The game no longer closes on snow. The five random sounds of the snow terrain
@@ -469,9 +535,8 @@ Changes since 0.3.1-dev:
   **Настройки → Дополнительные**, and LAN over Tailscale/VPN. The 1.6 and 2.1
   engine addresses were matched against their own code. Checked on a device: the
   settings page, slider and dropdown swipes, the initiative bar card, the
-  two-finger tap, spellbook swipes and bookmarks, scenario swipes. The minimap
-  highlight has no visible effect there: the Alt object highlight itself appears
-  to be a Tribes of the East feature.
+  two-finger tap, spellbook swipes and bookmarks, scenario swipes. Later device
+  checks confirmed visible Alt object highlighting in both legacy editions too.
 - The spellbook of Heroes V 1.6 and Hammers of Fate is no longer cut off at the
   top and bottom on wide screens: its camera now widens the view the way Tribes
   of the East does. Tapping a spell selects it again on wide screens; those two
@@ -516,8 +581,8 @@ Changes since 0.2-dev:
   replacing sample repetition. Normal AAudio output and queue refill after late
   mixer wakes improve audio continuity; mixer threads use the revised priorities
   and can run on all CPU cores.
-- ToE's additional settings use dropdowns for render/UI scale and refresh-rate
-  limits from the display's supported rates, plus touch-cursor and VPN LAN checkboxes.
+- Additional settings use native sliders for render/UI scale, a dropdown for
+  frame limits from the display's supported rates, and touch-cursor and VPN LAN checkboxes.
 - ToE sliders move relative to their current value on a swipe; dropdowns open on
   swipe start and select on release. Deployment portraits stay under the finger.
 - ToE initiative-bar portraits can be selected with one tap and opened with the
@@ -581,8 +646,12 @@ Changes since 0.2-dev:
 
 Outstanding player reports: the oversized spellbook on Pixel 10 and a HoF
 hot-seat hero-battle crash were not reproduced. No fix is claimed for either.
-Broader campaign, save/load and legacy LAN checks remain outstanding, as do legacy
-PGO profiles and the ToE-only generated-code optimizations.
+As of 2026-11-07, Vanilla and HoF also have their own device-trained PGO profiles
+and generated-code optimizations. Their original saves load across the update,
+and representative map, army and battle flows have been exercised on an ARM64 phone.
+Native crashes, Java exceptions and ANRs retain their previous session logs in both
+editions. Full campaign completion and multiplayer LAN/Tailscale sessions for the
+legacy editions remain outside the verified coverage.
 
 ## Checks
 
@@ -591,7 +660,7 @@ without the original game or a device:
 
 ```powershell
 python -m unittest discover -s tests -p test_android_tools.py
-python -m unittest discover -s tests -p test_town_music.py
+python -m unittest discover -s tests -p test_installed_images.py
 python -m unittest discover -s tests -p test_deploy.py
 python -m unittest discover -s tests -p test_apk_pgo.py
 python -m unittest discover -s tests -p test_apk_thinlto.py

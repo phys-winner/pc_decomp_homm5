@@ -9,7 +9,6 @@ import unittest
 import xml.etree.ElementTree as ET
 import zipfile
 from unittest.mock import patch
-from test_town_music import music_inputs
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
@@ -22,6 +21,8 @@ class Deployment(unittest.TestCase):
     def registry(self, root):
         (root / "config").mkdir(parents=True, exist_ok=True)
         (root / "config/editions.json").write_bytes((deploy.ROOT / "config/editions.json").read_bytes())
+        for edition in deploy.EDITION_IDS:
+            (root / deploy.edition_spec(edition, root)["modules"]).write_text("[]")
         self.runtime(root)
 
     def runtime(self, root, edition="toe"):
@@ -74,9 +75,9 @@ class Deployment(unittest.TestCase):
             (root / "config/video").mkdir()
             (root / "config/video/intro_a1.xml").write_bytes(override.read_bytes())
             (root / "config/modules.json").write_text("[]")
-            music_inputs(root)
+            (game / "data/data.pak").write_bytes(b"original resource bank")
+            (root / "port.json").write_text('{"game_directory":"original-game"}')
             original_data = (game / "data/data.pak").read_bytes()
-            music_path, music_receipt = deploy.build_town_music_override(root)
             with patch.object(deploy, "ROOT", root), patch.object(deploy, "PORT", {"game_directory": "original-game"}), \
                     patch("sys.argv", ["deploy.py", "--data", "--serial", "TEST_DEVICE"]), patch.object(deploy.subprocess, "run") as run, \
                     patch.object(deploy.subprocess, "check_output", side_effect=self.device_checksum(run)), \
@@ -92,28 +93,24 @@ class Deployment(unittest.TestCase):
             self.assertEqual((game / "video/intro_a1.xml").read_bytes(), b"licensed original intro playlist")
             self.assertEqual((game / "video/outro_a1.xml").read_bytes(), b"licensed original outro playlist")
             self.assertEqual((game / "profiles/start.cfg").read_text(), "mainmenu\n")
-            music_copy = ["push", str(root / "build/deploy/data" / music_path.name), deploy.DEVICE_ROOT + "/game/data/" + music_path.name]
-            self.assertGreater(commands.index(music_copy), commands.index(override_copy))
-            self.assertGreater(commands.index(music_copy), commands.index(["push", "--sync", str(game / "data"), deploy.DEVICE_ROOT + "/game/"]))
             self.assertEqual((game / "data/data.pak").read_bytes(), original_data)
             receipt = json.loads((root / "build/deploy-receipt.json").read_text())
-            self.assertEqual(receipt["verified_sha256"][music_copy[-1]], music_receipt["sha256"])
-            self.assertTrue(receipt["town_music_override"]["runtime_verification"].startswith("pending:"))
+            self.assertNotIn("town_music_override", receipt)
+            self.assertFalse(any("town_music" in " ".join(command) for command in commands))
 
-    def test_bad_music_input_stops_before_any_device_operation(self):
+    def test_wrong_original_image_stops_before_adb(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.registry(root)
-            music_inputs(root)
-            manifest_path = root / "config/music/manifest.json"
-            manifest = json.loads(manifest_path.read_text())
-            manifest["Haven.(Music).xdb"] = "0" * 64
-            manifest_path.write_text(json.dumps(manifest))
-            with patch.object(deploy, "ROOT", root), patch.object(deploy, "PORT", {"game_directory": "original-game"}), \
-                    patch("sys.argv", ["deploy.py", "--data", "--serial", "TEST_DEVICE"]), \
-                    patch.object(deploy.subprocess, "run") as run, \
-                    patch.object(deploy, "validate_packaged_native", return_value={}):
-                with self.assertRaisesRegex(ValueError, "canonical input changed"):
+            (root / "port.json").write_text('{"game_directory":"original"}')
+            (root / "original/bin").mkdir(parents=True)
+            (root / "original/bin/H5_Game.exe").write_bytes(b"wrong game revision")
+            (root / "config/modules.json").write_text(json.dumps([dict(
+                file="H5_Game.exe", source="bin/H5_Game.exe", sha256=hashlib.sha256(b"expected revision").hexdigest())]))
+            with patch.object(deploy, "ROOT", root), patch("sys.argv", ["deploy.py", "--data"]), \
+                    patch.object(deploy, "validate_packaged_native", return_value={}), \
+                    patch.object(deploy.subprocess, "run") as run:
+                with self.assertRaisesRegex(ValueError, "original image SHA-256 mismatch"):
                     deploy.main()
                 run.assert_not_called()
 
@@ -164,24 +161,23 @@ class Deployment(unittest.TestCase):
                         (root / "config" / relative).parent.mkdir(parents=True, exist_ok=True)
                         (root / "config" / relative).write_bytes((game / relative).read_bytes())
                 manifest = root / spec["modules"]
-                manifest.write_text(json.dumps([{"file": edition + ".exe"}]))
-                image = deploy.generated_root(edition, root) / "input" / (edition + ".exe")
-                image.parent.mkdir(parents=True, exist_ok=True)
-                image.write_bytes(("private prepared image " + edition).encode())
+                modules = []
+                for name in ("H5_Game.exe", "granny2.dll", "fmod.dll"):
+                    data = (edition + name).encode()
+                    (game / spec["bin"] / name).write_bytes(data)
+                    modules.append(dict(file=name, source=spec["bin"] + "/" + name,
+                                        sha256=hashlib.sha256(data).hexdigest()))
+                    image = deploy.generated_root(edition, root) / "input" / name
+                    image.parent.mkdir(parents=True, exist_ok=True)
+                    image.write_bytes(data)
+                manifest.write_text(json.dumps(modules))
                 self.runtime(root, edition)
             original = {path: path.read_bytes() for folder in (root / "original-toe", root / "original-combined")
                         for path in folder.rglob("*") if path.is_file()}
-            def music_override(project, game=None, edition="toe"):
-                path = project / ("build/music-fixture-" + edition) / "z_homm5_town_music.pak"
-                path.parent.mkdir(parents=True, exist_ok=True)
-                with zipfile.ZipFile(path, "w") as archive:
-                    archive.writestr("Sounds/_(Music)/Towns/Haven.(Music).xdb", ("patched town music " + edition).encode())
-                return path, {"edition": edition, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
             receipts = {}
             for edition in deploy.EDITION_IDS:
                 with self.subTest(edition=edition), patch.object(deploy, "ROOT", root), \
                         patch("sys.argv", ["deploy.py", "--edition", edition, "--data", "--serial", "TEST_DEVICE"]), \
-                        patch.object(deploy, "build_town_music_override", side_effect=music_override), \
                         patch.object(deploy, "build_port_ui_override", side_effect=self.ui_override), \
                         patch.object(deploy, "validate_packaged_native", return_value={"edition": edition}) as native, \
                         patch.object(deploy, "validate_overlay", return_value={"edition": edition}) as overlay, \
@@ -207,11 +203,13 @@ class Deployment(unittest.TestCase):
                 self.assertEqual(receipt["edition"], edition)
                 self.assertEqual(receipt["userdata"], deploy.DEVICE_ROOT + "/" + spec["userdata"])
                 self.assertEqual(receipt["images"], deploy.DEVICE_ROOT + "/lifted" + suffix)
+                image_pushes = [command for command in commands if command[0] == "push" and command[-1].startswith(receipt["images"] + "/")]
+                self.assertEqual([Path(command[-1]).name for command in image_pushes], ["fmod.dll"])
                 self.assertEqual(receipt["command"][2:], [receipt["game"], "--data", receipt["userdata"], "--images", receipt["images"]])
                 self.assertTrue(any(command[-1] == receipt["game"] + "/video/" + ("intro.xml" if edition == "vanilla" else "intro_a1.xml") for command in commands))
                 # Inspect the actual ZIP payload independently: both legacy
                 # engines need every loose member, while ToE keeps PAK-only.
-                for folder in ("music-fixture-", "ui-fixture-"):
+                for folder in ("ui-fixture-",):
                     archive = next((root / ("build/" + folder + edition)).glob("*.pak"))
                     expected = {"data/" + archive.name: archive.read_bytes()}
                     if edition != "toe":
@@ -244,7 +242,7 @@ class Deployment(unittest.TestCase):
                     root = Path(directory)
                     self.registry(root)
                     self.runtime(root, edition)
-                    fixture, music, _ = test_port_patch_contract.OverlayContractTest().fixture(edition, root)
+                    fixture = test_port_patch_contract.OverlayContractTest().fixture(edition, root)
                     expected = real_validator(edition, fixture, root=root)
                     spec = deploy.edition_spec(edition, root)
                     game = root / "original"
@@ -266,7 +264,6 @@ class Deployment(unittest.TestCase):
                     with patch.object(deploy, "ROOT", root), \
                             patch("sys.argv", ["deploy.py", "--edition", edition, "--data", "--serial", "TEST_DEVICE"]), \
                             patch.object(deploy, "validate_packaged_native", return_value={}), \
-                            patch.object(deploy, "build_town_music_override", return_value=(music, {})), \
                             patch.object(deploy, "build_port_ui_override", return_value=(fixture / "data" / port_ui.PAK_NAME, {})), \
                             patch.object(deploy, "bootstrap_profiles", return_value=profiles), \
                             patch.object(deploy, "validate_overlay", side_effect=validate_stage), \
@@ -290,7 +287,6 @@ class Deployment(unittest.TestCase):
                 self.registry(root)
                 self.runtime(root, edition)
                 (root / "port.json").write_text(json.dumps({"editions": {edition: {"game_directory": "original"}}}))
-                music, _ = self.ui_override(root, edition=edition)
                 hostile = root / "hostile.pak"
                 with zipfile.ZipFile(hostile, "w") as archive:
                     archive.writestr("UI/valid.xdb", b"valid resource")
@@ -298,7 +294,6 @@ class Deployment(unittest.TestCase):
                 with patch.object(deploy, "ROOT", root), \
                         patch("sys.argv", ["deploy.py", "--edition", edition, "--data"]), \
                         patch.object(deploy, "validate_packaged_native", return_value={}), \
-                        patch.object(deploy, "build_town_music_override", return_value=(music, {})), \
                         patch.object(deploy, "build_port_ui_override", return_value=(hostile, {})), \
                         patch.object(deploy.subprocess, "run") as run, \
                         patch.object(deploy.subprocess, "check_output") as checksum:
@@ -330,7 +325,6 @@ class Deployment(unittest.TestCase):
             (root / "port.json").write_text('{"game_directory":"original"}')
             with patch.object(deploy, "ROOT", root), patch("sys.argv", ["deploy.py", "--data"]), \
                     patch.object(deploy, "validate_packaged_native", return_value={}), \
-                    patch.object(deploy, "build_town_music_override", return_value=(Path("unused"), {})), \
                     patch.object(deploy, "build_port_ui_override", side_effect=ValueError("missing required UI input")), \
                     patch.object(deploy.subprocess, "run") as run:
                 with self.assertRaisesRegex(ValueError, "missing required UI input"):

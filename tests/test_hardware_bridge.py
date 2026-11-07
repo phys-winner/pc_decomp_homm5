@@ -38,6 +38,11 @@ int main(void) {
     Java_org_homm5_port_GameActivity_nativePointer(0,0,5,0,1);
     Java_org_homm5_port_GameActivity_nativePointer(0,0,0,INFINITY,1);
     assert(count==before);
+    Java_org_homm5_port_GameActivity_nativeHardwareKey(0,0,0xC0,1);
+    assert(count==before+1&&received[count-1].kind==TOUCH_CONSOLE_TOGGLE);
+    Java_org_homm5_port_GameActivity_nativeHardwareKey(0,0,0xC0,0);
+    assert(count==before+1);
+    before=count;
     Java_org_homm5_port_GameActivity_nativePointer(0,0,.4f/1280,0,1);
     Java_org_homm5_port_GameActivity_nativePointer(0,0,.4f/1280,0,1);
     assert(count==before);

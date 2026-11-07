@@ -92,6 +92,33 @@ int display_mode(uint32_t *w, uint32_t *h, uint32_t *rate) {
   *rate = 60;
   return 1;
 }
+
+/* The Android WSI lists only its physical mode; legacy H5 needs PC-sized windowed backbuffers too. */
+uint32_t adapter_modes(Context &c) {
+  auto *d3d = static_cast<IDirect3D9*>(c.self);
+  D3DFORMAT format = D3DFORMAT(c.a[1]);
+  bool count_only = c.slot == 6;
+  if (c.a[0] >= d3d->GetAdapterCount() || (format != D3DFMT_X8R8G8B8 && format != D3DFMT_R5G6B5) ||
+      FAILED(d3d->CheckDeviceType(c.a[0], D3DDEVTYPE_HAL, format, format, TRUE)))
+    return count_only ? 0 : D3DERR_INVALIDCALL;
+  static const uint32_t modes[][2] = {
+    {640, 480}, {800, 600}, {1024, 768}, {1152, 864}, {1280, 720}, {1280, 768}, {1280, 800}, {1280, 960},
+    {1280, 1024}, {1360, 768}, {1366, 768}, {1440, 900}, {1560, 720}, {1600, 900}, {1600, 1200}, {1680, 1050},
+    {1920, 1080}, {2340, 1080},
+  };
+  uint32_t w, h, rate;
+  display_mode(&w, &h, &rate);
+  unsigned count = unsigned(sizeof modes / sizeof *modes);
+  bool extra = true;
+  for (const auto &mode : modes) if (mode[0] == w && mode[1] == h) extra = false;
+  if (count_only) return count + unsigned(extra);
+  unsigned index = c.a[2];
+  if (index >= count + unsigned(extra) || !c.a[3]) return D3DERR_INVALIDCALL;
+  *memory<D3DDISPLAYMODE>(c.a[3], 1, true) = {index < count ? modes[index][0] : w,
+      index < count ? modes[index][1] : h, rate, format};
+  return D3D_OK;
+}
+
 RECT aspect_destination(int width, int height, uint32_t logical_width, uint32_t logical_height) {
   double scale = std::min(double(width) / logical_width, double(height) / logical_height);
   int rw = int(std::lround(logical_width * scale)), rh = int(std::lround(logical_height * scale));
@@ -101,6 +128,7 @@ RECT aspect_destination(int width, int height, uint32_t logical_width, uint32_t 
 /* Each device keeps a reference on the Android window it presents into. */
 std::map<void*, ANativeWindow*> device_windows;
 std::map<void*, std::array<uint32_t, 14>> parameters;
+std::map<void*, uint32_t> focus_windows;
 struct WindowLease {
   ANativeWindow *value;
   uint32_t serial = 0;
@@ -231,6 +259,7 @@ uint32_t create_device(Context &c) {
   HRESULT hr = static_cast<IDirect3D9*>(c.self)->CreateDevice(c.a[0], D3DDEVTYPE(c.a[1]), next.value, c.a[3], &pp, &device);
   if (SUCCEEDED(hr)) {
     save_parameters(device, c.a[4], pp);
+    focus_windows[device] = c.a[2];
     device_windows[device] = next.take();
     *out = wrap(device);
     sayf("D3D9 device %ux%u created on the Android surface (windowed WSI; guest parameters kept)", pp.BackBufferWidth, pp.BackBufferHeight);
@@ -295,11 +324,19 @@ ANativeWindow *device_present_window(IDirect3DDevice9 *device) {
   return SUCCEEDED(hr) ? reinterpret_cast<ANativeWindow*>(p.hDeviceWindow) : nullptr;
 }
 uint32_t present(Context &c) {
-  if (c.a[2] || c.a[3]) return D3DERR_INVALIDCALL; /* No HWND override or dirty region from the guest. */
+  if (c.a[3]) return D3DERR_INVALIDCALL; /* No nested Windows region bridge. */
   WindowLease current;
   if (!current.value) { host->window_ack(current.serial); return D3D_OK; } /* surface lost after the host's wait: skip this frame */
   IDirect3DDevice9 *owned = nullptr, *device = context_device(c, &owned);
   if (!device) return D3DERR_INVALIDCALL;
+  /* HoMM5 names its own HWND on every frame; only that guest window maps to this Android surface. */
+  auto target = parameters.find(c.self);
+  if (target == parameters.end()) target = parameters.find(device);
+  if (c.a[2] && c.a[2] != focus_windows[device] &&
+      (target == parameters.end() || c.a[2] != target->second[7])) {
+    if (owned) owned->Release();
+    return D3DERR_INVALIDCALL;
+  }
   keep_window(device, current);
   ANativeWindow *window = device_windows[device];
   if (owned) owned->Release();
@@ -694,7 +731,7 @@ uint32_t special(Context &c, const char *name) {
     if (SUCCEEDED(hr)) {
       auto *out = memory<uint32_t>(c.a[0], 4, true);
       if (!out) return D3DERR_INVALIDCALL;
-      out[0] = p.AdapterOrdinal; out[1] = p.DeviceType; out[2] = parameters.count(c.self) ? parameters[c.self][7] : 0; out[3] = p.BehaviorFlags;
+      out[0] = p.AdapterOrdinal; out[1] = p.DeviceType; out[2] = focus_windows[c.self]; out[3] = p.BehaviorFlags;
     }
     return hr;
   }
@@ -739,6 +776,7 @@ uint32_t op_release(void *p) {
     auto it = device_windows.find(p);
     if (it != device_windows.end()) { if (it->second) ANativeWindow_release(it->second); device_windows.erase(it); }
     parameters.erase(p);
+    focus_windows.erase(p);
   }
   return refs;
 }
@@ -787,6 +825,7 @@ uint32_t op_call(unsigned kind, void *native, unsigned slot, const uint32_t *arg
       else if (slot == 104) bound_indices = args[0] ? host->unwrap_guest(args[0]) : nullptr;
     }
     Context c{Kind(kind), native, slot, args};
+    if (c.kind == Kind::IDirect3D9 && (slot == 6 || slot == 7)) return adapter_modes(c);
     const char *name = nullptr;
     switch (c.kind) {
 #include "bridge_special_names.h"

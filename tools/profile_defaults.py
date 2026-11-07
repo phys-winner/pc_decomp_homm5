@@ -28,7 +28,10 @@ def bootstrap_profiles(root=ROOT, edition="toe"):
     auto, count = re.subn(rb"(?m)^[ \t]*setvar[ \t]+ubi_tracking_tool_enabled[ \t]*=[^\r\n]*(?:\r?\n|$)", b"", auto)
     if count > 1:
         raise ValueError(edition + ": bootstrap telemetry variable is ambiguous")
-    result[paths[0]] = b"setvar ubi_tracking_tool_enabled = 0" + newline + auto
+    # The port's console switch gates the key; keep the original console and command parser.
+    result[paths[0]] = (b"setvar ubi_tracking_tool_enabled = 0" + newline +
+                        b"setvar dev_console_password = schwinge-des-todes" + newline +
+                        b"bind show_console '`'" + newline + auto)
     if re.search(rb"(?m)^[ \t]*setvar[ \t]+ubi_tracking_tool_enabled[ \t]*=", result[paths[1]]):
         setvar(paths[1], "ubi_tracking_tool_enabled", "0")
     if edition == "toe":

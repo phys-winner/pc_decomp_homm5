@@ -33,9 +33,8 @@ static void combat_point(float x,float y,int commit) {assert(x==41&&y==59&&commi
 static int combat_double(float x,float y) {assert(x==41&&y==59);++doubles;return shortcut;}
 static void town_activate(float x,float y) {assert(x==41&&y==59);++orders;}
 static uint32_t read32(uint32_t address) {(void)address;return 0x8500;}
-/* The only guest call of this dispatch: the placement controller's cancel (edition-mapped address). */
-static uint32_t void_call_guest_this(uint32_t va,uint32_t self,int count,const uint32_t *args) {
- (void)va;assert(self==0x8500&&!count&&!args&&gesture.placement);++cancels;return 0;
+static void placement_cancel(uint32_t placement) {
+ assert(placement==0x8500&&gesture.placement);++cancels;
 }
 /* The tactics reserve slot under the point (-1: none) and its diagnostics. */
 static int placement_reserve_slot(float x,float y) {assert(x==41&&y==59);return reserve;}

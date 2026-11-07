@@ -29,7 +29,7 @@ class EditionProfiles(unittest.TestCase):
                 original_auto = auto.read_bytes()
                 result = bootstrap_profiles(root, edition)
                 self.assertEqual(result["profiles/autoexec" + suffix + ".cfg"],
-                    b"setvar ubi_tracking_tool_enabled = 0\r\nnative_only_command 42\r\n")
+                    b"setvar ubi_tracking_tool_enabled = 0\r\nsetvar dev_console_password = schwinge-des-todes\r\nbind show_console '`'\r\nnative_only_command 42\r\n")
                 patched = result["profiles/default_profile/user" + suffix + ".cfg"]
                 self.assertIn(b"native_only_variable = 73\r\n", patched)
                 self.assertIn(b"gfx_resolution = 1280x800\r\n", patched)
@@ -40,7 +40,7 @@ class EditionProfiles(unittest.TestCase):
                 auto.write_bytes(missing_flag)
                 result = bootstrap_profiles(root, edition)
                 self.assertEqual(result["profiles/autoexec" + suffix + ".cfg"],
-                    b"setvar ubi_tracking_tool_enabled = 0\r\n" + missing_flag)
+                    b"setvar ubi_tracking_tool_enabled = 0\r\nsetvar dev_console_password = schwinge-des-todes\r\nbind show_console '`'\r\n" + missing_flag)
                 self.assertEqual(auto.read_bytes(), missing_flag)
                 user.write_bytes(values.replace(b"setvar gfx_resolution = 1024x768\r\n", b""))
                 with self.assertRaisesRegex(ValueError, "gfx_resolution"):
@@ -58,7 +58,7 @@ class EditionProfiles(unittest.TestCase):
             user.write_bytes(b"setvar native_only_variable = 73\nsetvar ubi_tracking_tool_enabled = 1\n")
             result = bootstrap_profiles(root, "toe")
             self.assertEqual(result["profiles/autoexec_a2.cfg"],
-                b"setvar ubi_tracking_tool_enabled = 0\r\nnative_bootstrap 42\r\nmainmenu\r\n")
+                b"setvar ubi_tracking_tool_enabled = 0\r\nsetvar dev_console_password = schwinge-des-todes\r\nbind show_console '`'\r\nnative_bootstrap 42\r\nmainmenu\r\n")
             self.assertIn(b"setvar ubi_tracking_tool_enabled = 0\n", result["profiles/default_profile/user_a2.cfg"])
             self.assertEqual(auto.read_bytes(), original)
 

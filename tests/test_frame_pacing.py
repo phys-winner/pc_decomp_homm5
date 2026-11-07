@@ -14,6 +14,10 @@ HARNESS = r'''
 #define CLOCK_MONOTONIC 1
 #define TIMER_ABSTIME 1
 #define EGL_NO_SURFACE 0
+static int surface_live=1,pace_restart;
+#define atomic_load(p) (*(p))
+static int exchange(int *p,int v){int old=*p;*p=v;return old;}
+#define atomic_exchange(p,v) exchange(p,v)
 static int window_mode=1,egl_surface=1,owned=1,interrupts,fail_wait;
 static uint64_t frame_deadline_ns,frame_period_ns,fake_now=1000000000ull,oversleep;
 static unsigned waits,releases,acquires,audio_work,errors;
@@ -49,8 +53,8 @@ int main(void){
  limit=45;d3d_gl_frame_pace();assert(frame_period_ns==22222222ull&&frame_deadline_ns==fake_now+22222222ull);
  before=waits;limit=0;d3d_gl_frame_pace();assert(!frame_deadline_ns&&waits==before);
  limit=60;d3d_gl_frame_pace();assert(frame_deadline_ns==fake_now+16666666ull);
- window_mode=0;d3d_gl_frame_pace();assert(!frame_deadline_ns&&waits==before);window_mode=1;
- d3d_gl_frame_pace();egl_surface=EGL_NO_SURFACE;d3d_gl_frame_pace();assert(!frame_deadline_ns&&waits==before);egl_surface=1;
+ surface_live=0;window_mode=0;d3d_gl_frame_pace();assert(!frame_deadline_ns&&waits==before);window_mode=1;surface_live=1;
+ d3d_gl_frame_pace();surface_live=0;egl_surface=EGL_NO_SURFACE;d3d_gl_frame_pace();assert(!frame_deadline_ns&&waits==before);egl_surface=1;surface_live=1;
  d3d_gl_frame_pace();fail_wait=1;d3d_gl_frame_pace();assert(errors==1&&owned&&!frame_deadline_ns&&releases==acquires);
  puts("PASS frame cap: 30/45/60/display, absolute phase, EINTR, released guest for audio, stalls/oversleep/mode/surface reset, failed wait reacquires");
  return 0;
@@ -69,7 +73,9 @@ class FramePacingTest(unittest.TestCase):
 
     def test_surface_and_device_reset_deadline(self):
         source = (ROOT / "android/host/d3d9_gl.c").read_text(encoding="utf8")
-        for name in ("static void follow_window(", "int d3d_gl_init(", "void d3d_gl_device_destroy("):
+        self.assertIn("atomic_store(&pace_restart, 1);", function(source, "static void follow_window("))
+        self.assertIn("atomic_exchange(&pace_restart, 0)", function(source, "void d3d_gl_frame_pace("))
+        for name in ("int d3d_gl_init(", "void d3d_gl_device_destroy("):
             self.assertIn("frame_deadline_ns = 0;", function(source, name))
 
 

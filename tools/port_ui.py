@@ -58,7 +58,7 @@ OPTIONS = (
      "Отрицательное значение — вверх, положительное — вниз. У края экрана курсор остаётся внутри поля.",
      "Вверх", "Вниз", (-0.2, -0.15, -0.1, -0.05, 0.0, 0.05, 0.1, 0.15, 0.2), 4),
     ("port_touch_cursor", "port_touch_cursor", "port_cursor_offset_y",
-     "Показывать сенсорный курсор",
+     "Показывать курсор",
      "Показывать игровой курсор, пока палец касается экрана. Действие выполняется в позиции этого курсора, "
      "с учётом заданного смещения. Жесты камеры не перемещают курсор.",
      "Выкл.", "Вкл.", (0.0, 1.0), 0),
@@ -68,20 +68,53 @@ OPTIONS = (
      "адреса, заданные в лаунчере, а игра сообщает другим свой адрес VPN. Включайте только когда все "
      "игроки подключаются через VPN.",
      "Выкл.", "Вкл.", (0.0, 1.0), 0),
+    ("port_console", "port_console", "port_lan_vpn",
+     "Консоль игры",
+     "Открытие и закрытие консоли клавишей ~ или удержанием кнопки-шестерёнки. "
+     "Удержание книги приключений открывает меню читов и предлагает включить их для текущей карты. "
+     "Короткое касание тремя пальцами возвращает камеру.",
+     "Выкл.", "Вкл.", (0.0, 1.0), 0),
+    ("port_split_hints", "port_split_hints", "port_console",
+     "Подсказки деления отрядов",
+     "Во время переноса отряда показывать, как выбрать количество воинов вторым пальцем, "
+     "и пояснения к зонам быстрого деления.",
+     "Выкл.", "Вкл.", (0.0, 1.0), 1),
+    ("port_split_zones", "port_split_zones", "port_split_hints",
+     "Зоны деления отрядов",
+     "При переносе отряда включать верхние зоны деления пополам и по одному воину. "
+     "Первый воин отделяется через 1 секунду, следующие — каждые 0,5 секунды. "
+     "При отключении зон деление вторым пальцем остаётся доступным.",
+     "Выкл.", "Вкл.", (0.0, 1.0), 1),
+    ("port_combat_fit", "port_combat_fit", "port_ui_scale",
+     "Вмещать поле боя",
+     "Отдалять боевую камеру и расширять обзор, чтобы поле боя помещалось на экране. "
+     "Выключите для исходного приближения камеры. Настройка действует и при расстановке войск.",
+     "Выкл.", "Вкл.", (0.0, 1.0), 1),
+    ("port_world_filter", "port_world_filter", "port_render_scale",
+     "Фильтр игры",
+     "OpenGL ES: фильтр трёхмерной картинки при уменьшенном масштабе рендера. FSR 1 использует EASU и RCAS.",
+     "Билинейный", "FSR 1", (0.0, 1.0, 2.0), 2),
+    ("port_ui_filter", "port_ui_filter", "port_ui_scale",
+     "Фильтр интерфейса",
+     "OpenGL ES: фильтрация текстур интерфейса — чёткие пиксели, билинейная, бикубическая или FSR 1. Работает независимо от фильтра игры.",
+     "Пиксели", "FSR 1", (0.0, 1.0, 2.0, 3.0), 1),
+    ("port_sharpness", "port_sharpness", "port_world_filter",
+     "Резкость FSR",
+     "Интенсивность адаптивной резкости RCAS после масштабирования игры. Ноль отключает резкость.",
+     "0%", "100%", (0.0, 0.25, 0.5, 0.75, 1.0), 1),
 )
 
-# The options use the original widgets (every edition has the same OPTION_COMBO_BOX/OPTION_CHECK_BOX
-# and combobox template): render and interface scale as comboboxes of the same values, the touch cursor
-# and the VPN switch as checkboxes, and the frame rate like the original resolution combobox: its items
-# are port_fps_items, the display's own rates, and the chosen item's text is port_fps_choice
-# (android/host/port_settings.c). Others are scrollers.
-KINDS = {"port_render_scale": "combo", "port_ui_scale": "combo", "port_fps_limit": "rates",
-         "port_touch_cursor": "check", "port_lan_vpn": "check"}
+# Native numeric comboboxes store an item index; fractional scales need scrollers.
+# The frame rate uses the original resolution widget's string-value path.
+KINDS = {"port_fps_limit": "rates",
+         "port_touch_cursor": "check", "port_lan_vpn": "check", "port_console": "check", "port_combat_fit": "check",
+         "port_split_hints": "check", "port_split_zones": "check",
+         "port_world_filter": "combo", "port_ui_filter": "combo"}
 COMBO_TEMPLATE = "UI/GameOptions/Templates/ComboBox/Combo.(WindowComboBox).xdb"
 
 
 def options(edition="toe"):
-    return OPTIONS
+    return tuple(option for option in OPTIONS if option[0] != "port_combat_fit")
 
 
 def utf16(text):
@@ -148,7 +181,8 @@ def option_xml(option, indent="\t\t\t\t\t\t\t", kind="scroller"):
 
 
 def patch_uiconsts(data, edition="toe"):
-    for option in options(edition):
+    edition_options = options(edition)
+    for option in edition_options:
         if f"<ID>{option[0]}</ID>".encode() in data:
             raise ValueError(f"uiconsts already has {option[0]}")
     end = data.index(b"</Categories>", data.index(b"<GameOptions>"))
@@ -159,7 +193,9 @@ def patch_uiconsts(data, edition="toe"):
       <TooltipFileRef href="Consts/GameOptions/PortAdditionalTooltip.txt"/>
       <Pages>'''
     # The native template lays out two pages; the network switch closes the controls page.
-    pages = [("port_video", "PortVideo", OPTIONS[:3]), ("port_controls", "PortControls", OPTIONS[3:])]
+    graphics = {"port_render_scale", "port_ui_scale", "port_fps_limit", "port_world_filter", "port_ui_filter", "port_sharpness", "port_combat_fit"}
+    pages = [("port_video", "PortVideo", [o for o in edition_options if o[0] in graphics]),
+             ("port_controls", "PortControls", [o for o in edition_options if o[0] not in graphics])]
     for identifier, name, page in pages:
         category += (f'<Item><ID>{identifier}</ID><NameFileRef href="Consts/GameOptions/{name}.txt"/>'
                      '<TooltipFileRef href="Consts/GameOptions/PortAdditionalTooltip.txt"/><Options>').encode()
@@ -177,7 +213,7 @@ def patch_uiconsts(data, edition="toe"):
 
 
 def combo_rows(game_dir, edition="toe"):
-    """Every port combobox (eight render scales) without a scrolling list."""
+    """Keep the discrete filter choices visible without a scrolling list."""
     window = ET.fromstring(source_resource(game_dir, COMBO_TEMPLATE, edition)[0])
     rows = window.find("MaxVisibleRows")
     if rows is None:
@@ -204,8 +240,12 @@ def texts(edition="toe"):
         for index, value in enumerate(values):
             if identifier == "port_fps_limit":
                 label = f"{value:g} кадров/с" if value else "Частота экрана"
-            elif identifier in ("port_touch_cursor", "port_lan_vpn"):
+            elif KINDS.get(identifier) == "check":
                 label = "Вкл." if value else "Выкл."
+            elif identifier == "port_world_filter":
+                label = ("Билинейный", "Бикубический", "FSR 1 (EASU + RCAS)")[index]
+            elif identifier == "port_ui_filter":
+                label = ("Чёткие пиксели", "Билинейный", "Бикубический", "FSR 1 (EASU)")[index]
             else:
                 label = percent(value)
             out[f"{folder}/Item{index:02d}.txt"] = utf16(label)

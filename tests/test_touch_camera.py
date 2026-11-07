@@ -31,13 +31,15 @@ static void_fn registered;
 /* port_settings.c: the options page's camera sensitivity. */
 static float option_sensitivity=1.0f;
 static float void_port_camera_sensitivity(void) {return option_sensitivity;}
+static int option_combat_fit=1;
+static int void_port_combat_fit(void) {return option_combat_fit;}
 /* 0x0058A5E0 (ECX 1000: the current mode) -> {rod,rod,pitch,pitch,yaw,yaw} limits. */
 static int limits_present, limit_calls;
 static uint32_t limits_va=0x43000, set_immediate=1;
 static void old_edge(void) {++edge_calls;g_eax=0x12345678;g_esp+=12;}
 static void dummy(void) {}
-static float projected_rod, projected_centre;
-static void projection_stub(void) {projected_rod=MEMF(g_ecx+0x70);projected_centre=MEMF(g_ecx+0x60);}
+static float projected_rod, projected_centre, projected_fov;
+static void projection_stub(void) {projected_rod=MEMF(g_ecx+0x70);projected_centre=MEMF(g_ecx+0x60);projected_fov=MEMF(g_ecx+0x80);}
 static void_fn void_dispatch_find(uint32_t va) {
     if(va==0x7CD0C0) return projection_stub;
     if(va==0x835E50) return old_edge;
@@ -365,22 +367,37 @@ int main(void) {
     check_pivot_sequence(1,-1.1f,-.23f);
     perspective=0;option_sensitivity=1;
     printf("PASS fixed world pivot: 360 perspective gesture updates; maximum drift %.5f raw pixels\n",max_pivot_error);
-    /* Enlarged combat HUD: zoom once, frame via projection, then leave manual motion alone. */
+    /* Enlarged combat HUD retains the original pose. Legacy keeps its prior fit behavior. */
     MEM32(0x10000)=0xE1DA84;MEM32(0x102E0)=0x1000;
     MEM32(0x20000)=0xE44224;MEM32(0x21000)=0xE4493C;
     MEM32(0xE44224+0x54)=0x410000;MEM32(0xE4493C+0x50)=0x410010;MEM32(0xE4493C+0x5C)=0x410020;
     put_float(0x21148,42);put_float(0x20060,0);
     float combat_pose[10]={42,-.785f,-1.57f,0,54,1,500,92,98,0};memcpy(GPTR(0x40000),combat_pose,40);
+#ifndef HOMM5_LEGACY_UI
+    MEM32(0x102E0)=0; /* Unconstructed arena: only arm the original wide-screen lens. */
+#endif
     sets=set_calls;
     for(int i=0;i<40;++i) {
         void_touch_combat_frame(0x10000,985,439,262,340,390);
         if(set_calls>sets)memcpy(GPTR(0x40000),installed,40);
     }
+#ifdef HOMM5_LEGACY_UI
     assert(set_calls==sets&&framing.ratio>1.25f&&framing.ratio<1.35f);
-    assert(fabsf(framing.centre-2*(151.0f-365)/439)<.0001f);
+    assert(fabsf(framing.centre-((262.0f+40)/439-1))<.0001f);
     MEMF(0xF74BE4)=439;MEMF(0x20070)=42;g_ecx=0x20000;
-    camera_projection();assert(projected_rod>52&&projected_rod<56&&projected_centre<-.9f);
+    camera_projection();assert(projected_rod>52&&projected_rod<56&&fabsf(projected_centre-((262.0f+40)/439-1))<.0001f);
     assert(MEMF(0x20070)==42&&MEMF(0x20060)==0);
+    /* Preserve the original 4:3 vertical field of view at 16:9 and restore native storage. */
+    MEMF(0x20080)=50;MEMF(0x66000)=1280;MEMF(0x66004)=720;MEM32(g_esp+8)=0x66000;
+    camera_projection();assert(projected_fov>63&&projected_fov<64&&MEMF(0x20080)==50);
+    /* Disabling battle fitting restores the entire native projection immediately. */
+    option_combat_fit=0;camera_projection();
+    assert(projected_rod==42&&projected_centre==0&&projected_fov==50);
+    assert(MEMF(0x20070)==42&&MEMF(0x20060)==0&&MEMF(0x20080)==50&&set_calls==sets);
+    option_combat_fit=1;camera_projection();
+    assert(projected_rod>52&&projected_rod<56&&projected_fov>63&&projected_fov<64);
+    MEMF(0x66000)=960;camera_projection();assert(projected_fov==50);
+    MEM32(g_esp+8)=0;
     MEMF(0xF74BE4)=768;camera_projection();assert(projected_rod==42&&projected_centre==0);
     for(int i=0;i<50;++i)void_touch_combat_frame(0x10000,985,439,262,100,150);
     assert(set_calls==sets); /* Moving a creature does not move the camera again. */
@@ -405,8 +422,53 @@ int main(void) {
     MEMF(0xF74BE4)=384;
     void_touch_combat_frame(0x10000,832,384,213,10,380);camera_projection();
     assert(fabsf(projected_centre-((213.0f+40)/384-1))<.0001f&&framing.ratio>1.4f&&framing.ratio<1.42f);
+#else
+    assert(set_calls==sets&&framing.ratio==1&&framing.centre==0);
+    MEMF(0xF74BE4)=439;MEMF(0x20070)=42;MEMF(0x20060)=.07f;g_ecx=0x20000;
+    camera_projection();assert(projected_rod==42&&projected_centre==.07f);
+    MEMF(0x20080)=50;MEMF(0x66000)=1366;MEMF(0x66004)=768;MEM32(g_esp+8)=0x66000;
+    camera_projection();assert(projected_fov==50&&projected_rod==42&&projected_centre==.07f);
+    MEMF(0x66000)=1600;MEMF(0x66004)=720;
+    for(int enabled=0;enabled<2;++enabled){
+        option_combat_fit=enabled;camera_projection();
+        assert(projected_fov>60&&projected_fov<61&&projected_rod==42&&projected_centre==.07f);
+        assert(MEMF(0x20070)==42&&MEMF(0x20060)==.07f&&MEMF(0x20080)==50);
+    }
+    MEMF(0x66000)=960;camera_projection();assert(projected_fov==50);
+    MEM32(g_esp+8)=0;MEMF(0x20060)=0;MEMF(0x20070)=21;
+    for(int i=0;i<48;++i){
+        void_touch_combat_frame(0x10000,985,439,262,i<12?340.0f:-500.0f,i<12?390.0f:1100.0f);
+        camera_projection();
+        assert(projected_rod==21&&projected_centre==0&&set_calls==sets);
+    }
+    MEMF(0xF74BE4)=384;
+    void_touch_combat_frame(0x10000,853.5f,384,213,10,380);camera_projection();
+    assert(projected_rod==21&&projected_centre==0&&framing.ratio==1);
+    /* Only the enlarged HUD's extra occlusion changes the overview lens. */
+    MEM32(0x102E0)=0x80;MEMF(0x20060)=0;MEMF(0x20070)=42;MEMF(0x20074)=-.7853982f;MEMF(0x20080)=54;
+    MEM32(g_esp+8)=0x66000;MEMF(0x66000)=853.5f;MEMF(0x66004)=384;
+    void_touch_combat_frame(0x10000,853.5f,384,250,0,0);camera_projection();
+    float hud_ratio=(1-(384.0f-250)/768)*384/250;
+    assert(fabsf(framing.ratio-hud_ratio)<.00001f&&fabsf(projected_centre-(1/hud_ratio-1))<.00001f);
+    assert(projected_rod==42&&MEMF(0x20070)==42&&MEMF(0x20060)==0&&MEMF(0x20080)==54);
+    MEM32(0x102E0)=0x200;camera_projection();assert(projected_centre<0); /* Moving at the overview pose. */
+    MEMF(0x20070)=18;MEMF(0x20074)=-.3f;camera_projection();
+    assert(projected_rod==18&&projected_centre==0); /* Native attack close-up. */
+    MEM32(0x102E0)=0x1000;MEMF(0x20070)=42;MEMF(0x20074)=-.7853982f;MEMF(0x20078)=-1.5707963f;
+    for(int i=0;i<3;++i)void_touch_combat_frame(0x10000,853.5f,384,250,300,350);
+    camera_projection();float deployment_centre=2*(250-384*.015f-350)/384;
+    assert(framing.ratio==1&&framing.fitted&&fabsf(projected_centre-deployment_centre)<.00001f&&projected_rod==42);
+    for(int i=0;i<50;++i)void_touch_combat_frame(0x10000,853.5f,384,250,100,150);
+    assert(framing.centre==deployment_centre); /* Corrected labels cannot feed back. */
+    MEMF(0x20078)=1.5707963f;
+    for(int i=0;i<3;++i)void_touch_combat_frame(0x10000,853.5f,384,250,310,360);
+    assert(framing.phase==2&&fabsf(framing.centre-2*(250-384*.015f-360)/384)<.00001f);
+    MEMF(0xF74BE4)=768;void_touch_combat_frame(0x10000,1707,768,603,620,700);
+    assert(framing.ratio==1&&framing.centre==0);MEM32(0x102E0)=0;
+#endif
     MEMF(0x20070)=42;
     MEM32(0x10000)=0xE230E4;MEMF(0xF74BE4)=439;
+    option_combat_fit=0; /* The battle switch never disables adventure HUD framing. */
     void_touch_adventure_frame(0x10000,439,45,220);
     camera_projection();
     assert(fabsf(projected_centre-(265.0f/439-1))<.0001f&&projected_rod==42);
@@ -421,6 +483,7 @@ int main(void) {
         assert(fabsf(projected_centre-(200.0f/384-1))<.0001f&&MEMF(0x20060)==0);
     }
     MEMF(0xF74BE4)=768;camera_projection();assert(projected_centre==0&&projected_rod==42);
+    option_combat_fit=1;
     MEMF(0xF74BE4)=439;void_touch_combat_frame(0,0,0,0,0,0);
     camera_projection();assert(projected_centre==0);
     MEM32(0x20000)=0x30000;MEM32(0x21000)=0x31000;
@@ -448,13 +511,13 @@ class TouchCameraTest(unittest.TestCase):
         source = self.camera_source()
         compile_probe("touch_camera", HARNESS, {"touch_camera_impl.h": source})
 
-    def test_battle_framing_regression_rejects_delayed_label_calibration(self):
+    def test_battle_framing_rejects_forced_zoom_and_shift(self):
         source = self.camera_source()
-        old = "if (MEM32(screen + 0x2E0) != 0x1000) {"
+        old = "framing.ratio = 1;\n        framing.centre = 0;"
         self.assertIn(old, source)
-        with self.assertRaisesRegex(AssertionError, "combat_centre"):
+        with self.assertRaises(AssertionError):
             compile_probe("touch_camera_framing_negative", HARNESS, {
-                "touch_camera_impl.h": source.replace(old, old.replace(") {", " && framing.phase == 999) {"), 1)})
+                "touch_camera_impl.h": source.replace(old, "framing.ratio = 1.3f;\n        framing.centre = -.2f;", 1)})
 
     def test_pivot_regression_rejects_old_pan_only_compensation(self):
         source = self.camera_source()

@@ -47,6 +47,29 @@ static struct {
     uint64_t frame;
 } text_target;
 static struct { uint32_t screen, root, helper; int invalid; } drag_owner;
+static uint32_t split_amount = 1;
+static struct { int visible, zone, progress; uint64_t entered, interval; } split_zone;
+static int split_hint_visible;
+#ifdef VOID_ANDROID_APP
+void void_android_split_hint(int visible);
+#else
+static void void_android_split_hint(int visible) { (void)visible; }
+#endif
+static void split_hint_set(int visible)
+{
+    if (split_hint_visible == visible) return;
+    split_hint_visible = visible;
+    void_android_split_hint(visible);
+}
+static void split_zone_hide(void);
+static void split_zone_pump(void);
+static int split_zone_end(const void_touch_event *event);
+static void combat_point(float x, float y, int commit);
+#ifdef VOID_ANDROID_APP
+void void_android_split_zones(int zone, int progress);
+#else
+static void void_android_split_zones(int zone, int progress) { (void)zone; (void)progress; }
+#endif
 
 void void_touch_frame_presented(void) { ++touch_frame; }
 
@@ -507,9 +530,8 @@ static uint32_t object_query(uint32_t object, unsigned offset)
     return method ? void_call_guest_this(method, object, 0, NULL) : 0;
 }
 
-static uint32_t text_edit_at(uint32_t screen, float x, float y, int *kind)
+static uint32_t text_edit_window(uint32_t window, int *kind)
 {
-    uint32_t window = ui_pick(screen, x, y);
     for (unsigned depth = 0; window && depth < 16; ++depth) {
         const uint32_t line[] = {window, 0, 0x00F2DAF4u, 0x00F7A234u, 0};
         uint32_t field = void_call_guest(0x00D119FCu, 5, line, 0);
@@ -524,10 +546,12 @@ static uint32_t text_edit_at(uint32_t screen, float x, float y, int *kind)
     return 0;
 }
 
-static void text_choose(uint32_t screen, uint32_t provider, float x, float y)
+static int console_entry_visible(uint32_t focused);
+
+static void text_choose_window(uint32_t screen, uint32_t provider, uint32_t hit)
 {
     int kind = 0;
-    uint32_t field = text_edit_at(screen, x, y, &kind);
+    uint32_t field = text_edit_window(hit, &kind);
     ++text_target.epoch;
     text_target.screen = 0;
     if (!field) { void_touch_text_cancel(); return; }
@@ -535,6 +559,7 @@ static void text_choose(uint32_t screen, uint32_t provider, float x, float y)
     const uint32_t cast[] = {window, 0, 0x00F2DAF4u, 0x00F2DA88u, 0};
     if (!window) { void_touch_text_cancel(); return; }
     uint32_t root = void_call_guest(0x00D119FCu, 5, cast, 0);
+    if (console_entry_visible(field)) root = field;
     VLOG("[ime] choose field=%08X kind=%d provider=%08X interface=%08X root=%08X",
          field, kind, provider, window, root);
     if (!root || !void_vm_readable(root, 64)) { void_touch_text_cancel(); return; }
@@ -542,6 +567,176 @@ static void text_choose(uint32_t screen, uint32_t provider, float x, float y)
     text_target.root_window = root; text_target.field = field; text_target.table = read32(field);
     text_target.kind = kind; text_target.pending = 1; text_target.frame = touch_frame;
     void_touch_text_arm();
+}
+
+static void text_choose(uint32_t screen, uint32_t provider, float x, float y)
+{
+    text_choose_window(screen, provider, ui_pick(screen, x, y));
+}
+
+static int choice_named(uint32_t window, const char *name);
+
+static int console_entry_visible(uint32_t focused)
+{
+    uint32_t console = read32(focused + 0x28);
+    uint32_t vb = read32(console + 0x10), iface = vb ? console + 0x10 + read32(vb + 8) : 0;
+    return choice_named(focused, "ConsoleEntry") && choice_named(console, "Console") &&
+           (object_query(iface, 0x48) & 0xFFu);
+}
+
+static uint32_t console_focused(uint32_t root)
+{
+    if (!root) return 0;
+    uint32_t focused = void_call_guest_this(0x00A4DCB0u, root, 0, NULL);
+    if (console_entry_visible(focused)) return focused;
+    /* Legacy combat may keep the screen focused while its console entry also owns focus. */
+    const char *names[] = {"Console", "ConsoleEntry"};
+    uint32_t parent = root;
+    for (unsigned depth = 0; depth < 2; ++depth) {
+        uint32_t begin = read32(parent + 0xA4), end = read32(parent + 0xA8), found = 0;
+        if (!parent || !begin || (begin & 3) || end < begin || (end - begin) % 4 ||
+            (end - begin) / 4 > 1024 || !void_vm_readable(begin, end - begin)) return 0;
+        for (uint32_t at = begin; at < end; at += 4) {
+            uint32_t child = read32(at);
+            if (child && child != parent && choice_named(child, names[depth])) { found = child; break; }
+        }
+        if (!found) return 0;
+        parent = found;
+    }
+    return console_entry_visible(parent) && void_call_guest_this(0x00A4DCB0u, parent, 0, NULL) == parent ? parent : 0;
+}
+
+static struct { uint32_t screen, root; uint64_t deadline, frame; unsigned retries; } console_open_request;
+
+static void console_toggle(void)
+{
+    console_open_request.screen = 0;
+    if (!void_port_console_enabled()) return;
+    uint32_t screen = current_screen(), unused = 0;
+    if (!screen) return;
+    uint32_t provider = read32(screen + 0xA0), window = virtual_base(provider, 8);
+    uint32_t cast[] = {window, 0, 0x00F2DAF4u, 0x00F2DA88u, 0};
+    uint32_t root = window ? void_call_guest(0x00D119FCu, 5, cast, 0) : 0;
+    uint32_t focused = console_focused(root);
+    if (console_entry_visible(focused)) {
+        uint32_t pop = object_method(provider, 0x34);
+        if (!scratch) scratch = void_galloc(512);
+        if (pop && scratch && void_vm_writable(scratch + 384, 32)) {
+            /* Pop the original ShowConsole state, including its reversible movement and focus. */
+            uint32_t message = scratch + 384, name = scratch + 400;
+            memcpy((void *)ADDR(name), "ShowConsole", 12);
+            MEM32(message) = name; MEM32(message + 4) = name + 11; MEM32(message + 8) = name + 12;
+            void_call_guest_this(pop, provider, 1, &message);
+        }
+        text_target.screen = 0;
+        void_touch_text_cancel();
+        return;
+    }
+    /* The original action also owns console visibility and keyboard focus. */
+    void_call_guest_this(0x00669F50u, screen, 1, &unused);
+    screen = current_screen();
+    provider = read32(screen + 0xA0); window = virtual_base(provider, 8); cast[0] = window;
+    root = window ? void_call_guest(0x00D119FCu, 5, cast, 0) : 0;
+    focused = console_focused(root);
+    if (!console_entry_visible(focused)) {
+        /* The original console's first construction and focus can finish on a later frame. */
+        console_open_request.screen = screen; console_open_request.root = provider;
+        console_open_request.deadline = void_perf_now_ns() + 1000000000ull;
+        console_open_request.frame = touch_frame; console_open_request.retries = 0;
+        return;
+    }
+    text_choose_window(screen, provider, focused);
+}
+
+static void console_open_pump(void)
+{
+    uint32_t screen = console_open_request.screen;
+    if (!screen) return;
+    uint32_t provider = read32(screen + 0xA0);
+    if (screen != current_screen() || provider != console_open_request.root || gesture.active ||
+        !void_port_console_enabled() || void_perf_now_ns() > console_open_request.deadline) {
+        console_open_request.screen = 0; return;
+    }
+    uint32_t window = virtual_base(provider, 8);
+    const uint32_t cast[] = {window, 0, 0x00F2DAF4u, 0x00F2DA88u, 0};
+    uint32_t root = window ? void_call_guest(0x00D119FCu, 5, cast, 0) : 0;
+    uint32_t focused = console_focused(root);
+    if (console_entry_visible(focused)) {
+        console_open_request.screen = 0;
+        text_choose_window(screen, provider, focused);
+    } else if (touch_frame != console_open_request.frame && console_open_request.retries < 3) {
+        uint32_t unused = 0;
+        console_open_request.frame = touch_frame; ++console_open_request.retries;
+        void_call_guest_this(0x00669F50u, screen, 1, &unused);
+    }
+}
+
+#ifdef VOID_ANDROID_APP
+void void_android_cheats(uint32_t generation, int state);
+#else
+static void void_android_cheats(uint32_t generation, int state) { (void)generation; (void)state; }
+#endif
+
+static struct { uint32_t generation, screen, root, controller, hero; } cheat_target;
+
+static void cheats_show(void)
+{
+    uint32_t screen = current_screen(), controller = read32(screen + 0x5F4);
+    if (screen_kind(screen) != SCREEN_ADVENTURE || !void_vm_readable(controller, 0x78)) return;
+    cheat_target.generation = cheat_target.generation % 0xFFFFFFu + 1;
+    cheat_target.screen = screen; cheat_target.root = read32(screen + 0xA0);
+    cheat_target.controller = controller;
+    cheat_target.hero = void_call_guest_this(0x00603860u, controller, 0, NULL);
+    void_android_cheats(cheat_target.generation, MEM8(controller + 0x74) ? 1 : 0);
+}
+
+/* The original 3.1 cheat handlers retain turn, ownership and multiplayer checks. */
+static void cheats_action(const void_touch_event *event)
+{
+    uint32_t screen = current_screen(), controller = cheat_target.controller;
+    if (event->dx != (float)cheat_target.generation || !cheat_target.generation ||
+        screen != cheat_target.screen || read32(screen + 0xA0) != cheat_target.root ||
+        read32(screen + 0x5F4) != controller || !void_vm_readable(controller, 0x78) ||
+        !void_port_console_enabled() || screen_kind(screen) != SCREEN_ADVENTURE) return;
+    if (event->x < 0 || event->x > 9 || floorf(event->x) != event->x ||
+        event->y < 0 || event->y > 1000000 || floorf(event->y) != event->y) return;
+    int action = (int)event->x;
+    uint32_t value = (uint32_t)event->y, method = 0, args[3] = {value}, count = 0, self = controller;
+    if (action == 0) {
+        if (!MEM8(controller + 0x74)) void_call_guest(0x0058CA00u, 1, &screen, 1);
+        void_android_cheats(cheat_target.generation, MEM8(controller + 0x74) ? 1 : 2);
+        return;
+    }
+    if (!MEM8(controller + 0x74)) { void_android_cheats(cheat_target.generation, 0); return; }
+    if (action >= 3 && action <= 7 && (!cheat_target.hero ||
+        void_call_guest_this(0x00603860u, controller, 0, NULL) != cheat_target.hero)) {
+        void_android_cheats(cheat_target.generation, 4); return;
+    }
+    switch (action) {
+    case 1: if (!value) method = 0x00602AD0u; break;
+    case 2:
+        if (value == 10000 || value == 100000 || value == 1000000) { method = 0x00602B30u; count = 1; }
+        break;
+    case 3:
+        if (value == 1000 || value == 10000 || value == 100000) { method = 0x00602C90u; count = 1; }
+        break;
+    case 4: if (!value) { method = 0x00602510u; args[0] = 1; count = 1; } break;
+    case 5: if (!value) { method = 0x00602DF0u; args[0] = args[1] = 5; count = 2; } break;
+    case 6:
+        if (value >= 1 && value <= 24) {
+            method = 0x00602060u; args[0] = (value - 1) % 8 + 1; args[1] = (value - 1) / 8;
+            args[2] = 100; count = 3;
+        }
+        break;
+    case 7: if (value >= 1 && value <= 12) { method = 0x00602570u; count = 1; } break;
+    case 8: if (!value) { method = 0x0058DE80u; self = screen; count = 1; } break;
+    case 9: if (!value) method = 0x00602B80u; break;
+    }
+    if (!method) return;
+    int result = void_call_guest_this(method, self, (int)count, args) & 0xFFu;
+    VLOG("[cheats] action=%d value=%u result=%d", action, value, result);
+    void_android_cheats(cheat_target.generation, result ? 3 : 4);
+    cheat_target.screen = 0;
 }
 
 int void_touch_text_focus(uint32_t *field, int *kind, uint32_t *epoch)
@@ -556,6 +751,9 @@ int void_touch_text_focus(uint32_t *field, int *kind, uint32_t *epoch)
         return 0;
     }
     uint32_t focused = void_call_guest_this(0x00A4DCB0u, text_target.root_window, 0, NULL);
+    if (text_target.root_window == text_target.field && !console_entry_visible(focused)) {
+        text_target.screen = 0; return 0;
+    }
     if (focused != text_target.field || read32(focused) != text_target.table ||
         !void_vm_readable(focused, text_target.kind == 1 ? 322 : 272)) {
         if (!text_target.pending || touch_frame - text_target.frame > 3) {
@@ -1315,10 +1513,10 @@ static void troop_split(float second_x,float second_y,int dialog)
                 }
             }
         } else {
-            uint32_t one=1,validate=object_method(controller,0x10),commit=object_method(controller,0x14);
+            uint32_t one=split_amount,validate=object_method(controller,0x10),commit=object_method(controller,0x14);
             uint32_t count,type;
-            int limits=troop_count(&source,&count,&type) && count>1 &&
-                       object_query(controller,0x18)<=count-1 && object_query(controller,0x1C)<=1;
+            int limits=troop_count(&source,&count,&type) && one>0 && count>one &&
+                       object_query(controller,0x18)<=count-one && object_query(controller,0x1C)<=one;
             if (limits && validate && commit && (void_call_guest_this(validate,controller,1,&one)&0xFFu) &&
                 same_screen() && dnd_identity(helper) && dnd_held(helper)) {
                 troop_preview.source=source;troop_preview.helper=helper;troop_preview.held=held;
@@ -1809,6 +2007,20 @@ static int choice_named(uint32_t window, const char *name)
            !memcmp((const void *)ADDR(begin), name, length);
 }
 
+static int console_button_at(float x, float y, const char *name)
+{
+    uint32_t hit = ui_pick(gesture.screen, x, y);
+    const uint32_t cast[] = {hit, 0, 0x00F2DAF4u, 0x00F2DA88u, 0};
+    uint32_t window = hit ? void_call_guest(0x00D119FCu, 5, cast, 0) : 0;
+    for (unsigned depth = 0; window && depth < 4 && same_screen(); ++depth) {
+        if (choice_named(window, name)) return 1;
+        uint32_t parent = read32(window + 0x28);
+        if (parent == window) break;
+        window = parent;
+    }
+    return 0;
+}
+
 static uint32_t choice_child(uint32_t parent, const char *name)
 {
     uint32_t begin = read32(parent + 0xA4), end = read32(parent + 0xA8);
@@ -1914,7 +2126,16 @@ static void ui_event(const void_touch_event *event)
     case TOUCH_DOUBLE_TAP: {
         if (gesture.committed || gesture.held || gesture.panning) break;
         if (choice.icon) { gesture.committed = 1; break; }
-        if (gesture.kind == SCREEN_COMBAT && atb_tap(event->x, event->y)) { gesture.committed = 1; break; }
+        if (gesture.kind == SCREEN_COMBAT && event->kind != TOUCH_DOUBLE_TAP && atb_tap(event->x, event->y)) {
+            gesture.committed = 1; break;
+        }
+        if (gesture.kind == SCREEN_COMBAT && event->kind == TOUCH_DOUBLE_TAP && atb_unit_at(gesture.screen, event->x, event->y)) {
+            atb_clear();
+            /* The combat picker resolves ATB portraits too; the UI double-click opens the model viewer. */
+            combat_point(event->x, event->y, 1);
+            gesture.committed = 1;
+            break;
+        }
         /* A double tap on the minimap toggles the map's object highlight, as Alt held; its single taps
            click once no second one can follow (minimap_tap), so the double tap leaves the camera. */
         if (gesture.kind == SCREEN_ADVENTURE && minimap_at(event->x, event->y)) {
@@ -1973,6 +2194,22 @@ static void ui_event(const void_touch_event *event)
     }
     case TOUCH_HOLD_BEGIN:
     case TOUCH_HOLD_DRAG:
+        if (gesture.kind == SCREEN_COMBAT && !gesture.placement && !gesture.dnd_pressed &&
+            atb_unit_at(gesture.screen, event->x, event->y)) {
+            if (event->kind == TOUCH_HOLD_BEGIN && !atb.card) {
+                atb_tap(event->x, event->y);
+                if (!atb.card) atb_card_show(event->x, event->y);
+                if (atb.card) {
+                    gesture.card = gesture.card_mode = 1;
+                    gesture.details = 2;
+                    gesture.inspect_x = atb.x; gesture.inspect_y = atb.y;
+                    gesture.card_frame = touch_frame;
+                    memset(&atb, 0, sizeof atb);
+                }
+            }
+            gesture.held = 1;
+            break;
+        }
         if (gesture.combo) {
             gesture.held = 1;
             if (event->kind == TOUCH_HOLD_DRAG) gesture.panning = 1;
@@ -1983,6 +2220,7 @@ static void ui_event(const void_touch_event *event)
             gesture.panning=gesture.held=1;ui_hover(event->x,event->y);break;
         }
         if (event->kind == TOUCH_HOLD_DRAG && gesture.dnd && gesture.dnd_claim) {
+            gesture.panning = 1;
             if (!gesture.dnd_pressed) {
                 dnd_point(0x28, gesture.start_x, gesture.start_y);
                 gesture.dnd_pressed = 1;
@@ -2000,7 +2238,7 @@ static void ui_event(const void_touch_event *event)
             ui_hover(event->x, event->y);
             break;
         }
-        if (gesture.dnd && (!gesture.held || gesture.dnd_pressed)) {
+        if (gesture.dnd) {
             if (!gesture.dnd_claim) dnd_cancel();
             else {
                 if (!gesture.dnd_pressed) {
@@ -2150,6 +2388,7 @@ static void startup_pump(void)
 
 void void_touch_ui_pump(void)
 {
+    console_open_pump();
     if (pointer_text.pending && touch_frame > pointer_text.frame) {
         pointer_text.pending = 0;
         uint32_t screen = current_screen();
@@ -2163,6 +2402,7 @@ void void_touch_ui_pump(void)
     army_pump();
     dnd_owner_pump(0);
     troop_preview_pump();
+    split_zone_pump();
     if (gesture.retiring) {
         int current = same_screen();
         if (!current || touch_frame != gesture.release_frame) {
@@ -2209,11 +2449,19 @@ static void combat_reset_context(void)
     void_call_guest_this(0x00550B00u, temporary, 0, NULL);
 }
 
+static void placement_cancel(uint32_t placement)
+{
+    if (!placement) return;
+    void_call_guest_this(0x00576260u, placement, 0, NULL);
+    /* Native Shift-drop clears the selection too; hiding only the icon leaves a pending click. */
+    if (same_screen() && void_vm_writable(placement + 0x38, 4)) MEM32(placement + 0x38) = UINT32_MAX;
+}
+
 static void combat_cancel(void)
 {
     if (gesture.placement) {
         uint32_t placement = read32(gesture.screen + 0x488);
-        if (placement) void_call_guest_this(0x00576260u, placement, 0, NULL);
+        placement_cancel(placement);
     }
     void_call_guest_this(0x00542A30u, gesture.screen, 0, NULL);
     combat_reset_context();
@@ -2375,20 +2623,22 @@ static int placement_reserve_slot(float x, float y)
 }
 
 /* CCombatSplitStackController is the same controller the original Shift-drop opens. */
-static int placement_second(const void_touch_event *event)
+static int placement_second(const void_touch_event *event, int drag_slot)
 {
     if (!gesture.placement || gesture.kind != SCREEN_COMBAT || !same_screen() || gesture.cancelled ||
         read32(gesture.screen + 0x2E0) != 0x1000) return 0;
     uint32_t placement = read32(gesture.screen + 0x488);
-    int source_slot = placement_reserve_slot(gesture.start_x, gesture.start_y);
-    if (!void_vm_readable(placement, 0xA0) || !MEM8(placement + 0x9C) || source_slot < 0 ||
-        source_slot != placement_reserve_slot(gesture.x, gesture.y)) return 0;
+    if (!void_vm_readable(placement, 0xA0) || !MEM8(placement + 0x9C)) return 0;
+    int source_slot = drag_slot >= 0 ? drag_slot : placement_reserve_slot(gesture.start_x, gesture.start_y);
+    if (source_slot < 0 || source_slot > 6 ||
+        (drag_slot >= 0 ? !MEM8(placement + 0x6C) || read32(placement + 0x38) != (uint32_t)drag_slot
+                        : source_slot != placement_reserve_slot(gesture.x, gesture.y))) return 0;
     if (event->kind == TOUCH_SECOND_BEGIN) {
         gesture.second_troop = 1;
         return 1;
     }
     if (!gesture.second_troop) return 0;
-    int target_slot = placement_reserve_slot(event->x, event->y);
+    int target_slot = drag_slot >= 0 && event->kind == TOUCH_SECOND_TAP ? source_slot : placement_reserve_slot(event->x, event->y);
     if (target_slot < 0) return 1;
     uint32_t source_index = (uint32_t)source_slot;
     uint32_t source = void_call_guest_this(0x00576200u, placement, 1, &source_index);
@@ -2424,10 +2674,10 @@ static int placement_second(const void_touch_event *event)
     void_call_guest_this(0x0057A350u, controller, 10, args);
     void_call_guest_this(0x0063EE50u, placement + 0x80, 1, &controller);
     if (!(object_query(controller, 0xC) & 0xFFu) || !same_screen()) return 1;
-    uint32_t one = 1;
+    uint32_t one = split_amount;
     if (event->kind == TOUCH_SECOND_TAP &&
         !(void_call_guest_this(0x0057A1A0u, controller, 1, &one) & 0xFFu)) return 1;
-    void_call_guest_this(0x00576260u, placement, 0, NULL);
+    placement_cancel(placement);
     gesture.committed = 1;
     gesture.world_hover = gesture.details = 0;
     if (event->kind == TOUCH_SECOND_TAP) {
@@ -2440,6 +2690,112 @@ static int placement_second(const void_touch_event *event)
             void_call_guest_this(0x0066D290u, gesture.screen, 1, &modal);
         }
     }
+    return 1;
+}
+
+static int split_zone_at(float x, float y)
+{
+    if (!void_port_split_zones()) return 0;
+    int w, h; void_input_screen_size(&w, &h);
+    if (w <= 0 || h <= 0 || y < h * .04f || y > h * .18f) return 0;
+    return x >= w * .25f && x <= w * .49f ? 1 : x >= w * .51f && x <= w * .75f ? 2 : 0;
+}
+
+static void split_zone_hide(void)
+{
+    split_hint_set(0);
+    if (split_zone.visible) void_android_split_zones(-1, 0);
+    memset(&split_zone, 0, sizeof split_zone);
+}
+
+static uint32_t split_zone_count(void)
+{
+    if (!gesture.active || (!gesture.placement && !gesture.panning) || gesture.cancelled || !same_screen() || !ui_idle()) return 0;
+    if (gesture.placement) {
+        uint32_t placement = read32(gesture.screen + 0x488), index = read32(placement + 0x38);
+        if (!void_vm_readable(placement, 0xA0) || !MEM8(placement + 0x6C) || index > 6 ||
+            read32(gesture.screen + 0x2E0) != 0x1000) return 0;
+        uint32_t source = void_call_guest_this(0x00576200u, placement, 1, &index);
+        uint32_t count = void_vm_readable(source, 0x24) ? read32(source + 8) : 0;
+        uint32_t begin = read32(placement + 0x2C), end = read32(placement + 0x30);
+        if (end < begin || (end - begin) % 4 || end - begin > 28) return 0;
+        for (uint32_t i = 0; count > 1 && i < (end - begin) / 4; ++i)
+            if (i != index && !void_call_guest_this(0x00576200u, placement, 1, &i)) return count;
+        return 0;
+    }
+    troop_cell source; uint32_t count, type;
+    if (!gesture.dnd_pressed || !dnd_identity(gesture.dnd) || !dnd_held(gesture.dnd) ||
+        !troop_cell_window(read32(read32(gesture.dnd + 0x1C) + 0xC), &source) || !troop_count(&source, &count, &type)) return 0;
+    for (unsigned i = 0; count > 1 && i < 7; ++i) {
+        troop_cell target; uint32_t target_count, target_type;
+        if (i != source.index && troop_cell_window(troop_row_window(&source, i), &target) &&
+            troop_count(&target, &target_count, &target_type) && !target_count) return count;
+    }
+    return 0;
+}
+
+static void split_zone_apply(uint32_t amount, int keep_dragging)
+{
+    if (!amount || troop_preview.helper) return;
+    float x = gesture.x, y = gesture.y;
+    int secondary = gesture.second_troop;
+    gesture.x = gesture.start_x; gesture.y = gesture.start_y;
+    gesture.second_troop = 1;
+    split_amount = amount;
+    if (gesture.placement) {
+        const void_touch_event event = {.kind = TOUCH_SECOND_TAP, .x = gesture.start_x, .y = gesture.start_y, .scale = 1};
+        uint32_t placement = read32(gesture.screen + 0x488);
+        placement_second(&event, (int)read32(placement + 0x38));
+        if (keep_dragging && same_screen() && !gesture.cancelled) placement_point(gesture.start_x, gesture.start_y, 0);
+    } else troop_split(gesture.start_x, gesture.start_y, 0);
+    split_amount = 1;
+    gesture.second_troop = secondary;
+    gesture.x = x; gesture.y = y;
+}
+
+static void split_zone_pump(void)
+{
+    uint32_t count = split_zone_count();
+    if (count < 2) { split_zone_hide(); return; }
+    split_hint_set(void_port_split_hints());
+    if (!void_port_split_zones()) {
+        if (split_zone.visible) void_android_split_zones(-1, 0);
+        memset(&split_zone, 0, sizeof split_zone);
+        return;
+    }
+    int zone = split_zone_at(gesture.x, gesture.y);
+    uint64_t now = void_perf_now_ns();
+    if (!split_zone.visible || zone != split_zone.zone) {
+        split_zone.entered = now;
+        split_zone.interval = 1000000000ull;
+        split_zone.progress = -1;
+    }
+    split_zone.visible = 1; split_zone.zone = zone;
+    if (zone == 2 && now - split_zone.entered >= split_zone.interval) {
+        split_zone_apply(1, 1);
+        split_zone.entered = now;
+        split_zone.interval = 500000000ull;
+    }
+    int progress = zone == 2 ? (int)((now - split_zone.entered) * 100 / split_zone.interval) : 0;
+    if (progress != split_zone.progress) {
+        split_zone.progress = progress;
+        void_android_split_zones(zone, progress);
+    }
+}
+
+static int split_zone_end(const void_touch_event *event)
+{
+    if (event->kind != TOUCH_END || !split_zone.visible || !split_zone_at(event->x, event->y)) return 0;
+    uint32_t count = split_zone_count();
+    if (split_zone_at(event->x, event->y) == 1 && count > 1) split_zone_apply(count / 2, 0);
+    if (gesture.placement && same_screen()) {
+        uint32_t placement = read32(gesture.screen + 0x488);
+        placement_cancel(placement);
+    } else dnd_cancel();
+    gesture.committed = gesture.cancelled = 1;
+    gesture.active = 0;
+    split_zone_hide();
+    publish_point(-1, -1);
     return 1;
 }
 
@@ -2689,6 +3045,8 @@ void void_touch_engine_init(void)
     }
 #endif
     memset(&gesture, 0, sizeof gesture);
+    memset(&console_open_request, 0, sizeof console_open_request);
+    memset(&cheat_target, 0, sizeof cheat_target);
     memset(&text_target, 0, sizeof text_target);
     memset(&drag_owner, 0, sizeof drag_owner);
     memset(&combat_home, 0, sizeof combat_home);
@@ -2739,10 +3097,11 @@ void void_touch_engine_event(const void_touch_event *event)
     if (!event || !isfinite(event->x) || !isfinite(event->y) ||
         !isfinite(event->dx) || !isfinite(event->dy) || !isfinite(event->scale) ||
         !isfinite(event->rotation)) return;
+    if (event->kind == TOUCH_CHEAT_ACTION) { cheats_action(event); return; }
     void_touch_event shifted = *event;
     if (event->kind != TOUCH_ABORT && event->kind != TOUCH_POINTER && event->kind != TOUCH_POINTER_CLICK &&
         event->kind != TOUCH_PAD_CAMERA && event->kind != TOUCH_TRANSFORM && event->kind != TOUCH_TILT &&
-        event->kind != TOUCH_THREE_FINGER_TAP && event->kind != TOUCH_TWO_FINGER_TAP &&
+        event->kind != TOUCH_THREE_FINGER_TAP && event->kind != TOUCH_CONSOLE_TOGGLE && event->kind != TOUCH_TWO_FINGER_TAP &&
         event->kind != TOUCH_TWO_FINGER_BEGIN && event->kind != TOUCH_TWO_FINGER_CANCEL && event->x >= 0 && event->y >= 0) {
         float ox = void_port_cursor_offset(0), oy = void_port_cursor_offset(1);
         if (ox != 0 || oy != 0) {
@@ -2758,6 +3117,12 @@ void void_touch_engine_event(const void_touch_event *event)
         shifted.x = atb.x; shifted.y = atb.y;
     }
     event = &shifted;
+    if (event->kind == TOUCH_CONSOLE_TOGGLE) {
+        const void_touch_event abort = {.kind = TOUCH_ABORT, .scale = 1};
+        void_touch_engine_event(&abort);
+        console_toggle();
+        return;
+    }
     if (event->kind == TOUCH_POINTER_CLICK) {
         pointer_text.screen = current_screen();
         pointer_text.x = event->x; pointer_text.y = event->y;
@@ -2787,10 +3152,12 @@ void void_touch_engine_event(const void_touch_event *event)
         return;
     }
     if (event->kind==TOUCH_ABORT) {
+        split_zone_hide();
         choice_clear();
         memset(&army_batch,0,sizeof army_batch);
     }
     if (event->kind == TOUCH_BEGIN) {
+        split_zone_hide();
         pointer_text.pending = 0;
         memset(&army_batch,0,sizeof army_batch);
         dnd_owner_pump(0);
@@ -2921,7 +3288,7 @@ void void_touch_engine_event(const void_touch_event *event)
         return;
     }
     if (kind == TOUCH_SECOND_BEGIN || kind == TOUCH_SECOND_TAP || kind == TOUCH_SECOND_HOLD) {
-        if (placement_second(event)) return;
+        if (placement_second(event, -1)) return;
         if (same_screen() && combat_card_event(kind)) return;
         if (!same_screen()) {
             gesture.active = 0;
@@ -2958,6 +3325,7 @@ void void_touch_engine_event(const void_touch_event *event)
         return;
     }
     gesture.x = event->x; gesture.y = event->y;
+    if (split_zone_end(event)) return;
     /* A camera gesture on the battlefield has no cursor under it. */
     if (!gesture.ui && gesture.kind == SCREEN_COMBAT && gesture.panning) publish_point(-1, -1);
     else publish_point(event->x, event->y);
@@ -3004,9 +3372,26 @@ void void_touch_engine_event(const void_touch_event *event)
         return;
     }
     if (gesture.ui) {
+        if (kind == TOUCH_HOLD_BEGIN && !gesture.panning && !gesture.held &&
+            gesture.kind != SCREEN_MENU && void_port_console_enabled() &&
+            console_button_at(gesture.start_x, gesture.start_y, "OnJog-Menu") &&
+            console_button_at(event->x, event->y, "OnJog-Menu")) {
+            const void_touch_event toggle = {.kind = TOUCH_CONSOLE_TOGGLE, .scale = 1};
+            void_touch_engine_event(&toggle);
+            return;
+        }
+        if (kind == TOUCH_HOLD_BEGIN && !gesture.panning && !gesture.held &&
+            gesture.kind == SCREEN_ADVENTURE && void_port_console_enabled() &&
+            console_button_at(gesture.start_x, gesture.start_y, "OnJog-Scenario") &&
+            console_button_at(event->x, event->y, "OnJog-Scenario")) {
+            const void_touch_event abort = {.kind = TOUCH_ABORT, .scale = 1};
+            void_touch_engine_event(&abort);
+            cheats_show();
+            return;
+        }
         ui_event(event);
         /* A held combat control (initiative bar, portraits) shows its details too; not a drag source. */
-        if (kind == TOUCH_HOLD_BEGIN && gesture.kind == SCREEN_COMBAT && gesture.held && !gesture.dnd && !gesture.combo &&
+        if (kind == TOUCH_HOLD_BEGIN && gesture.kind == SCREEN_COMBAT && gesture.held && !gesture.card && !gesture.dnd && !gesture.combo &&
             !(gesture.atb && atb.card) &&   /* a held open card stays as it is */
             !gesture.placement && same_screen()) gesture.details = 1;
     } else if (kind == TOUCH_TWO_FINGER_CANCEL) {
@@ -3085,7 +3470,7 @@ void void_touch_engine_event(const void_touch_event *event)
                 placement_point(event->x, event->y, 2);
                 placement_trace("drop-reserve", event->x, event->y);
             } else
-            if (placement) void_call_guest_this(0x00576260u, placement, 0, NULL);
+            placement_cancel(placement);
             gesture.cancelled = 1;
         }
     }

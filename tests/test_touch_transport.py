@@ -238,7 +238,17 @@ int main(void) {
     event(TOUCH_POINTER_CLICK);event(TOUCH_POINTER);drain();
     assert(received_count==3&&received[0].kind==TOUCH_POINTER&&received[1].kind==TOUCH_PAD_CAMERA&&received[2].kind==TOUCH_POINTER_CLICK);
     reset();event(TOUCH_POINTER);drain();assert(received_count==1&&received[0].kind==TOUCH_POINTER);
-    puts("PASS touch transport: FIFO, window owner, full GPR/FPU/XMM/EH/backedges, recursive callbacks, concurrent producer, overflow abort, JNI aspect fit and bars; physical-mode reentry keeps camera/click events");
+    reset();event(TOUCH_ABORT);drain();event(TOUCH_CHEAT_ACTION);drain();
+    assert(received_count==2&&received[0].kind==TOUCH_ABORT&&received[1].kind==TOUCH_CHEAT_ACTION);
+    reset();event(TOUCH_CHEAT_ACTION);event(TOUCH_ABORT);event(TOUCH_ABORT);drain();
+    assert(received_count==2&&received[0].kind==TOUCH_ABORT&&received[1].kind==TOUCH_CHEAT_ACTION);
+    reset();touch_head=254;
+    void_touch_event first={.kind=TOUCH_CHEAT_ACTION,.x=2,.scale=1},second={.kind=TOUCH_CHEAT_ACTION,.x=3,.scale=1};
+    void_touch_enqueue(&first);event(TOUCH_PAN);void_touch_enqueue(&second);event(TOUCH_ABORT);drain();
+    assert(received_count==3&&received[0].kind==TOUCH_ABORT&&received[1].x==2&&received[2].x==3);
+    reset();event(TOUCH_CHEAT_ACTION);void_touch_enqueue(NULL);drain();
+    assert(received_count==1&&received[0].kind==TOUCH_ABORT);
+    puts("PASS touch transport: FIFO, window owner, full GPR/FPU/XMM/EH/backedges, recursive callbacks, concurrent producer, overflow abort, JNI aspect fit and bars; physical-mode reentry keeps camera/click events; dialog action survives input release");
     return 0;
 }
 /* ACTUAL_INITIALIZE */
@@ -255,14 +265,23 @@ class TouchTransportTests(unittest.TestCase):
         prefix = REGISTER_HARNESS[:REGISTER_HARNESS.index("/* Native Windows primitives")]
         fixture = production_fixture(prefix + HARNESS)
         fixture = fixture.replace("/* ACTUAL_INITIALIZE */", function(REGISTER_HARNESS, "static void initialize("))
-        compile_probe("touch_transport", fixture, {
+        headers = {
             "touch.h": (ROOT / "android/host/touch.h").read_text(encoding="utf8"),
             "window_owner.h": function(user, "uint32_t void_window_thread("),
             "engine_ready.h": function(engine, "int void_touch_engine_ready("),
             "touch_queue.h": queue,
             "touch_jni.h": function(android, "static int map_touch_point(") +
                           function(android, "JNIEXPORT void JNICALL Java_org_homm5_port_GameActivity_nativeTouch("),
-        })
+        }
+        compile_probe("touch_transport", fixture, headers)
+        import sys
+        sys.path.insert(0, str(ROOT / "tools"))
+        from port_patches import adapt_host_source
+        for edition in ("vanilla", "hof"):
+            path, _ = adapt_host_source(ROOT / "android/host/touch_queue.c",
+                                       ROOT / "build/tests" / ("transport-" + edition), edition)
+            actual = path.read_text().replace('#include "host.h"', '').replace('#include "touch.h"', '')
+            compile_probe("touch_transport-" + edition, fixture, {**headers, "touch_queue.h": actual})
 
 
 if __name__ == "__main__":

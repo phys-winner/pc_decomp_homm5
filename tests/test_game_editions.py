@@ -52,6 +52,22 @@ public class EditionCheck {
             assert Games.discover(new File(hof,"dataa1")).equals(Arrays.asList(hof));
             assert Games.discover(root.resolve("absent").toFile()).isEmpty();
             assert !Games.installed(toe,"vanilla") && !Games.installed(vanilla,"toe");
+            Map<String,File> paths=new LinkedHashMap<>();
+            paths.put("vanilla",vanilla);paths.put("hof",hof);paths.put("toe",toe);
+            assert Games.conflict(vanilla,"vanilla",paths)==null;
+            assert Games.conflict(toe,"toe",paths)==null;
+            assert Games.conflict(new File(toe,"."),"vanilla",paths)!=null;
+            assert Games.conflict(new File(vanilla,"inner"),"toe",paths)!=null;
+            assert Games.conflict(toe.getParentFile(),"vanilla",paths)!=null;
+            assert Games.conflict(hof,"vanilla",paths)==null;
+            paths.put("vanilla",hof);
+            assert Games.conflict(hof,"hof",paths)==null;
+            assert Games.conflict(hof,"toe",paths)!=null;
+            paths.put("vanilla",vanilla);
+            File overwritten=install(root.resolve("overwritten"),"vanilla","toe");
+            assert Games.conflict(overwritten,"vanilla",Collections.emptyMap())!=null;
+            assert Games.conflict(overwritten,"toe",Collections.emptyMap())!=null;
+            assert Games.conflict(new File(root.toFile(),"empty"),"toe",paths)==null;
             Path partial=root.resolve("partial"); file(partial,"bin/H5_Game.exe"); file(partial,"data/data.pak"); file(partial,"data/p3c-data.pak");
             assert Games.editions(partial.toFile()).isEmpty() : "Unknown versions must not become another game's ready tile";
             Path mixed=root.resolve("mixed");
@@ -154,7 +170,7 @@ public class RuntimeCheck {
                 c.files.clear(); assert !runtimeAvailable(c,base,id);
                 assert library.delete();
             }
-            File image=new File(base,"lifted/H5_Game.exe"); assert image.getParentFile().mkdirs(); assert image.createNewFile();
+            File image=new File(base,"lifted/fmod.dll"); assert image.getParentFile().mkdirs(); assert image.createNewFile();
             File library=new File(base,System.mapLibraryName(Games.library("toe"))); assert library.createNewFile();
             assert runtimeAvailable(c,base,"toe") : "Keep the existing ToE development deployment";
             assert !runtimeAvailable(c,base,"vanilla") && !runtimeAvailable(c,base,"hof");

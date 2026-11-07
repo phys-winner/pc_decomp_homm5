@@ -8,18 +8,12 @@
  * Direct3D: the creating thread's x87 precision, the touch frame pump and frame count, the frame
  * limit (port_fps_limit), waiting while the activity has no surface. touch_render.c reads the
  * device through a shadow d3d_device (com.guest, window, pp, in_scene and recording only). When
- * DXVK cannot start, the session renders with GLES; ported to no other edition (TECHDEBT-LEGACY.md). */
+ * DXVK cannot start, the session renders with GLES; shared by all three editions. */
 #include "d3d9_internal.h"
 #include "dxvk.h"
 #include "input.h"
 #include "touch.h"
 
-/* DXVK/Turnip support is commented out (2026-10-29, RendererPolicy.ENABLED): without HOMM5_DXVK the engine
- * keeps the stubs below and never loads libh5dxvk.so; the launcher offers no DXVK mode.
-#define HOMM5_DXVK
- */
-
-#ifndef HOMM5_LEGACY_UI
 #if defined(VOID_ANDROID_APP) && defined(HOMM5_DXVK)
 #include <dlfcn.h>
 #include <errno.h>
@@ -449,6 +443,19 @@ JNIEXPORT jint JNICALL Java_org_homm5_port_GameActivity_nativeRendererActive(JNI
 
 #else
 /* The command-line build has no activity, and without HOMM5_DXVK there is no DXVK. */
+#ifdef VOID_ANDROID_APP
+#include <jni.h>
+JNIEXPORT void JNICALL Java_org_homm5_port_GameActivity_nativeRenderer(JNIEnv *env, jclass type, jint mode,
+    jstring library_dir, jstring cache)
+{
+    (void)env; (void)type; (void)mode; (void)library_dir; (void)cache;
+}
+JNIEXPORT jint JNICALL Java_org_homm5_port_GameActivity_nativeRendererActive(JNIEnv *env, jclass type)
+{
+    (void)env; (void)type;
+    return 0;
+}
+#endif
 uint32_t void_dxvk_create9(uint32_t sdk) { (void)sdk; return 0; }
 void *void_dxvk_native(uint32_t guest) { (void)guest; return NULL; }
 int void_dxvk_cube(uint32_t guest) { (void)guest; return 0; }
@@ -491,5 +498,4 @@ void void_dxvk_constants(uint32_t device, int pixel, int type, uint32_t start, c
 {
     (void)device; (void)pixel; (void)type; (void)start; (void)data; (void)count;
 }
-#endif
 #endif

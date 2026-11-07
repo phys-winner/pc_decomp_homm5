@@ -114,7 +114,7 @@ def compile_probe(name, harness, headers, extra_flags=(), compiler_override=None
     env["INCLUDE"] = ";".join(map(str, [msvc / "include", sdk / f"Include/{version}/ucrt", sdk / f"Include/{version}/shared", sdk / f"Include/{version}/um"]))
     env["LIB"] = ";".join(map(str, [msvc / "lib/x64", sdk / f"Lib/{version}/ucrt/x64", sdk / f"Lib/{version}/um/x64"]))
     outputs = ["/c", "/Foprobe.obj"] if compiler_override else ["/Fe:probe.exe"]
-    compiled = subprocess.run([str(compiler_override or compiler), "/nologo", "/W4", "/WX", "/std:c11", "/D_CRT_SECURE_NO_WARNINGS", *extra_flags, "probe.c", *outputs], cwd=out, env=env, text=True, capture_output=True)
+    compiled = subprocess.run([str(compiler_override or compiler), "/nologo", "/W4", "/WX", "/std:c++17" if "/TP" in extra_flags else "/std:c11", "/D_CRT_SECURE_NO_WARNINGS", *extra_flags, "probe.c", *outputs], cwd=out, env=env, text=True, capture_output=True)
     assert compiled.returncode == 0, compiled.stdout + compiled.stderr
     if compiler_override:
         linked = subprocess.run([str(compiler), "/nologo", "probe.obj", "/Fe:probe.exe"], cwd=out, env=env, text=True, capture_output=True)

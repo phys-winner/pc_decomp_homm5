@@ -8,6 +8,7 @@
 #include <vulkan/vulkan.h>
 #include <dlfcn.h>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 
@@ -17,13 +18,19 @@ inline PFN_vkGetInstanceProcAddr homm5_open_turnip(const char *directory, char *
   if (!directory || !*directory) { snprintf(error, error_size, "Turnip: no native library directory"); return nullptr; }
   static PFN_vkGetInstanceProcAddr opened;
   if (opened) return opened;
-  std::string path = std::string(directory) + "/";
+  std::string path = std::string(directory) + "/", folder = path, driver = HOMM5_TURNIP_DRIVER;
+  const char *custom = std::getenv("PORT_TURNIP_DRIVER");
+  if (custom && *custom == '/') {
+    std::string own = custom;
+    auto slash = own.find_last_of('/');
+    folder = own.substr(0, slash + 1); driver = own.substr(slash + 1);
+  }
   void *helper = dlopen((path + "libadrenotools.so").c_str(), RTLD_NOW | RTLD_LOCAL);
   using Open = void *(*)(int, int, const char *, const char *, const char *, const char *, const char *, void **);
   auto open = helper ? reinterpret_cast<Open>(dlsym(helper, "adrenotools_open_libvulkan")) : nullptr;
   /* 1 = ADRENOTOOLS_DRIVER_CUSTOM; hooks and driver both from nativeLibraryDir; no temporary
    * directory (API 29+ uses memfd), no file redirection, no GPU mapping import. */
-  void *loader = open ? open(RTLD_NOW | RTLD_LOCAL, 1, nullptr, path.c_str(), path.c_str(), HOMM5_TURNIP_DRIVER, nullptr, nullptr) : nullptr;
+  void *loader = open ? open(RTLD_NOW | RTLD_LOCAL, 1, nullptr, path.c_str(), folder.c_str(), driver.c_str(), nullptr, nullptr) : nullptr;
   auto get = loader ? reinterpret_cast<PFN_vkGetInstanceProcAddr>(dlsym(loader, "vkGetInstanceProcAddr")) : nullptr;
   if (!get) {
     const char *detail = dlerror();
@@ -41,6 +48,7 @@ inline PFN_vkGetInstanceProcAddr homm5_open_turnip(const char *directory, char *
   if (result != VK_SUCCESS) { snprintf(error, error_size, "Turnip: vkCreateInstance(1.3) failed %d", result); return nullptr; }
   auto enumerate = reinterpret_cast<PFN_vkEnumeratePhysicalDevices>(get(instance, "vkEnumeratePhysicalDevices"));
   auto properties = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties>(get(instance, "vkGetPhysicalDeviceProperties"));
+  auto properties2 = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2>(get(instance, "vkGetPhysicalDeviceProperties2"));
   auto destroy = reinterpret_cast<PFN_vkDestroyInstance>(get(instance, "vkDestroyInstance"));
   bool supported = false;
   uint32_t count = 8;
@@ -50,8 +58,12 @@ inline PFN_vkGetInstanceProcAddr homm5_open_turnip(const char *directory, char *
     for (unsigned i = 0; i < count && i < 8; ++i) {
       VkPhysicalDeviceProperties p{};
       properties(devices[i], &p);
+      VkPhysicalDeviceDriverProperties d{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+      VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &d};
+      if (properties2 && p.apiVersion >= VK_API_VERSION_1_2) properties2(devices[i], &p2);
       snprintf(seen, sizeof seen, "%s", p.deviceName);
-      supported |= p.apiVersion >= VK_API_VERSION_1_3 && p.vendorID == 0x5143 && strstr(p.deviceName, "Turnip");
+      supported |= p.apiVersion >= VK_API_VERSION_1_3 && p.vendorID == 0x5143 &&
+                   (d.driverID == VK_DRIVER_ID_MESA_TURNIP || strstr(p.deviceName, "Turnip"));
     }
   if (destroy) destroy(instance, nullptr);
   if (!supported) { snprintf(error, error_size, "Turnip: no Qualcomm Vulkan 1.3 Turnip device (%s)", seen); return nullptr; }

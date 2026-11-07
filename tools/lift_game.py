@@ -38,6 +38,14 @@ class CheckedLifter(Lifter):
 
     def lift_instruction(self, instruction):
         mnemonic = instruction.mnemonic.split()[-1]
+        operands = instruction.operands or ()
+        next_address = (instruction.address + instruction.size) & 0xFFFFFFFF
+        if (mnemonic == "call" and len(operands) == 1
+                and operands[0].type == X86_OP_IMM and operands[0].size == 4
+                and (operands[0].imm & 0xFFFFFFFF) == next_address):
+            # CALL-next pushes EIP and falls through without changing arithmetic flags.
+            return [f"PUSH32(esp, 0x{next_address:08X}u); "
+                    f"/* 0x{instruction.address:08X}: {instruction.mnemonic} {instruction.op_str} */"]
         if mnemonic in ("pusha", "pushaw"):
             return ["{ uint32_t _pusha_sp = esp; "
                     "PUSH16(esp, eax); PUSH16(esp, ecx); PUSH16(esp, edx); PUSH16(esp, ebx); "
@@ -51,6 +59,8 @@ class CheckedLifter(Lifter):
             text = instruction.mnemonic + " " + instruction.op_str
             return [f"void_lift_trap(0x{instruction.address:08X}u, {json.dumps(text)}); "
                     f"/* 0x{instruction.address:08X}: {text} */"]
+        if mnemonic == "fsincos":
+            return ["{double _a=_st[0]; _st[0]=sin(_a); fp_push(cos(_a));} _fpu_cmp=1;"]
         if mnemonic == "pause":
             # Spin-wait hint. The spinning loop's back edge already yields the machine.
             return [f"/* pause */ /* 0x{instruction.address:08X}: {instruction.mnemonic} {instruction.op_str} */"]

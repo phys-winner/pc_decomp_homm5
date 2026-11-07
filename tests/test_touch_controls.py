@@ -15,7 +15,15 @@ import java.util.*;
 public class TouchControlsCheck {
     static long now = 1000;
     static int width = 1280, height = 800, clicks;
-    boolean textEditing;
+    boolean textEditing,nativeReady=true;
+    static int consoleToggles;
+    static void nativeHardwareKey(int key,boolean down){assert key==0xC0&&down;consoleToggles++;}
+    static class KeyEvent {
+        static final int ACTION_DOWN=0,KEYCODE_GRAVE=68;
+        int action,repeat;
+        KeyEvent(int a,int r){action=a;repeat=r;}
+        int getAction(){return action;}int getRepeatCount(){return repeat;}
+    }
     int textGeneration,fieldCaret;
     TextConnection textConnection;
     interface InputConnection {}
@@ -59,6 +67,7 @@ public class TouchControlsCheck {
         protected void onSizeChanged(int w,int h,int oldw,int oldh) {}
         public boolean onCheckIsTextEditor() {return false;}
         public InputConnection onCreateInputConnection(EditorInfo info) {return null;}
+        public boolean onKeyPreIme(int code,KeyEvent event){return false;}
     }
     static class MotionEvent {
         static final int ACTION_DOWN=0, ACTION_UP=1, ACTION_MOVE=2, ACTION_CANCEL=3,
@@ -111,6 +120,10 @@ public class TouchControlsCheck {
     }
     void check() {
         TouchLayer t=new TouchLayer(new Context());
+        assert t.onKeyPreIme(68,new KeyEvent(0,0))&&consoleToggles==1;
+        assert t.onKeyPreIme(68,new KeyEvent(0,1))&&t.onKeyPreIme(68,new KeyEvent(1,0))&&consoleToggles==1;
+        assert !t.onKeyPreIme(67,new KeyEvent(0,0));
+        nativeReady=false;assert !t.onKeyPreIme(68,new KeyEvent(0,0))&&consoleToggles==1;nativeReady=true;
 
         // A finger going down never presses the mouse or issues an order.
         t.onTouchEvent(one(0,17,640,400));
@@ -158,6 +171,17 @@ public class TouchControlsCheck {
         t.onTouchEvent(three(6,2,1,200,200,2,400,200,3,600,200));
         t.onTouchEvent(two(6,1,1,200,200,2,400,200));
         t.onTouchEvent(one(1,1,200,200)); kinds(0,8,9,7); clear();
+
+        // A stationary long chord is consumed without opening the console or resetting the camera.
+        t.onTouchEvent(one(0,1,200,200)); advance(20);
+        t.onTouchEvent(two(5,1,1,200,200,2,400,200)); advance(20);
+        t.onTouchEvent(three(5,2,1,200,200,2,400,200,3,600,200));
+        advance(999); kinds(0,8);
+        advance(1); kinds(0,8);
+        advance(2000); kinds(0,8);
+        t.onTouchEvent(three(6,2,1,200,200,2,400,200,3,600,200));
+        t.onTouchEvent(two(6,1,1,200,200,2,400,200));
+        t.onTouchEvent(one(1,1,200,200)); kinds(0,8,10); clear();
 
         // A recognized chord consumes movement, excess contacts and timeout.
         // None may become a pan, order, two-finger cancel or reset on release.

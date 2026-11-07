@@ -74,7 +74,7 @@ final class NativeLibrary {
         }
     }
 
-    private static String sha256(File file) throws IOException {
+    static String sha256(File file) throws IOException {
         try {
             MessageDigest hash = MessageDigest.getInstance("SHA-256");
             try (InputStream in = new FileInputStream(file)) {

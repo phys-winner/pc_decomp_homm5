@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 
 /** Edition identities and installation checks shared by import and launch. */
 final class Games {
@@ -62,6 +63,27 @@ final class Games {
             if (file == null || !file.isFile() || !file.canRead()) return false;
         }
         return true;
+    }
+
+    /** Only marker checks: never hash multi-gigabyte archives on the launcher's UI thread. */
+    static String conflict(File root, String edition, Map<String, File> folders) {
+        if (root == null) return null;
+        try {
+            String path = root.getCanonicalPath();
+            for (Map.Entry<String, File> entry : folders.entrySet()) {
+                File other = entry.getValue();
+                if (entry.getKey().equals(edition) || other == null ||
+                    (!"toe".equals(edition) && !"toe".equals(entry.getKey()))) continue;
+                String peer = other.getCanonicalPath();
+                if (path.equals(peer) || path.startsWith(peer + File.separator) || peer.startsWith(path + File.separator))
+                    return title(edition) + " / " + title(entry.getKey()) + ": " + path + " / " + peer;
+            }
+            if (!"toe".equals(edition) && child(root, "data/a2p1-data.pak") != null)
+                return title(edition) + " / " + title("toe") + ": " + path;
+            if ("toe".equals(edition) && (child(root, "data/p3c-data.pak") != null || child(root, "DataLS/p6-data.pak") != null))
+                return title(edition) + " / " + title("vanilla") + ": " + path;
+        } catch (IOException unreadable) { return unreadable.getMessage(); }
+        return null;
     }
 
     static List<String> editions(File root) {

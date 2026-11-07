@@ -8,6 +8,9 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
+import android.graphics.Canvas;
+import android.graphics.Paint;
+import android.graphics.RectF;
 import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -86,6 +89,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private static native boolean nativeText(int generation, String text);
     private static native boolean nativeTextKey(int generation, int key, int count);
     private static native int nativeTextCancel();
+    private static native void nativeCheatAction(int generation, int action, int value);
     /** Startup work done so far (files opened), and whether the first screen is up. */
     private static native int nativeLoadWork();
     private static native boolean nativeLoadReady();
@@ -96,9 +100,11 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private final Map<Integer, Runnable> keyReleases = new HashMap<>();
     private final Handler handler = new Handler(Looper.getMainLooper());
     private TouchLayer touch;
+    private TroopZones troopZones;
     private HardwareInput hardware;
     private android.app.AlertDialog gamepadHelp;
     private android.app.AlertDialog gameSwitchDialog;
+    private android.app.AlertDialog cheatDialog;
     /* The switch dialog's choice, opened when the engine has saved its profile and exits
        (onGameExit): another edition, or null for the launcher itself. */
     private volatile boolean switchRequested;
@@ -135,9 +141,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private float loadingShown;
     private boolean nativeReady;
     private boolean resumed;
-    /* The renderer of this start: OpenGL ES, while DXVK/Turnip stay disabled (port.json offers no
-       other mode, the APK carries no DXVK). The DXVK modes keep one surface for the activity's life
-       and hand it back on onStart (surfaceHidden). */
+    /* DXVK keeps one surface for the activity's life and hands it back on onStart (surfaceHidden). */
     private String renderer = GLES;
     private boolean surfaceHidden;
 
@@ -161,6 +165,8 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         setContentView(game);
         new Thread(() -> {
             try {
+                File originals = gameFolder();
+                if (Games.installed(originals, gameEdition())) Assets.verifyOriginals(this, originals, gameEdition());
                 NativeLibrary.load(this, Games.library(gameEdition()));
                 runOnUiThread(() -> {
                     if (isFinishing() || isDestroyed()) return;
@@ -219,14 +225,9 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
 
     /* ------------------------------------------------------------ renderer */
 
-    /** Tribes of the East's renderer is fixed before the engine starts: the launcher's choice
-     *  (port.json "renderers"). DXVK/Turnip stay disabled: port.json offers OpenGL ES only and the
-     *  APK carries the DXVK bridge only when built with --dxvk, so every start renders with OpenGL ES. */
+    /** Ignore renderer choices saved by older launchers. */
     private void chooseRenderer() {
-        String chosen = launch != null ? launch.renderer() : null;
-        boolean dxvk = "dxvk".equals(chosen) || "turnip".equals(chosen);
-        renderer = dxvk && "toe".equals(gameEdition()) && Build.VERSION.SDK_INT >= 30
-            && new File(getApplicationInfo().nativeLibraryDir, "libh5dxvk.so").isFile() ? chosen : GLES;
+        renderer = GLES;
     }
 
     /** android/dxvk/bridge_abi.h: HOMM5_RENDERER_GLES / _DXVK / _TURNIP. */
@@ -257,6 +258,8 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         game.addView(surface, new FrameLayout.LayoutParams(-1, -1));
         touch = new TouchLayer(this);
         game.addView(touch, new FrameLayout.LayoutParams(-1, -1));
+        troopZones = new TroopZones(this);
+        game.addView(troopZones, new FrameLayout.LayoutParams(-1, -1));
         PointerIcon invisible = PointerIcon.getSystemIcon(this, PointerIcon.TYPE_NULL);
         game.setPointerIcon(invisible);
         surface.setPointerIcon(invisible);
@@ -283,6 +286,8 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         File data = new File(base, Games.userdata(gameEdition()));
         data.mkdirs();
         File gameDir = gameFolder();
+        String conflict = new LauncherHooks().installationProblem(this, gameEdition(), PART_GAME, gameDir);
+        if (conflict != null) { refuse(conflict); return; }
         if (gameDir == null || !Games.installed(gameDir, gameEdition())) {
             refuse(String.format(Locale.ROOT, text(T_FILES_MISSING), Games.title(gameEdition()),
                 gameDir != null ? gameDir.getPath() : "?"));
@@ -555,6 +560,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
 
     @Override protected void onPause() {
         resumed = false;
+        if (cheatDialog != null) cheatDialog.dismiss();
         releaseAll();
         if (nativeReady) nativePause(true);
         if (lanLock != null && lanLock.isHeld()) lanLock.release();
@@ -574,6 +580,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         if (hardware != null) ((InputManager)getSystemService(Context.INPUT_SERVICE)).unregisterInputDeviceListener(hardware);
         if (gamepadHelp != null) gamepadHelp.dismiss();
         if (gameSwitchDialog != null) gameSwitchDialog.dismiss();
+        if (cheatDialog != null) cheatDialog.dismiss();
         if (Build.VERSION.SDK_INT >= 33 && backCallback != null)
             getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback((android.window.OnBackInvokedCallback) backCallback);
         handler.removeCallbacksAndMessages(null);
@@ -675,6 +682,121 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         }
     }
 
+    private static String cheatText(String english, String russian) {
+        String lang = language != null ? language : Locale.getDefault().getLanguage();
+        return "ru".equals(lang) || "uk".equals(lang) || "be".equals(lang) ? russian : english;
+    }
+
+    private static void onCheats(int generation, int state) {
+        GameActivity activity = currentActivity.get();
+        if (activity != null) activity.runOnUiThread(() -> {
+            if (currentActivity.get() == activity && activity.resumed && activity.nativeReady
+                    && !activity.isFinishing() && !activity.isDestroyed()) activity.showCheats(generation, state);
+        });
+    }
+
+    private void showCheatDialog(android.app.AlertDialog.Builder builder) {
+        if (cheatDialog != null) cheatDialog.dismiss();
+        releaseAll();
+        cheatDialog = builder.setNegativeButton(text(T_CANCEL), null).create();
+        cheatDialog.setOnDismissListener(dialog -> {
+            if (cheatDialog != dialog) return;
+            cheatDialog = null;
+            hideSystemUi();
+            touch.requestFocus();
+        });
+        cheatDialog.show();
+    }
+
+    private android.app.AlertDialog.Builder cheatBuilder(String title) {
+        return new android.app.AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert).setTitle(title);
+    }
+
+    private void confirmCheat(int generation, int action, int value, String message) {
+        showCheatDialog(cheatBuilder(cheatText("Game cheats", "Читы игры")).setMessage(message)
+                .setPositiveButton(cheatText("Apply", "Применить"),
+                        (dialog, which) -> nativeCheatAction(generation, action, value)));
+    }
+
+    private void showCheats(int generation, int state) {
+        String title = cheatText("Game cheats", "Читы игры");
+        if (state >= 2) {
+            String message = state == 3 ? cheatText("Done", "Готово") : state == 2
+                    ? cheatText("Cheats are available in single player. They could not be enabled for this map.",
+                            "Читы доступны в одиночной игре. Для этой карты включить их не удалось.")
+                    : cheatText("Select your hero on the adventure map and wait for your turn.",
+                            "Выберите своего героя на карте приключений и дождитесь своего хода.");
+            android.widget.Toast.makeText(this, message, android.widget.Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (state == 0) {
+            showCheatDialog(cheatBuilder(title)
+                    .setMessage(cheatText("Enable cheats for the current map?", "Включить читы для текущей карты?"))
+                    .setPositiveButton(cheatText("Enable", "Включить"),
+                            (dialog, which) -> nativeCheatAction(generation, 0, 0)));
+            return;
+        }
+        String[] items = {
+            cheatText("Set 100,000 gold and 100 of each resource", "Задать 100 000 золота и по 100 ресурсов"),
+            cheatText("Set gold…", "Задать золото…"),
+            cheatText("Add hero experience…", "Добавить герою опыт…"),
+            cheatText("Give the hero all spells", "Дать герою все заклинания"),
+            cheatText("Set hero luck and morale to 5", "Удача и мораль героя: 5"),
+            cheatText("Replace hero army…", "Заменить армию героя…"),
+            cheatText("Improve hero skill…", "Повысить навык героя…"),
+            cheatText("Reveal / hide fog of war", "Показать / скрыть туман войны"),
+            cheatText("Clear gold and resources…", "Обнулить золото и ресурсы…")
+        };
+        showCheatDialog(cheatBuilder(title).setItems(items, (dialog, which) -> {
+            int action = which + 1;
+            if (action == 2 || action == 3 || action == 6 || action == 7) showCheatOptions(generation, action, 0);
+            else if (action == 1 || action == 9) confirmCheat(generation, action, 0,
+                    items[which] + cheatText("? This replaces your current stockpile.", "? Текущие запасы будут заменены."));
+            else nativeCheatAction(generation, action, 0);
+        }));
+    }
+
+    private void showCheatOptions(int generation, int action, int town) {
+        String title;
+        String[] items;
+        if (action == 2 || action == 3) {
+            title = action == 2 ? cheatText("Gold (other resources become zero)", "Золото (остальные ресурсы обнулятся)")
+                    : cheatText("Experience for the selected hero", "Опыт выбранному герою");
+            items = action == 2 ? new String[]{"10 000", "100 000", "1 000 000"} : new String[]{"1 000", "10 000", "100 000"};
+        } else if (action == 7) {
+            title = cheatText("Improve skill by one rank", "Повысить навык на одну ступень");
+            items = new String[]{cheatText("Logistics", "Логистика"), cheatText("War machines", "Управление машинами"),
+                cheatText("Enlightenment", "Образование"), cheatText("Leadership", "Лидерство"), cheatText("Luck", "Удача"),
+                cheatText("Attack", "Нападение"), cheatText("Defense", "Защита"), cheatText("Sorcery", "Чародейство"),
+                cheatText("Destructive magic", "Магия Хаоса"), cheatText("Dark magic", "Магия Тьмы"),
+                cheatText("Light magic", "Магия Света"), cheatText("Summoning magic", "Магия Призыва")};
+        } else if (town == 0) {
+            title = cheatText("Army faction", "Фракция армии");
+            items = java.util.Arrays.copyOf(new String[]{cheatText("Haven", "Орден Порядка"), cheatText("Sylvan", "Лесной Союз"),
+                cheatText("Academy", "Академия Волшебства"), cheatText("Dungeon", "Лига Теней"),
+                cheatText("Necropolis", "Некрополис"), cheatText("Inferno", "Инферно"),
+                cheatText("Fortress", "Северные Кланы"), cheatText("Stronghold", "Великая Орда")},
+                "toe".equals(gameEdition()) ? 8 : "hof".equals(gameEdition()) ? 7 : 6);
+        } else {
+            title = cheatText("Army upgrades", "Улучшение армии");
+            items = java.util.Arrays.copyOf(new String[]{cheatText("Basic creatures", "Базовые существа"),
+                cheatText("Upgraded creatures", "Улучшенные существа"), cheatText("Alternative upgrades", "Альтернативные улучшения")},
+                "toe".equals(gameEdition()) ? 3 : 2);
+        }
+        showCheatDialog(cheatBuilder(title).setItems(items, (dialog, which) -> {
+            if (action == 6 && town == 0) { showCheatOptions(generation, action, which + 1); return; }
+            int value = action == 2 ? new int[]{10000, 100000, 1000000}[which]
+                    : action == 3 ? new int[]{1000, 10000, 100000}[which]
+                    : action == 6 ? town + 8 * which : which + 1;
+            if (action == 6) confirmCheat(generation, action, value,
+                    cheatText("Replace the selected hero's entire army with 100 creatures of each tier?", 
+                            "Заменить всю армию выбранного героя на 100 существ каждого уровня?"));
+            else if (action == 2) confirmCheat(generation, action, value,
+                    items[which] + cheatText(" gold. All other resources become zero.", " золота. Все остальные ресурсы обнулятся."));
+            else nativeCheatAction(generation, action, value);
+        }));
+    }
+
     /* --------------------------------------------------------------- text */
 
     private static void onTextFocus(boolean enabled, int generation) {
@@ -705,19 +827,15 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
 
     private void createTextPreview() {
         textPreview = new LinearLayout(this);
-        textPreview.setOrientation(LinearLayout.VERTICAL);
-        textPreview.setPadding(dp(16), dp(10), dp(16), dp(12));
+        textPreview.setOrientation(LinearLayout.HORIZONTAL);
+        textPreview.setGravity(Gravity.CENTER_VERTICAL);
+        textPreview.setPadding(dp(12), dp(6), dp(12), dp(6));
         GradientDrawable background = new GradientDrawable();
         background.setColor(0xF0202125);
         background.setCornerRadius(dp(12));
         textPreview.setBackground(background);
         textPreview.setElevation(dp(12));
         textPreview.setClickable(true);
-        TextView caption = new TextView(this);
-        caption.setText("Ввод текста");
-        caption.setTextSize(12);
-        caption.setTextColor(0xFFBDC1C6);
-        textPreview.addView(caption);
         textPreviewValue = new TextView(this);
         textPreviewValue.setTextSize(18);
         textPreviewValue.setTextColor(Color.WHITE);
@@ -727,7 +845,17 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         /* Wrap content: a match-parent TextView keeps its first measured width
            when its text changes, which clipped the field after its first letter. */
         textPreviewScroll.addView(textPreviewValue, new FrameLayout.LayoutParams(-2, -2));
-        textPreview.addView(textPreviewScroll, new LinearLayout.LayoutParams(-1, -2));
+        textPreview.addView(textPreviewScroll, new LinearLayout.LayoutParams(0, dp(40), 1));
+        TextView done = new TextView(this);
+        done.setText("ru".equals(language == null ? Locale.getDefault().getLanguage() : language) ? "Готово" : "Done");
+        done.setTextSize(16);
+        done.setTextColor(0xFFEBCB7F);
+        done.setGravity(Gravity.CENTER);
+        done.setPadding(dp(16), 0, dp(8), 0);
+        done.setOnClickListener(view -> {
+            if (textConnection != null) textConnection.performEditorAction(EditorInfo.IME_ACTION_DONE);
+        });
+        textPreview.addView(done, new LinearLayout.LayoutParams(-2, dp(48)));
         FrameLayout.LayoutParams layout = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
         layout.setMargins(dp(20), 0, dp(20), dp(12));
         game.addView(textPreview, layout);
@@ -813,6 +941,10 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     private void releaseAll() {
+        if (troopZones != null) {
+            troopZones.update(-1, 0, 0, 0);
+            troopZones.hint(false, 0, 0);
+        }
         if (touch == null) return;
         if (hardware != null) hardware.release();
         touch.cancelGesture();
@@ -854,13 +986,17 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                 + "если первым поднять наводящий палец, приказа не будет. Быстрое касание двумя пальцами "
                 + "отменяет приказ. При расстановке войск отряды перетаскиваются между полем и ячейками запаса.\n"
                 + "Портрет на шкале инициативы выделяется касанием; второе касание этого портрета открывает карточку "
-                + "существа, каждое следующее переключает описание и эффекты, касание в другом месте закрывает её.\n"
+                + "существа, каждое следующее переключает описание и эффекты, касание в другом месте закрывает её. "
+                + "Удержание портрета показывает карточку до отпускания, быстрое двойное касание отдаёт приказ атаки.\n"
                 + "Двойное касание мини-карты (или касание её двумя пальцами) включает и выключает подсветку объектов.\n"
                 + "Книга заклинаний: свайп влево или вправо листает страницы, вверх или вниз — закладки; касание "
                 + "рядом с закладкой выбирает её.\n"
                 + "Два пальца — перемещение, масштаб и поворот камеры; два пальца рядом вверх-вниз — наклон. "
                 + "Одновременное короткое касание поля тремя пальцами — исходные наклон и поворот; в бою также положение камеры.\n\n"
                 + "Разделение армий\n\n"
+                + "При перетаскивании отряда сверху появляются зоны: отпустите над «Быстрое деление», чтобы отделить половину, "
+                + "или задержите над «По одному»: первый воин отделяется через 1 секунду, следующие — каждые 0,5 секунды. "
+                + "Подсказки и зоны деления переключаются в Настройки → Дополнительные.\n"
                 + "Удерживайте отряд и, не отпуская его, коснитесь другим пальцем ячейки армии: "
                 + "один воин перейдёт в первую свободную ячейку. Удержание второго пальца над другой ячейкой "
                 + "открывает окно выбора количества; если там такой же отряд, оба делятся поровну.\n"
@@ -869,6 +1005,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                 + "Быстрое перетаскивание отряда на портрет собирает этот тип вместе. "
                 + "Перетаскивание на портрет другого героя передаёт ему отряд.\n\n"
                 + "Смещение курсора от пальца и его отображение: Настройки → Дополнительные → Управление.\n\n"
+                + "Там же можно включить консоль игры: клавиша ~ или удержание кнопки-шестерёнки.\n\n"
                 + "Геймпад\n\nЛевый стик — курсор; LB / L1 — точное перемещение.\n\n"
                 + "A / крест — левый клик. Удерживайте для перетаскивания; два нажатия — двойной клик.\n"
                 + "B / круг — правый клик: описание, отмена действия.\n"
@@ -984,7 +1121,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             }
             if (value == 0) return false;
             // An active Android editor already has a validated native text destination.
-            if (textEditing && textConnection != null && (event.getUnicodeChar() >= 32
+            if (textEditing && textConnection != null && code != KeyEvent.KEYCODE_GRAVE && (event.getUnicodeChar() >= 32
                     || code == KeyEvent.KEYCODE_DEL || code == KeyEvent.KEYCODE_FORWARD_DEL
                     || code == KeyEvent.KEYCODE_ENTER) && !event.isCtrlPressed() && !event.isAltPressed())
                 return textConnection.sendKeyEvent(event);
@@ -1210,6 +1347,10 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                 return text != null && finishComposingText() && commitText(text, 1);
             }
             if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if (event.getKeyCode() == KeyEvent.KEYCODE_GRAVE) {
+                if (event.getRepeatCount() == 0) nativeHardwareKey(0xC0, true);
+                return true;
+            }
             if (event.getKeyCode() == KeyEvent.KEYCODE_DEL) return deleteSurroundingText(1, 0);
             if (event.getKeyCode() == KeyEvent.KEYCODE_FORWARD_DEL) return deleteSurroundingText(0, 1);
             if (event.getKeyCode() == KeyEvent.KEYCODE_ENTER) return performEditorAction(EditorInfo.IME_ACTION_DONE);
@@ -1232,11 +1373,104 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
      * gesture (troop splitting, cancelling an aim; a combat aim shows its
      * card while the second finger rests).
      */
+    public static void onTroopZones(int zone, int progress, int width, int height) {
+        GameActivity current = currentActivity.get();
+        if (current != null) current.runOnUiThread(() -> {
+            if (current.troopZones != null) current.troopZones.update(zone, progress, width, height);
+        });
+    }
+
+    public static void onTroopHint(boolean visible, int width, int height) {
+        GameActivity current = currentActivity.get();
+        if (current != null) current.runOnUiThread(() -> {
+            if (current.troopZones != null) current.troopZones.hint(visible, width, height);
+        });
+    }
+
+    private final class TroopZones extends View {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF rect = new RectF();
+        private int zone = -1, progress, gameWidth, gameHeight;
+        private boolean showHint;
+
+        TroopZones(Context context) {
+            super(context);
+            setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+            setVisibility(View.GONE);
+        }
+
+        void update(int selected, int value, int width, int height) {
+            zone = selected;
+            progress = Math.max(0, Math.min(100, value));
+            gameWidth = width; gameHeight = height;
+            setVisibility(zone < 0 && !showHint ? View.GONE : View.VISIBLE);
+            invalidate();
+        }
+
+        void hint(boolean visible, int width, int height) {
+            showHint = visible;
+            gameWidth = width; gameHeight = height;
+            setVisibility(zone < 0 && !showHint ? View.GONE : View.VISIBLE);
+            invalidate();
+        }
+
+        @Override protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            if (zone < 0 && !showHint) return;
+            float w = getWidth(), h = getHeight();
+            float scale = gameWidth > 0 && gameHeight > 0 ? Math.min(w / gameWidth, h / gameHeight) : 1;
+            float vw = gameWidth > 0 ? gameWidth * scale : w, vh = gameHeight > 0 ? gameHeight * scale : h;
+            float ox = (w - vw) * .5f, oy = (h - vh) * .5f;
+            boolean ru = "ru".equals(language == null ? Locale.getDefault().getLanguage() : language);
+            if (showHint) {
+                String first = ru ? "Не отпуская отряд, зажмите свободную клетку другим пальцем."
+                                  : "Keep holding the stack; hold a free slot with another finger.";
+                String second = ru ? "Откроется выбор количества воинов." : "Choose how many creatures to split off.";
+                paint.setTextSize(Math.min(dp(15), vh * .025f));
+                float textWidth = Math.max(paint.measureText(first), paint.measureText(second));
+                float width = Math.min(vw * .92f, textWidth + dp(24));
+                paint.setTextSize(paint.getTextSize() * Math.min(1, (width - dp(24)) / textWidth));
+                rect.set(ox + (vw - width) * .5f, oy + vh * .20f, ox + (vw + width) * .5f, oy + vh * .29f);
+                paint.setColor(0xE0202630); paint.setStyle(Paint.Style.FILL);
+                canvas.drawRoundRect(rect, dp(10), dp(10), paint);
+                paint.setColor(0xFFEBCB7F); paint.setTextAlign(Paint.Align.CENTER);
+                canvas.drawText(first, rect.centerX(), rect.top + rect.height() * .4f, paint);
+                canvas.drawText(second, rect.centerX(), rect.top + rect.height() * .8f, paint);
+            }
+            if (zone < 0) return;
+            for (int i = 1; i <= 2; ++i) {
+                rect.set(ox + vw * (i == 1 ? .25f : .51f), oy + vh * .04f,
+                         ox + vw * (i == 1 ? .49f : .75f), oy + vh * .18f);
+                paint.setColor(zone == i ? 0xE0655425 : 0xD0202630);
+                paint.setStyle(Paint.Style.FILL);
+                canvas.drawRoundRect(rect, dp(10), dp(10), paint);
+                paint.setColor(0xFFEBCB7F);
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(dp(2));
+                canvas.drawRoundRect(rect, dp(10), dp(10), paint);
+                paint.setStyle(Paint.Style.FILL);
+                paint.setTextAlign(Paint.Align.CENTER);
+                paint.setTextSize(Math.min(dp(15), rect.height() * .24f));
+                String title = i == 1 ? (ru ? "Быстрое деление" : "Split in half") : (ru ? "Отделять по 1" : "Split one at a time");
+                canvas.drawText(title, rect.centerX(), rect.centerY(), paint);
+                paint.setTextSize(Math.min(dp(12), rect.height() * .2f));
+                if (showHint) {
+                    String hint = i == 1 ? (ru ? "Отпустите здесь" : "Release here")
+                            : (ru ? "Удерживайте: 1 с, затем 0,5 с" : "Hold: 1 s, then 0.5 s");
+                    canvas.drawText(hint, rect.centerX(), rect.centerY() + paint.getTextSize() * 1.5f, paint);
+                }
+                if (i == 2 && zone == 2) canvas.drawRect(rect.left + dp(6), rect.bottom - dp(6),
+                        rect.left + dp(6) + (rect.width() - dp(12)) * progress / 100f, rect.bottom - dp(3), paint);
+            }
+        }
+    }
+
     private final class TouchLayer extends View {
         private static final int BEGIN = 0, TAP = 1, DOUBLE_TAP = 2, PAN = 3, TRANSFORM = 4,
                 HOLD_BEGIN = 5, HOLD_DRAG = 6, END = 7, TWO_FINGER_BEGIN = 8,
                 TWO_FINGER_CANCEL = 9, ABORT = 10, SECOND_BEGIN = 11, SECOND_TAP = 12, SECOND_HOLD = 13,
-                THREE_FINGER_TAP = 14, TILT = 15, SECOND_END = 19, FIRST_END = 20, TWO_FINGER_TAP = 21;
+                THREE_FINGER_TAP = 14, TILT = 15, SECOND_END = 19, FIRST_END = 20, TWO_FINGER_TAP = 21,
+                CONSOLE_TOGGLE = 22;
         private static final long HOLD_MS = 450, MULTI_TAP_MS = 300, CHORD_JOIN_MS = 120, CHORD_TAP_MS = 300;
         /* A finger added this long after the first is a second finger (combat card, troop split)
            rather than the start of a two-finger camera gesture, whose fingers land together. */
@@ -1272,6 +1506,16 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         }
 
         @Override public boolean onCheckIsTextEditor() { return textEditing; }
+
+        @Override public boolean onKeyPreIme(int code, KeyEvent event) {
+            // Gboard can convert the hardware console key into text before normal key dispatch.
+            if (nativeReady && code == KeyEvent.KEYCODE_GRAVE) {
+                if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0)
+                    nativeHardwareKey(0xC0, true);
+                return true;
+            }
+            return super.onKeyPreIme(code, event);
+        }
 
         @Override public InputConnection onCreateInputConnection(EditorInfo info) {
             if (!textEditing) return null;
@@ -1486,6 +1730,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                 }
             }
             if (chord) {
+                if (action == MotionEvent.ACTION_POINTER_DOWN && event.getPointerCount() > 3) chordCandidate = false;
                 if (action == MotionEvent.ACTION_UP) {
                     if (chordCandidate) {
                         float x = (chordX[0] + chordX[1] + chordX[2]) / 3;

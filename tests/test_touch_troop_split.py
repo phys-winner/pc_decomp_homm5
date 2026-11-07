@@ -33,14 +33,14 @@ static uint32_t troop_call(uint32_t va,uint32_t self,int n,const uint32_t *args)
     if(va==0x55AF30) {assert(self==0x10190&&n==1&&args[0]==0xA5000&&!MEM32(self));MEM32(self)=args[0];++troop_pins;return self;}
     if(va==0x59F6B0) {assert(self==0x10190&&!n&&MEM32(self)==0xA5000);++troop_unpins;return 0;}
     if(va==0x786800) {assert(self==0xA5000&&!n);return 0xBEEF00u|(uint32_t)troop_eligible;}
-    if(va==0x786AF0) {assert(self==0xA5000&&n==1&&args[0]==1);++troop_validates;if(troop_change_on_validate)mock_screen=0x5000;return 0xDEAD00u|(uint32_t)troop_validate;}
+    if(va==0x786AF0) {assert(self==0xA5000&&n==1&&args[0]>0&&args[0]<MEM32(0xA6020));++troop_validates;if(troop_change_on_validate)mock_screen=0x5000;return 0xDEAD00u|(uint32_t)troop_validate;}
     if(va==0x786B70) {
-        assert(self==0xA5000&&n==1&&args[0]==1&&troop_validates>troop_commits);
+        assert(self==0xA5000&&n==1&&args[0]>0&&troop_validates>troop_commits);
         assert(!dnd_cancels&&dnd_held(0x60000));++troop_commits;
         uint32_t source=MEM32(MEM32(troop_args[0]+0x100)+4*troop_args[1]);
         uint32_t target=MEM32(troop_args[3]+0x100)+4*troop_args[4];
-        assert(!MEM32(target)&&source);--MEM32(source+0x20);
-        MEM32(target)=0xAA000+0x100*(unsigned)troop_commits;MEM32(MEM32(target)+0x20)=1;
+        assert(!MEM32(target)&&source&&MEM32(source+0x20)>args[0]);MEM32(source+0x20)-=args[0];
+        MEM32(target)=0xAA000+0x100*(unsigned)troop_commits;MEM32(MEM32(target)+0x20)=args[0];
         return 0;
     }
     if(va==0x587CF0) {assert(self==0xA5000&&!n);++troop_dialogs;return troop_modal?0xAB000:0;}
@@ -251,7 +251,9 @@ int main(void){
 def fixture():
     source = HARNESS.replace('static int force_ui,', 'static int troop_mode;\nstatic int force_ui,').replace('static uint32_t void_call_guest_this(', EXTRA+'\nstatic uint32_t void_call_guest_this(', 1)
     source = source.replace('    if(va==0x6B2830)', '    if(troop_mode){uint32_t out=troop_call(va,self,n,args);if(out!=UINT32_MAX)return out;}\n    if(va==0x6B2830)', 1)
-    source = source.replace('if(args[3]==0xF2DA88) return args[0]==0x6044 ? 0x6000 : 0;', 'if(args[3]==0xF2DA88) {if(troop_mode&&args[0]>=0x80000&&args[0]<0x82000)return args[0]-0xF8;return args[0]==0x6044?0x6000:0;}')
+    cast = 'if(args[3]==0xF2DA88) return args[0]==0x6044 ? 0x6000 : args[0]==0x6800 && gear_hit ? 0x6800 : 0;'
+    assert source.count(cast) == 1
+    source = source.replace(cast, 'if(args[3]==0xF2DA88) {if(troop_mode&&args[0]>=0x80000&&args[0]<0x82000)return args[0]-0xF8;return args[0]==0x6044?0x6000:args[0]==0x6800&&gear_hit?0x6800:0;}')
     # The native-held assertion is a memory predicate in a pre-adapter engine spy.
     source = source.replace('dnd_held(0x60000)', '(MEM32(MEM32(0x6000C))==0xE4775C)')
     source = source.replace('int main(void) {', SCENARIOS+'\nint main(void) {\n    troop_tests();', 1)

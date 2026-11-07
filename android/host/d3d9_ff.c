@@ -9,6 +9,9 @@
  * MojoShader path: targets rendered Y-flipped, D3D depth range, D3D9
  * half-pixel offset. */
 #include "d3d9_internal.h"
+#include "d3d9_thread.inc"
+#include "d3d9_filter.h"
+#include "touch.h"
 #include <math.h>
 
 enum { IN_POS = 1, IN_POST = 2, IN_NORMAL = 4, IN_DIFFUSE = 8, IN_SPECULAR = 16 };
@@ -41,7 +44,7 @@ typedef struct ff_prog { uint32_t vid, fid; GLuint gl; struct ff_prog *next; } f
 typedef struct ff_locs {
     GLuint program;
     GLint wvp, world_view, vp, half, material, ambient, light_dir, light_diffuse, tex_matrix;
-    GLint tfactor, alpha_func, alpha_ref;
+    GLint tfactor, alpha_func, alpha_ref, ui_filter;
     struct ff_locs *next;
 } ff_locs;
 
@@ -423,7 +426,10 @@ static GLuint pixel_shader(const ff_fkey *k)
         "\telse if (vpAlphaFunc == 5) pass = a > vpAlphaRef; else if (vpAlphaFunc == 6) pass = a != vpAlphaRef;\n"
         "\telse if (vpAlphaFunc == 7) pass = a >= vpAlphaRef;\n"
         "\tif (!pass) discard;\n\tff_color = current;\n}\n");
-    return compile_ff(GL_FRAGMENT_SHADER, src);
+    char *filtered = d3d_ui_filter_source(src);
+    GLuint shader = compile_ff(GL_FRAGMENT_SHADER, filtered ? filtered : src);
+    free(filtered);
+    return shader;
 }
 
 static ff_fs *pixel_half(const ff_fkey *k)
@@ -462,6 +468,7 @@ static ff_locs *locations(GLuint program)
     l->tfactor = glGetUniformLocation(program, "ff_tfactor");
     l->alpha_func = glGetUniformLocation(program, "vpAlphaFunc");
     l->alpha_ref = glGetUniformLocation(program, "vpAlphaRef");
+    l->ui_filter = glGetUniformLocation(program, "vpUiFilter");
     for (int s = 0; s < 8; ++s) {
         char name[8];
         snprintf(name, sizeof name, "ff_s%d", s);
@@ -513,6 +520,7 @@ static void vertex_uniforms(d3d_device *d, const ff_locs *l)
 
 static void pixel_uniforms(d3d_device *d, const ff_locs *l, int alpha_test)
 {
+    if (l->ui_filter >= 0) glUniform1i(l->ui_filter, d3d_gl_ui_drawing() ? d3d_gl_ui_filter() : -1);
     uint32_t tf = d->st.rs[60];                                    /* D3DRS_TEXTUREFACTOR */
     if (l->tfactor >= 0) glUniform4f(l->tfactor, ((tf >> 16) & 255) / 255.0f, ((tf >> 8) & 255) / 255.0f,
         (tf & 255) / 255.0f, (tf >> 24) / 255.0f);

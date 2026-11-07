@@ -6,7 +6,6 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-import warnings
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -194,8 +193,7 @@ toe_third();
 class OverlayContractTest(unittest.TestCase):
     def fixture(self, edition, root):
         import port_ui
-        import town_music
-        (root / 'config/music').mkdir(parents=True)
+        (root / 'config').mkdir(parents=True, exist_ok=True)
         (root / 'config/editions.json').write_bytes((ROOT / 'config/editions.json').read_bytes())
         folder = root / 'overlay'
         (folder / 'data').mkdir(parents=True)
@@ -235,84 +233,33 @@ class OverlayContractTest(unittest.TestCase):
                     ui.writestr('UI/' + screen + '.(WindowScreen).xdb',
                         '<WindowScreen><Placement><HorAllign><First>' + mode +
                         '</First><Second>true</Second></HorAllign></Placement></WindowScreen>')
-        originals = {name: ('<Music><FileName>test/' + edition + '/' + name + '</FileName>'
-            '<FadeIn>2000</FadeIn><FadeOut>2000</FadeOut><MinPausedTime>1000</MinPausedTime>'
-            '<MaxPausedTime>10000</MaxPausedTime></Music>').encode() for name in town_music.TOWNS_BY_EDITION[edition]}
-        manifest = 'manifest.json' if edition == 'toe' else edition + '.json'
-        (root / 'config/music' / manifest).write_text(json.dumps(
-            {name: hashlib.sha256(data).hexdigest() for name, data in originals.items()}))
-        entries = [('Sounds/_(Music)/Towns/' + name,
-            data.replace(b'<MinPausedTime>1000', b'<MinPausedTime>0').replace(b'<MaxPausedTime>10000', b'<MaxPausedTime>0'),
-            town_music.ZIP_DATE) for name, data in originals.items()]
-        music = folder / 'data' / town_music.PAK_NAME
-        self.write_music(music, entries)
         if edition != 'toe':
-            for packed in (folder / 'data' / port_ui.PAK_NAME, music):
+            for packed in (folder / 'data' / port_ui.PAK_NAME,):
                 with zipfile.ZipFile(packed) as archive:
                     for name in archive.namelist():
                         target = folder / 'data' / name
                         target.parent.mkdir(parents=True, exist_ok=True)
                         target.write_bytes(archive.read(name))
-        return folder, music, entries
+        return folder
 
-    def write_music(self, path, entries):
-        with warnings.catch_warnings(), zipfile.ZipFile(path, 'w') as archive:
-            warnings.simplefilter('ignore', UserWarning)  # Deliberate duplicate-member negative case.
-            for name, payload, date in entries:
-                archive.writestr(zipfile.ZipInfo(name, date), payload)
 
-    def test_complete_music_is_bound_to_overlay_receipt_for_each_edition(self):
+
+
+    def test_overlay_needs_no_town_music_patch(self):
         for edition in ('toe', 'vanilla', 'hof'):
             with self.subTest(edition=edition), tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
-                folder, music, _ = self.fixture(edition, root)
+                folder = self.fixture(edition, root)
                 result = patches.validate_overlay(edition, folder, root)
-                self.assertEqual(result['town_music_sha256'], patches.digest(music))
-                self.assertIn('audio', result['features'])
-
-    def test_missing_incomplete_stale_or_altered_music_stops_overlay_preflight(self):
-        cases = ('missing_archive', 'missing_town', 'duplicate_town', 'extra_town',
-                 'minimum_pause', 'maximum_pause', 'file_name', 'fade', 'timestamp', 'wrong_manifest')
-        for edition in ('toe', 'vanilla', 'hof'):
-            for case in cases:
-                with self.subTest(edition=edition, case=case), tempfile.TemporaryDirectory() as temp:
-                    root = Path(temp)
-                    folder, music, entries = self.fixture(edition, root)
-                    name, payload, date = entries[0]
-                    if case == 'missing_archive':
-                        music.unlink()
-                    elif case == 'missing_town':
-                        self.write_music(music, entries[1:])
-                    elif case == 'duplicate_town':
-                        self.write_music(music, entries + entries[:1])
-                    elif case == 'extra_town':
-                        self.write_music(music, entries + [('Sounds/_(Music)/Towns/another-edition.xdb', payload, date)])
-                    elif case == 'wrong_manifest':
-                        manifest = root / 'config/music' / ('manifest.json' if edition == 'toe' else edition + '.json')
-                        contents = json.loads(manifest.read_text())
-                        contents.pop(name.rsplit('/', 1)[1])
-                        manifest.write_text(json.dumps(contents))
-                    else:
-                        if case == 'minimum_pause':
-                            payload = payload.replace(b'<MinPausedTime>0', b'<MinPausedTime>1000')
-                        elif case == 'maximum_pause':
-                            payload = payload.replace(b'<MaxPausedTime>0', b'<MaxPausedTime>10000')
-                        elif case == 'file_name':
-                            payload = payload.replace(b'<FileName>test/', b'<FileName>changed/')
-                        elif case == 'fade':
-                            payload = payload.replace(b'<FadeIn>2000', b'<FadeIn>0')
-                        else:
-                            date = (2007, 1, 1, 0, 0, 0)
-                        self.write_music(music, [(name, payload, date)] + entries[1:])
-                    with self.assertRaisesRegex(ValueError, 'town music'):
-                        patches.validate_overlay(edition, folder, root)
+                self.assertNotIn('town_music_sha256', result)
+                self.assertFalse((folder / 'data/Sounds').exists())
 
     def test_telemetry_cannot_be_missing_enabled_late_or_overridden(self):
         for edition in ('toe', 'vanilla', 'hof'):
             for case in ('missing', 'enabled', 'late', 'override', 'duplicate', 'user_override'):
                 with self.subTest(edition=edition, case=case), tempfile.TemporaryDirectory() as temp:
                     root = Path(temp)
-                    folder, _, _ = self.fixture(edition, root)
+                    folder = self.fixture(edition, root)
                     suffix = patches.edition_spec(edition, root)['profile_suffix']
                     auto = folder / ('profiles/autoexec' + suffix + '.cfg')
                     disabled = b'setvar ubi_tracking_tool_enabled = 0\n'
@@ -329,12 +276,11 @@ class OverlayContractTest(unittest.TestCase):
     def test_missing_or_changed_loose_resources_stop_legacy_overlay_preflight(self):
         import port_ui
         for edition in ('vanilla', 'hof'):
-            for resource in (port_ui.UICONSTS, 'UI/AdventureScreen-Heavy.(WindowScreen).xdb',
-                             'Sounds/_(Music)/Towns/Haven.(Music).xdb'):
+            for resource in (port_ui.UICONSTS, 'UI/AdventureScreen-Heavy.(WindowScreen).xdb'):
                 for defect in ('missing', 'stale'):
                     with self.subTest(edition=edition, resource=resource, defect=defect), tempfile.TemporaryDirectory() as temp:
                         root = Path(temp)
-                        folder, _, _ = self.fixture(edition, root)
+                        folder = self.fixture(edition, root)
                         target = folder / 'data' / resource
                         if defect == 'missing': target.unlink()
                         else: target.write_bytes(b'stale original bank resource')
@@ -347,7 +293,7 @@ class OverlayContractTest(unittest.TestCase):
             for defect in ('missing', 'horizontal', 'bottom'):
                 with self.subTest(edition=edition, defect=defect), tempfile.TemporaryDirectory() as temp:
                     root = Path(temp)
-                    folder, _, _ = self.fixture(edition, root)
+                    folder = self.fixture(edition, root)
                     path = folder / 'data' / port_ui.PAK_NAME
                     with zipfile.ZipFile(path) as archive:
                         members = {name: archive.read(name) for name in archive.namelist()}
@@ -366,7 +312,7 @@ class OverlayContractTest(unittest.TestCase):
             for defect in ('missing', 'background'):
                 with self.subTest(edition=edition, defect=defect), tempfile.TemporaryDirectory() as temp:
                     root = Path(temp)
-                    folder, _, _ = self.fixture(edition, root)
+                    folder = self.fixture(edition, root)
                     path = folder / 'data' / port_ui.PAK_NAME
                     with zipfile.ZipFile(path) as archive:
                         entries = {name: archive.read(name) for name in archive.namelist()}
@@ -384,7 +330,7 @@ class OverlayContractTest(unittest.TestCase):
             for defect in ('missing', 'anchor'):
                 with self.subTest(edition=edition, defect=defect), tempfile.TemporaryDirectory() as temp:
                     root = Path(temp)
-                    folder, _, _ = self.fixture(edition, root)
+                    folder = self.fixture(edition, root)
                     path = folder / 'data' / port_ui.PAK_NAME
                     with zipfile.ZipFile(path) as archive:
                         entries = {name: archive.read(name) for name in archive.namelist()}
@@ -402,7 +348,7 @@ class OverlayContractTest(unittest.TestCase):
             for defect in ('missing', 'fixed_aspect'):
                 with self.subTest(edition=edition, defect=defect), tempfile.TemporaryDirectory() as temp:
                     root = Path(temp)
-                    folder, _, _ = self.fixture(edition, root)
+                    folder = self.fixture(edition, root)
                     ui = folder / 'data' / port_ui.PAK_NAME
                     with zipfile.ZipFile(ui) as archive:
                         entries = {name: archive.read(name) for name in archive.namelist()}

@@ -23,6 +23,7 @@ HARNESS = r'''
 #include <stdio.h>
 #include <string.h>
 static unsigned char memory[0x100000];
+static uint32_t split_amount = 1;
 #define ADDR(p) (memory + (uint32_t)(p))
 #define MEM32(p) (*(uint32_t *)ADDR(p))
 #define MEM16(p) (*(uint16_t *)ADDR(p))
@@ -148,8 +149,8 @@ int main(void) {
     memset(reserve, 0, sizeof reserve); reserve[2] = 0xA000; reserve[3] = 0xA100;
     MEM32(0xA000 + 8) = 5; MEM32(0xA000 + 0x1C) = 0x77;
     void_touch_event begin = {TOUCH_SECOND_BEGIN, 550, 10, 0, 0, 1, 0}, tap = {TOUCH_SECOND_TAP, 550, 10, 0, 0, 1, 0};
-    assert(placement_second(&begin) && gesture.second_troop && !call_count);
-    assert(placement_second(&tap) && gesture.committed);
+    assert(placement_second(&begin, -1) && gesture.second_troop && !call_count);
+    assert(placement_second(&tap, -1) && gesture.committed);
     unsigned ctor = find(VA_SPLIT_CTOR), holder = find(VA_SPLIT_HOLDER), one = find(VA_SPLIT_ONE);
     unsigned cancel = find(VA_PLACEMENT_CANCEL), apply = find(VA_SPLIT_APPLY);
     assert(find(VA_ALLOC) && ctor && holder && one && cancel && apply);
@@ -160,14 +161,14 @@ int main(void) {
     assert(calls[holder - 1].self == 0x8000 + 0x80 && calls[cancel - 1].self == 0x8000);
     reset(); gesture.screen = 0x4000; gesture.kind = SCREEN_COMBAT; gesture.placement = 1;
     gesture.start_x = gesture.x = 250; MEM32(0x4000 + STATE) = 0x8; MEM32(0x4000 + PLACEMENT) = 0x8000;
-    assert(!placement_second(&begin));                            /* not the tactics phase */
+    assert(!placement_second(&begin, -1));                        /* not the tactics phase */
     printf("PASS ported touch helpers (%s)\n", EDITION);
     return 0;
 }
 '''
 
 FUNCTIONS = ("static uint32_t atb_unit_at(", "static int minimap_at(", "static int slider_lever_at(",
-             "static int book_swipe(", "static void choice_update(", "static int placement_second(")
+             "static int book_swipe(", "static void choice_update(", "static void placement_cancel(", "static int placement_second(")
 # 3.1 field offsets and what 1.6 / 2.1 use.
 FIELDS = {"BAR": (0x494, 0x468, 0x480), "STATE": (0x2E0, 0x2D8, 0x2F0), "PLACEMENT": (0x488, 0x45C, 0x474),
           "CLOSING": (0x1ED, 0x1E5, 0x1E1), "HERO_TEXT": (0x118, 0x108, 0x118), "PARENT_SLOT": (0xD8, 0xCC, 0xD4)}

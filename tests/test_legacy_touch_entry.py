@@ -41,6 +41,7 @@ static uint32_t read32(uint32_t a) {assert(a+4<=sizeof memory);return MEM32(a);}
 static int void_vm_readable(uint32_t a,unsigned n) {return a && a+n<=sizeof memory;}
 static void dnd_owner_pump(int abort) {assert(!abort);}
 static void dnd_cancel(void) {}
+static void split_zone_hide(void) {}
 static void ui_release(int abort) {(void)abort;}
 static int spellbook_kind(uint32_t s) {assert(s==selected);return 0;}
 static int ui_method(uint32_t s,unsigned slot) {assert(s==selected&&slot==0x28);return 1;}

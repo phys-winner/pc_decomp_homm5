@@ -118,8 +118,8 @@
   },
   "textures": {"backend": "org.homm5.port.TexconvBackend"},
   "hints": {
-    "gameFiles": {"en": "A ZIP archive of the installed game (only the folders the game reads are unpacked) or the folder of the installation: the one with bin and data, and bina1/dataa1 for Hammers of Fate. A folder holding several games is taken for each of them.",
-                  "ru": "ZIP-архив установленной игры (распаковываются только папки, которые читает игра) или папка установки — та, где лежат bin и data, а для Hammers of Fate также bina1/dataa1. Папка, где установлено несколько игр, подойдёт для каждой из них."},
+    "gameFiles": {"en": "A ZIP of an installed game, or its installation folder — bin and data, and bina1/dataa1 for Hammers of Fate. Vanilla and Hammers of Fate may share a folder. Keep Tribes of the East separate.",
+                  "ru": "ZIP-архив установленной игры или папка установки — bin и data, для Hammers of Fate также bina1/dataa1. Vanilla и Hammers of Fate могут быть в общей папке. Повелителей Орды устанавливайте отдельно."},
     "options": {"en": "Render scale, interface scale and camera sensitivity are in the game: Settings → Additional.",
                 "ru": "Масштаб рендера, интерфейса и чувствительность камеры — в самой игре: Настройки → Дополнительные."}
   }

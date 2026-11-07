@@ -24,6 +24,7 @@ def fixed_function_sources():
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "d3d9_filter.h"
 typedef uint32_t GLuint;
 #define GL_VERTEX_SHADER 0x8B31
 #define GL_FRAGMENT_SHADER 0x8B30
@@ -51,7 +52,8 @@ int main(void) {
  f.project[0] = 4; pixel_shader(&f); return 0;
 }
 """
-    compile_probe("shadow_ff", harness, {})
+    compile_probe("shadow_ff", harness, {name: (ROOT / "android/host" / name).read_text()
+                                        for name in ("d3d9_filter.h", "fsr1.h")})
     return (out / "ff.vert").read_bytes(), (out / "ff.frag").read_bytes()
 
 
@@ -119,7 +121,7 @@ void main(){
         gather = b"vec4 depths = textureGather(ps_s1, uv, 3).wzxy;"
         self.assertEqual(self.fragment.count(gather), 1)
         # Keep the original atlas RGB/cloud read, separate from gathered depth.
-        self.assertIn(b"ps_t1 = texture2D(ps_s1, ps_t1.xy);", self.fragment)
+        self.assertIn(b"ps_t1 = vpTexture(ps_s1, ps_t1.xy);", self.fragment)
         reference = self.fragment.replace(gather, b"""vec2 lo = (floor(p) + 0.5) / size, stepUV = 1.0 / size;
  vec4 depths = vec4(textureLod(ps_s1, lo, 0.0).a,
   textureLod(ps_s1, lo + vec2(stepUV.x, 0), 0.0).a,

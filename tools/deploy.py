@@ -6,10 +6,9 @@ import os
 from pathlib import Path
 import shlex
 import subprocess
-from town_music import build_town_music_override
 from port_ui import build_port_ui_override
 from port_patches import validate_packaged_native, validate_overlay
-from editions import EDITION_IDS, edition_spec, generated_root, module_manifest, game_directory, build_root, override_files
+from editions import EDITION_IDS, INSTALLED_IMAGES, edition_spec, generated_root, module_manifest, game_directory, build_root, override_files
 from profile_defaults import bootstrap_profiles
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,14 +45,18 @@ def main():
     header = executable.read_bytes()[:64]
     if header[:4] != b"\x7fELF" or header[4:6] != b"\x02\x01" or header[18:20] != b"\xb7\x00":
         raise ValueError("The Android executable must be a little-endian ARM64 ELF")
-    music_override, ui_override, directories, profiles, overrides = None, None, [], {}, {}
+    ui_override, directories, profiles, overrides = None, [], {}, {}
     overlay_receipt = None
     if args.data:
         game = game_directory(args.edition, ROOT)
-        music_override = build_town_music_override(ROOT, game, edition=args.edition)
+        for row in module_manifest(args.edition, ROOT):
+            if row["file"] in INSTALLED_IMAGES:
+                original = game / row["source"]
+                if hashlib.sha256(original.read_bytes()).hexdigest() != row["sha256"]:
+                    raise ValueError(args.edition + ": original image SHA-256 mismatch: " + row["file"])
         ui_override = build_port_ui_override(ROOT, game, edition=args.edition)
         names = set()
-        for archive, _ in (music_override, ui_override):
+        for archive, _ in (ui_override,):
             for relative, contents in override_files(args.edition, archive).items():
                 if relative.casefold() in names:
                     raise ValueError("Conflicting deploy override resource: " + relative)
@@ -76,7 +79,7 @@ def main():
             raise FileNotFoundError(intro)
         overlay_receipt = validate_overlay(args.edition, stage, root=ROOT)
     images = [(generated_root(args.edition, ROOT) / "input" / row["file"], device_images + "/" + row["file"])
-              for row in module_manifest(args.edition, ROOT)]
+              for row in module_manifest(args.edition, ROOT) if row["file"] not in INSTALLED_IMAGES]
     for source, _ in images:
         if not source.is_file():
             raise FileNotFoundError(source)
@@ -126,8 +129,7 @@ def main():
     receipt = {"edition": args.edition, "serial": args.serial, "verified_sha256": verified,
                "game": device_game, "userdata": device_data, "images": device_images, "command": command,
                "native_patches": native_receipt}
-    if music_override:
-        receipt["town_music_override"] = music_override[1]
+    if ui_override:
         receipt["ui_override"] = ui_override[1]
         receipt["overlay_patches"] = overlay_receipt
     (ROOT / ("build/deploy-receipt" + suffix + ".json")).write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")

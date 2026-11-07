@@ -10,6 +10,7 @@ It runs after the other source passes, so their regions keep their pins.
 import json
 from pathlib import Path
 import re
+from editions import generated_root
 
 ROOT = Path(__file__).resolve().parents[1]
 SUMMARY = ROOT / 'build/call-protocol/summary.json'
@@ -30,8 +31,11 @@ EXIT = re.compile(rb'RECOMP_REGS_OUT\(\);( return;|\r?\n\}\r?\n$)')
 
 
 class Protocol:
-    def __init__(self, path=SUMMARY, full=()):
+    def __init__(self, path=SUMMARY, full=(), edition="toe"):
         data = json.loads(Path(path).read_text())
+        if data.get('edition', 'toe') != edition:
+            raise ValueError('Call protocol belongs to another edition')
+        self.generated = generated_root(edition)
         self.flags_in = set(data['flags_in'])
         self.flags_out = set(data['flags_out'])
         self.regs = {name: tuple(masks) for name, masks in data['regs'].items()}
@@ -45,7 +49,7 @@ class Protocol:
     def declared(self, module):
         """Names the module's own header declares (direct tails stay in-module)."""
         if module not in self._declared:
-            header = ROOT / f'generated/{module}-x86/{module}_funcs.h'
+            header = self.generated / (module + '-x86') / (module + '_funcs.h')
             self._declared[module] = set(re.findall(r'^void (sub_[0-9A-F]{8})\(void\);', header.read_text(), re.M))
         return self._declared[module]
 

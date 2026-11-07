@@ -7,6 +7,11 @@ from test_d3d_lifecycle import function
 HARNESS = r'''
 #include <assert.h>
 #include <stdint.h>
+#define BUF_RT(b) (b)
+#define TEX_RT(t) (t)
+#define rt_shadow shadow
+#define rt_locks locks
+#define rt_lod lod
 #include <stdio.h>
 #include <string.h>
 typedef unsigned GLenum, GLuint;

@@ -409,10 +409,13 @@ static void scale_anchor(uint32_t parent, unsigned depth, scale_pass *pass)
             i >= (end - begin) / 4 || !void_vm_readable(begin, end - begin)) break;
         --pass->remaining;
         uint32_t child = MEM32(begin + i * 4), placement = child && child != parent ? scale_placement(child) : 0;
+        /* The console owns its off-screen animation; fitting or anchoring it cancels ShowConsole. */
+        if (placement && scale_named(placement, "Console")) continue;
         float frame[4], position[2], size[2], shift[2];
         int container = 0;
         if (placement && MEM8(placement + 0x70) && scale_named(placement, "StackInfo")) {
             float y = MEMF(placement + 0x8C), h = MEMF(placement + 0xA8);
+            if (!isfinite(y) || !isfinite(h) || y < 0 || y + h > pass->view_h) continue;
             if (isfinite(y) && isfinite(h) && h > 0) {
                 pass->stack_top = pass->stacks ? fminf(pass->stack_top, y) : y;
                 pass->stack_bottom = pass->stacks ? fmaxf(pass->stack_bottom, y + h) : y + h;
@@ -484,7 +487,11 @@ static int scale_fits(uint32_t root, int anchor, float width, float height, floa
     /* Both ends of the combat HUD must fit together, not merely on their own. */
     if (pass.combat_left > 0 && pass.combat_right > 0)
         pass.need_w = fmaxf(pass.need_w, pass.combat_left + pass.combat_right);
+#ifdef HOMM5_LEGACY_UI
     if (anchor && pass.stacks && scale_read32(viewport.screen) == 0x00E1DA84u)
+#else
+    if (anchor && scale_read32(viewport.screen) == 0x00E1DA84u)
+#endif
         void_touch_combat_frame(viewport.screen, width, height, pass.hud_top, pass.stack_top, pass.stack_bottom);
     if (anchor && scale_read32(viewport.screen) == 0x00E230E4u)
         void_touch_adventure_frame(viewport.screen, height, pass.map_army ? pass.map_top : 0,
@@ -686,7 +693,7 @@ void void_touch_scale_pump(void)
 
     /* Above 100% the scale is the screen's: a new screen, or a new request, starts
        from the request and anchoring lowers it while an element does not fit. */
-    uint32_t screen = requested > 100 ? scale_current_screen() : 0;
+    uint32_t screen = scale_current_screen();
     if (scale_read32(screen) != 0x00E1DA84u && scale_read32(screen) != 0x00E230E4u)
         void_touch_combat_frame(0, 0, 0, 0, 0, 0);
     if (requested <= 100 || fit.screen != screen || fit.requested != requested) {
@@ -721,6 +728,9 @@ void void_touch_scale_pump(void)
             VLOG("[touch] ui-scale=%d%% (requested %d%%) virtual=%.2fx%.2f backbuffer=%dx%d",
                  percent, requested, wanted_w, wanted_h, buffer_w, buffer_h);
         }
+        /* Arm the battle lens before labels or deployment widgets are visible, at every UI scale. */
+        if (scale_read32(screen) == 0x00E1DA84u)
+            void_touch_combat_frame(screen, wanted_w, wanted_h, wanted_h, 0, 0);
         if (requested <= 100) return;
         int fits;
         if (percent > 100) {

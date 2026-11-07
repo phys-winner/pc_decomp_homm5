@@ -72,7 +72,8 @@ class LongSwitchTables(unittest.TestCase):
                             self.assertIn(b"case 0x%08Xu: goto L_%08X;" % (target, target), switch)
 
     def test_regenerated_bodies_skip_only_their_stale_profile(self):
-        source = b"\nvoid sub_009F0DF0(void) {\n}\n\nvoid sub_00D3E3F6(void) {\n}\n\nvoid sub_00415AC0(void) {\n}\n"
+        source = b"".join(b"\nvoid %s(void) {\n}\n" % name for name in builder.PGO_RETRAIN)
+        source += b"\nvoid sub_00415AC0(void) {\n}\n"
         marked = builder.skip_stale_profile(source)
         for name in builder.PGO_RETRAIN:
             self.assertIn(b"__attribute__((no_profile_instrument_function))\nvoid %s(void) {" % name, marked)

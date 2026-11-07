@@ -15,7 +15,7 @@ def fixture():
     stop = source.index("void d3d_gl_forget_texture(", start)
     helpers = source[source.index("/* Dedicated CPU-only capture;"):
                      source.index("/* ------------------------------------------------------------ attributes */")]
-    return ((ROOT / "tests/depth_feedback_probe.c").read_text(encoding="utf-8")
+    return ("#define TEX_RT(t) (t)\n#define rt_lod lod\n" + (ROOT / "tests/depth_feedback_probe.c").read_text(encoding="utf-8")
             .replace("/* ACTUAL_ATTACHMENTS */", source[start:stop])
             .replace("/* ACTUAL_DEPTH_POINT */", function(source, "static GLenum depth_attachment("))
             .replace("/* ACTUAL_FORGET */", function(source, "void d3d_gl_forget_texture("))
@@ -56,14 +56,14 @@ class DepthFeedbackTest(unittest.TestCase):
         self.assertNotIn("g_d3d_device", request)
         self.assertIn("__atomic_store_n", request)
         self.assertIn("__atomic_exchange_n", function(source, "static void depth_trace_present("))
-        draw = function(source, "int d3d_gl_draw(")
+        draw = function(source, "static int gl_draw(")
         self.assertIn("if (depth_trace_remaining) depth_trace_draw(", draw)
         self.assertLess(draw.index("for (int s = 0; s < 4; ++s) if (vs_samplers"),
                         draw.index("depth_trace_draw("))
         self.assertLess(draw.index("depth_trace_draw("), draw.index("/* UP data */"))
-        present = function(source, "void d3d_gl_present(")
+        present = function(source, "static void gl_present(")
         self.assertEqual(present.count("depth_trace_present(dev);"), 1)
-        destroy = function(source, "void d3d_gl_device_destroy(")
+        destroy = function(source, "static void gl_device_destroy(")
         self.assertIn("depth_trace_remaining = 0;", destroy)
         self.assertIn("__atomic_store_n(&depth_trace_requested, 0u", destroy)
         script = (ROOT / "android/host/script.c").read_text(encoding="utf-8")

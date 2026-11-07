@@ -51,13 +51,13 @@ def fixture(candidate):
     start = source.index("typedef struct { GLuint tex; GLenum target; GLint level, layer; } fb_attachment;")
     stop = source.index("void d3d_gl_forget_texture(", start)
     functions = source[start:stop] + "\n" + "\n".join(function(source, signature) for signature in (
-        "static void attach(", "static GLenum depth_attachment(", "void d3d_gl_bind_targets(", "void d3d_gl_blit("))
+        "static void attach(", "static GLenum depth_attachment(", "void d3d_gl_bind_targets(", "static void gl_blit("))
     declarations, assignments = [], []
     for index,(name,ret,args,_,_) in enumerate(APIS):
         declarations += [f"static {ret} (*p_{name})({args});",f"#define {name} p_{name}"]
         assignments.append(f"p_{name}=({ret} (*)({args}))procedures[{index}];")
     declarations += ["__declspec(dllexport) void probe_api(void **procedures) {",*assignments,"}"]
-    return (HERE / "mrt_draw_buffers_probe.c").read_text(encoding="utf-8").replace("/* ACTUAL_GL_PROCEDURES */", "\n".join(declarations)).replace("/* ACTUAL_FUNCTIONS */",functions)
+    return ("#define RDEV g_d3d_device\n#define gl_blit d3d_gl_blit\n" + (HERE / "mrt_draw_buffers_probe.c").read_text(encoding="utf-8")).replace("/* ACTUAL_GL_PROCEDURES */", "\n".join(declarations)).replace("/* ACTUAL_FUNCTIONS */",functions)
 
 
 def build(candidate):
@@ -160,7 +160,7 @@ class MrtDrawBuffersTest(unittest.TestCase):
 
     def test_cache_invalidation_follows_temporary_main_fbo_mask(self):
         source=(ROOT/"android/host/d3d9_gl.c").read_text(encoding="utf-8")
-        blit=function(source,"void d3d_gl_blit(")
+        blit=function(source,"static void gl_blit(")
         self.assertEqual(blit.count(ANCHOR+LINE),1)
         self.assertLess(blit.index(ANCHOR+LINE),blit.index("    } else {"))
 

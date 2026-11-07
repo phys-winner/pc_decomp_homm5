@@ -25,11 +25,9 @@ LAUNCHER = next((path for path in ([Path(os.environ["PORT_LAUNCHER"])] if os.env
 TEXCONV = b"texture-converter-library"
 LIFTED = b"lifted PE image"
 EDITIONS = json.loads((ROOT / "config/editions.json").read_text(encoding="utf-8"))
-# The overlay's data archives come from their own builders (tests/test_town_music.py and
-# tools/port_ui.py, which needs the installed game); here they are distinct stand-ins.
-OVERRIDES = {"town_music": ("build_town_music_override", "z_homm5_android_town_music.pak", b"music-override"),
-             "port_ui": ("build_port_ui_override", "z_homm5_android_ui.pak", b"ui-override")}
-# Tribes of the East's DXVK renderer as tools/build_dxvk.py stages it (build/dxvk and its receipt).
+# UI data is a distinct stand-in for the original-game resource builder.
+OVERRIDES = {"port_ui": ("build_port_ui_override", "z_homm5_android_ui.pak", b"ui-override")}
+# DXVK runtime as tools/build_dxvk.py stages it (build/dxvk and its receipt).
 DXVK_RUNTIME = {"libdxvk_d3d9.so": b"dxvk-d3d9", "libh5dxvk.so": b"dxvk-bridge", "libh5turnip.so": b"turnip-driver"}
 DXVK_LICENSES = {"dxvk.txt": b"dxvk zlib notice", "turnip-mesa.txt": b"mesa note"}
 DXVK_SOURCE = b"bridge source"
@@ -102,6 +100,16 @@ class ApkPGORoutingTest(unittest.TestCase):
                 "build-tools/aapt2.exe", "build-tools/d8.bat", "build-tools/zipalign.exe",
                 "build-tools/apksigner.bat", "android.jar")})
             inputs.update({"jdk/bin/" + name: b"fake JDK tool" for name in ("javac.exe", "keytool.exe")})
+            for edition, row in EDITIONS.items():
+                modules = []
+                for name in ("H5_Game.exe", "granny2.dll", "fmod.dll"):
+                    data = LIFTED + edition.encode() + name.encode()
+                    inputs[row["generated"] + "/input/" + name] = data
+                    module_name = "game" if name == "H5_Game.exe" else Path(name).stem
+                    inputs[row["generated"] + "/" + module_name + "-x86/report.json"] = b'{"status":"GENERATED"}'
+                    modules.append({"name": module_name, "file": name, "source": row["bin"] + "/" + name,
+                                    "sha256": hashlib.sha256(data).hexdigest()})
+                inputs[row["modules"]] = json.dumps(modules).encode()
             for relative, data in inputs.items():
                 (root / relative).parent.mkdir(parents=True, exist_ok=True)
                 (root / relative).write_bytes(data)
@@ -193,6 +201,22 @@ class ApkPGORoutingTest(unittest.TestCase):
             builders["port_patches"] = patches
 
             with ExitStack() as stack:
+                real_launcher_tool = module.launcher_tool
+
+                def launcher_tool(base):
+                    tool = real_launcher_tool(base)
+
+                    def build_probe(directory, package):
+                        self.assertEqual(package, "org.homm5.port.launcher")
+                        library = Path(directory) / "libportprobe.so"
+                        library.parent.mkdir(parents=True, exist_ok=True)
+                        library.write_bytes(b"vulkan-driver-probe")
+                        return library
+
+                    tool.build_probe = build_probe
+                    return tool
+
+                stack.enter_context(patch.object(module, "launcher_tool", side_effect=launcher_tool))
                 unpacker = root / "unpacker.so"
                 unpacker.write_bytes(b"native-xz-decoder")
                 stack.enter_context(patch.object(module, "build_unpacker", return_value=unpacker))
@@ -249,8 +273,8 @@ class ApkPGORoutingTest(unittest.TestCase):
             # The launcher's texture converter ships beside the game library.
             self.assertEqual(archive.read("lib/arm64-v8a/libtexconv.so"), TEXCONV)
             self.assertEqual(archive.read("lib/arm64-v8a/libhomm5xz.so"), b"native-xz-decoder")
-            # DXVK/Turnip support is commented out: its libraries come only with --dxvk.
-            self.assertFalse([name for name in archive.namelist() if name.endswith(tuple(DXVK_RUNTIME))])
+            self.assertFalse(set("lib/arm64-v8a/" + name for name in DXVK_RUNTIME) & set(archive.namelist()))
+            self.assertNotIn("lib/arm64-v8a/libportprobe.so", archive.namelist())
             original = lzma.decompress(archive.read("assets/native/libhomm5.so.xz"))
             for edition in ("vanilla", "hof"):
                 self.assertEqual(lzma.decompress(archive.read("assets/native/lib" + EDITIONS[edition]["library"] + ".so.xz")), original + edition.encode())
@@ -288,7 +312,7 @@ class ApkPGORoutingTest(unittest.TestCase):
             text = manifest.read_text(encoding="utf-8")
             self.assertIn('android:name="org.homm5.port.launcher.LauncherActivity"', text)
             self.assertNotIn("<!-- launcher:", text)
-            self.assertNotIn(".Probe", text)                     # OpenGL ES only: no driver check
+            self.assertNotIn(".Probe", text)
             javac = next(call for call in sdk if Path(call[0]).name == "javac.exe")
             self.assertEqual(javac[javac.index("-encoding") + 1], "UTF-8")
             self.assertEqual(javac[javac.index("--release") + 1], "8")
@@ -300,7 +324,7 @@ class ApkPGORoutingTest(unittest.TestCase):
             self.assertEqual(d8[d8.index("--min-api") + 1], "26")
             self.assertEqual(self.packaged_library(out), b"ordinary-library")
             with zipfile.ZipFile(out / "heroes-v.apk") as apk:
-                self.assertFalse([name for name in apk.namelist() if name.endswith("libportprobe.so")])
+                self.assertNotIn("lib/arm64-v8a/libportprobe.so", apk.namelist())
 
     def test_signing_key_launcher_base_and_spec_are_checked_before_any_work(self):
         defects = {"keystore": lambda root: (root / "build/android/debug.keystore").unlink(),
@@ -349,26 +373,46 @@ class ApkPGORoutingTest(unittest.TestCase):
                     b"setvar Options.Tooltips.HoverTimeout = 0\nsetvar app_always_active = 1\n"
                     b"setvar gfx_dynamic_lights = 0\nsetvar gfx_noshadows = 1\n"
                     b"setvar gfx_resolution = 1280x800\nsetvar gfx_water_reflection = 0\n")
-                auto = b"setvar ubi_tracking_tool_enabled = 0\nexec profiles\\start.cfg\n"
+                auto = (b"setvar ubi_tracking_tool_enabled = 0\n"
+                        b"setvar dev_console_password = schwinge-des-todes\n"
+                        b"bind show_console '`'\nexec profiles\\start.cfg\n")
                 overlay = {"profiles/autoexec" + row["profile_suffix"] + ".cfg": auto,
                            "profiles/default_profile/user" + row["profile_suffix"] + ".cfg": user,
                            **{"data/" + name: override_payload(name, payload, edition) for _, name, payload in OVERRIDES.values()}}
                 if edition != 'toe':
                     overlay.update({'data/' + resource_name(name): payload + distinct for _, name, payload in OVERRIDES.values()})
-                self.assertEqual(files.pop("assets/lifted" + suffix + "/index.txt").decode().splitlines(), index({"game.exe": LIFTED + distinct}))
+                originals = "".join(f'{row["bin"]}/{name} {len(data)} {hashlib.sha256(data).hexdigest()}\n'
+                    for name in ("H5_Game.exe", "granny2.dll")
+                    for data in (LIFTED + edition.encode() + name.encode(),)).encode()
+                lifted = {"originals.txt": originals, "fmod.dll": LIFTED + edition.encode() + b"fmod.dll"}
+                self.assertEqual(files.pop("assets/lifted" + suffix + "/index.txt").decode().splitlines(), index(lifted))
                 self.assertEqual(files.pop("assets/overlay" + suffix + "/index.txt").decode().splitlines(), index(overlay))
-                expected.update({"assets/lifted" + suffix + "/game.exe": LIFTED + distinct,
+                expected.update({**{"assets/lifted" + suffix + "/" + name: data for name, data in lifted.items()},
                                  **{"assets/overlay" + suffix + "/" + name: data for name, data in overlay.items()},
                                  "assets/overlay-intro" + suffix + "/" + ("intro.xml" if edition == "vanilla" else "intro_a1.xml"): b"<Base><Movies/></Base>"})
                 self.assertEqual(receipts[edition]["overlay"], {"edition": edition, "mandatory": True})
             self.assertEqual(files, expected)
 
-    def test_dxvk_is_packaged_only_on_request(self):
+    def test_changed_original_image_preserves_previous_apk(self):
+        for edition, row in EDITIONS.items():
+            with self.subTest(edition=edition), self.fixture() as (module, root, out, native, sdk, removed):
+                self.library(root, "arm64", b"ordinary-library")
+                (root / row["generated"] / "input/H5_Game.exe").write_bytes(b"different original revision")
+                with self.assertRaisesRegex(SystemExit, "installed image differs from lifted input"):
+                    self.invoke(module, ["--skip-native"])
+                self.assertEqual((out / "keep-until-valid-library").read_bytes(), b"previous-apk")
+                self.assertFalse(removed)
+                self.assertFalse(sdk)
+
+    def test_default_package_omits_dxvk_and_internal_opt_in_is_validated(self):
         with self.fixture() as (module, root, out, native, sdk, removed):
             self.library(root, "arm64", b"ordinary-library")
+            self.invoke(module, ["--skip-native"])
+            with zipfile.ZipFile(out / "heroes-v.apk") as archive:
+                self.assertFalse([name for name in archive.namelist()
+                                  if name.endswith(tuple(DXVK_RUNTIME)) or name.endswith(tuple(DXVK_LICENSES))])
             self.invoke(module, ["--skip-native", "--dxvk"])
             with zipfile.ZipFile(out / "heroes-v.apk") as archive:
-                # DXVK's libraries are extracted by the installer like the converter's.
                 for name, data in DXVK_RUNTIME.items():
                     self.assertEqual(archive.read("lib/arm64-v8a/" + name), data)
                 for name, data in DXVK_LICENSES.items():
@@ -381,7 +425,7 @@ class ApkPGORoutingTest(unittest.TestCase):
             self.assertIn("tools/build_dxvk.py", str(failure.exception))
             self.assertEqual((out / "keep-until-valid-library").read_bytes(), b"previous-apk")
             self.assertEqual((native, sdk, removed), ([], [], []))
-            for args in (["--skip-native"], ["--skip-native", "--no-dxvk"]):
+            for args in (["--skip-native", "--no-dxvk"], ["--skip-native", "--dxvk", "--no-dxvk"]):
                 self.invoke(module, args)
                 with zipfile.ZipFile(out / "heroes-v.apk") as archive:
                     names = archive.namelist()

@@ -103,6 +103,15 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## AMD FidelityFX Super Resolution
+
+`android/host/fsr1.h` adapts FidelityFX FSR 1.0 EASU and RCAS for GLSL ES,
+reusing the adaptation from the sibling Stronghold Crusader port.
+Upstream: https://github.com/GPUOpen-Effects/FidelityFX-FSR, version 1.20210629.
+The complete AMD MIT notice is in `licenses/fidelityfx-fsr.txt` and is packaged
+with the APK. The spatial RCAS kernel is also used by the FSR 3 SDK; this port
+does not include its temporal reconstruction or frame generation.
+
 ## Separately installed development tools
 
 Python packages are installed from `requirements.txt`, rather than vendored:

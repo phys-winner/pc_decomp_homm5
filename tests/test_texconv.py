@@ -280,6 +280,27 @@ class TexconvTest(unittest.TestCase):
         self.assertFalse((data / "zz_port_textures.pak").exists() or (data / "zz_port_textures.json").exists())
         self.assertEqual(len(zipfile.ZipFile(data / "data.pak").namelist()), 11)
 
+    def test_cpu_decoder_rejects_invalid_converted_headers(self):
+        root, _, _ = self.fresh("game-cpu-decode")
+        for format_ in ("etc2", "astc"):
+            run(self.exe, "convert", root, format_)
+            with zipfile.ZipFile(root / "data/zz_port_textures.pak") as z:
+                valid = z.read("Textures/Alpha3.dds")
+            path, output = root / "cpu.dds", root / "cpu.rgba"
+            path.write_bytes(valid)
+            for level in range(5):
+                run(self.exe, "decode", path, level, output)
+                self.assertEqual(output.stat().st_size, max(1, 16 >> level) ** 2 * 4)
+            run(self.exe, "decode", path, 5, output, expect=3)
+            for offset, value in ((4, 0), (12, 0), (36, 0), (40, 99), (48, 99), (84, 0)):
+                bad = bytearray(valid)
+                struct.pack_into("<I", bad, offset, value)
+                path.write_bytes(bad)
+                run(self.exe, "decode", path, 0, output, expect=3)
+            path.write_bytes(valid[:130])
+            run(self.exe, "decode", path, 0, output, expect=3)
+            run(self.exe, "remove-converted", root)
+
     @unittest.skipUnless((GAME_DATA / "data.pak").exists(), "no installed game")
     def test_real_texture_quality(self):
         samples = OUT / "samples"

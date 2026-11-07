@@ -20,7 +20,7 @@ import sys
 import tempfile
 import zipfile
 from android_tools import SDK, TOOLS, JAVA_HOME, ADB, CLANG
-from editions import EDITION_IDS, edition_spec, generated_root, module_manifest, build_root, override_files
+from editions import EDITION_IDS, INSTALLED_IMAGES, edition_spec, generated_root, module_manifest, build_root, override_files
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "build/android-game"
@@ -61,6 +61,7 @@ LICENSE_FILES = {
     "astcenc.txt": "reference/astcenc/LICENSE.txt",
     "etcpak.txt": "reference/etcpak/LICENSE.txt",
     "xz-embedded.txt": "reference/xz-embedded/COPYING",
+    "fidelityfx-fsr.txt": "licenses/fidelityfx-fsr.txt",
 }
 
 CHUNK = 128 << 20
@@ -68,14 +69,14 @@ APK_BUDGET = 190_000_000
 
 
 def dxvk_runtime():
-    """Tribes of the East's DXVK renderer as tools/build_dxvk.py staged it: the libraries for
+    """DXVK renderer as tools/build_dxvk.py staged it: the libraries for
     lib/arm64-v8a (extracted by the installer, where adrenotools and the engine's dlopen find
     them) and their licenses, both checked against the receipt, which must match the current
     bridge sources."""
     stage = ROOT / "build/dxvk"
     receipt_path = stage / "build-receipt.json"
     if not receipt_path.is_file():
-        raise SystemExit("The DXVK renderer is not staged: run tools/build_dxvk.py (or leave out --dxvk)")
+        raise SystemExit("The DXVK renderer is not staged: run tools/build_dxvk.py (or use --no-dxvk)")
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     stale = [relative for relative, digest in receipt["sources"].items()
              if not (ROOT / relative).is_file() or
@@ -156,12 +157,11 @@ def write_index(folder, files):
 
 
 def stage_assets(folder):
-    """assets/lifted: the PE images the lifted code runs on (generated/input);
+    """assets/lifted: prepared DLLs and hashes of images read from the installation;
     assets/overlay: the port's files shadowing the installation for reading;
     assets/overlay-intro: the empty intro playlist, used when the intro is skipped."""
     sys.path.insert(0, str(ROOT / "tools"))
     from port_ui import build_port_ui_override
-    from town_music import build_town_music_override
     from port_patches import validate_overlay
     from profile_defaults import bootstrap_profiles
     licenses = folder / "licenses"
@@ -175,9 +175,20 @@ def stage_assets(folder):
         lifted = folder / ("lifted" + suffix)
         lifted.mkdir(parents=True)
         modules = module_manifest(edition, ROOT)
+        originals = []
         for row in modules:
-            shutil.copy2(generated_root(edition, ROOT) / "input" / row["file"], lifted / row["file"])
-        write_index(lifted, [row["file"] for row in modules])
+            image = generated_root(edition, ROOT) / "input" / row["file"]
+            if row["file"] in INSTALLED_IMAGES:
+                data = image.read_bytes()
+                if hashlib.sha256(data).hexdigest() != row["sha256"]:
+                    raise ValueError(edition + ": installed image differs from lifted input: " + row["file"])
+                originals.append(f'{row["source"]} {len(data)} {row["sha256"]}')
+            else:
+                shutil.copy2(image, lifted / row["file"])
+        if len(originals) != len(INSTALLED_IMAGES):
+            raise ValueError(edition + ": original-image manifest is incomplete")
+        (lifted / "originals.txt").write_text("\n".join(originals) + "\n", encoding="utf-8", newline="\n")
+        write_index(lifted, [row["file"] for row in modules if row["file"] not in INSTALLED_IMAGES] + ["originals.txt"])
         overlay = folder / ("overlay" + suffix)
         profile_suffix = spec["profile_suffix"]
         profiles = bootstrap_profiles(ROOT, edition)
@@ -185,14 +196,8 @@ def stage_assets(folder):
             target = overlay / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(contents)
-        music, _ = build_town_music_override(ROOT, edition=edition)
         ui, _ = build_port_ui_override(ROOT, edition=edition)
-        copies = {}
-        for archive in (music, ui):
-            additions = override_files(edition, archive)
-            if {name.casefold() for name in copies} & {name.casefold() for name in additions}:
-                raise ValueError(edition + ": UI/music overrides collide")
-            copies.update(additions)
+        copies = override_files(edition, ui)
         for relative, contents in copies.items():
             (overlay / relative).parent.mkdir(parents=True, exist_ok=True)
             (overlay / relative).write_bytes(contents)
@@ -226,13 +231,10 @@ def main():
     parser.add_argument("--thinlto", action="store_true", help="package the separate ThinLTO library")
     parser.add_argument("--thinlto-jobs", type=int, default=None, metavar="N",
                         help="pass the ThinLTO backend worker limit to build_android.py")
+    parser.add_argument("--rt-check", action="store_true", help="Validate GLES render-thread ownership")
     parser.add_argument("--protocol-check", action="store_true", help="build_android.py validation build (see there)")
-    # DXVK/Turnip support is commented out (2026-10-29): the APK carries the renderer only when asked
-    # to, and the launcher offers it only when android/port.json lists its modes (it lists OpenGL ES only;
-    # with Vulkan modes this script also builds the launcher's driver check, libportprobe.so).
-    parser.add_argument("--dxvk", action="store_true",
-                        help="package the Tribes of the East DXVK renderer (tools/build_dxvk.py); off: OpenGL ES only")
-    parser.add_argument("--no-dxvk", action="store_true", help=argparse.SUPPRESS)   # the default now
+    parser.add_argument("--dxvk", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--no-dxvk", action="store_true", help="omit the optional DXVK/Turnip runtime")
     args = parser.parse_args()
     if args.thinlto_jobs is not None and (not args.thinlto or args.thinlto_jobs < 1):
         parser.error("--thinlto-jobs must be positive and requires --thinlto")
@@ -271,7 +273,8 @@ def main():
         for edition in EDITION_IDS:
             edition_pgo_flags = pgo_flags if edition == "toe" or args.pgo_use is None else []
             subprocess.run([sys.executable, str(ROOT / "tools/build_android.py"), "--shared", "--jobs", "12", "--edition", edition,
-                            *(flag for flag, _ in modes), *edition_pgo_flags, *lto_flags], check=True)
+                            *(flag for flag, _ in modes), *(["--rt-check"] if args.rt_check else []),
+                            *edition_pgo_flags, *lto_flags], check=True)
     libraries, receipts = [], {}
     for edition in EDITION_IDS:
         library = build_root(edition, [name for _, name in modes], ROOT) / ("lib" + edition_spec(edition, ROOT)["library"] + ".so")
@@ -325,7 +328,7 @@ def main():
         compiled_resources = [archive]
     run(TOOLS / "aapt2.exe", "link", "-I", ANDROID_JAR, "--manifest", prepared["manifest"],
         "-A", assets, *compiled_resources, "-o", OUT / "base.apk")
-    # The launcher's Vulkan driver check exists only for Vulkan renderers; port.json offers OpenGL ES only.
+    # Probe Vulkan support in the launcher's separate process before loading the game.
     probe = port_launcher.build_probe(OUT / "probe", prepared["package"]) if prepared["probe"] else None
     sources = sorted((ROOT / "android/app/src").rglob("*.java")) + [Path(p) for p in prepared["sources"]]
     run(JAVA_HOME / "bin/javac.exe", "--release", "8", "-encoding", "UTF-8", "-cp", ANDROID_JAR, "-d", OUT / "classes", *sources)

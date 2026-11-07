@@ -26,9 +26,10 @@ def engine_harness(edition, addresses):
         0x5E4: 0x55C if edition == 'vanilla' else 0x568,
         0x2E0: 0x2D8 if edition == 'vanilla' else 0x2F0,
     }
+    harness = port_patches.legacy_ui_branch(HARNESS.encode(), False).decode()
     harness = re.sub(r'0x[0-9a-fA-F]+', lambda m:
         hex(0x10000 + fields[int(m[0], 16) - 0x10000])
-        if int(m[0], 16) - 0x10000 in fields else m[0], HARNESS)
+        if int(m[0], 16) - 0x10000 in fields else m[0], harness)
     harness = re.sub(r'self\+0x([0-9a-fA-F]+)', lambda m:
         'self+' + hex(fields.get(int(m[1], 16), int(m[1], 16))), harness)
     # Hammers' native town input queries the roster directly (614200 absent).
@@ -42,7 +43,7 @@ def engine_harness(edition, addresses):
     mapping['00E4493C'] = '00E21444' if edition == 'vanilla' else '00DF63A4'
     harness = re.sub(r'0x([0-9a-fA-F]+)(?![0-9a-fA-F])', lambda m:
         '0x' + mapping.get(f'{int(m[1], 16):08X}', m[1]), harness)
-    return harness
+    return '#define HOMM5_LEGACY_UI 1\n' + harness
 
 
 class LegacyCameraTest(unittest.TestCase):

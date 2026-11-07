@@ -55,12 +55,17 @@ int void_input_pointer(uint32_t *x,uint32_t *y,uint64_t *moved) {
     *x=physical_x;*y=physical_y;*moved=physical_moved_ns;return physical_seen;
 }
 void void_input_screen_size(int *w,int *h) {*w=1280;*h=800;}
-static int key_down[256];
-void void_input_key(uint32_t vk,int down) {key_down[vk&255]=down;}
+static int key_down[256], console_key_downs, console_actions, console_hides;
+void void_input_key(uint32_t vk,int down) {key_down[vk&255]=down;if(vk==0xC0&&down)++console_key_downs;}
 static float cursor_offset_x,cursor_offset_y;
 static int show_touch_cursor;
 float void_port_cursor_offset(int vertical) {return vertical?cursor_offset_y:cursor_offset_x;}
 int void_port_touch_cursor(void) {return show_touch_cursor;}
+static int console_enabled, gear_hit, console_focus, console_visible, console_screen_focus;
+int void_port_console_enabled(void) {return console_enabled;}
+static int split_hints = 1, split_zones_enabled = 1;
+int void_port_split_hints(void) {return split_hints;}
+int void_port_split_zones(void) {return split_zones_enabled;}
 enum { VOID_PERF_FILE_OPEN, VOID_PERF_FILE_MAP, VOID_PERF_FIND, VOID_PERF_FILE_READ, VOID_PERF_SHADER_COMPILE,
        VOID_PERF_PROGRAM_LINK, VOID_PERF_PROGRAM_CACHE, VOID_PERF_TEXTURE, VOID_PERF_COUNT };
 static uint64_t void_perf_now_ns(void) { return mock_now_ns; }
@@ -105,9 +110,9 @@ static uint32_t void_call_guest(uint32_t va, int n, const uint32_t *args, int po
         if(args[3]==0xF34164) return minimap_hit && args[0]==0x6800 ? 0x6A00 : 0;   /* NUI::CAdvMinimap */
         if(args[3]==0xF786F0) return MEM32(args[0])==0xE85E94 ? args[0]-0x17C : 0;
         if(args[3]==0xF2DC80) return 0;   /* CWindowSlider: none here */
-        if(args[3]==0xF2DA88) return args[0]==0x6044 ? 0x6000 : 0;
+        if(args[3]==0xF2DA88) return args[0]==0x6044 ? 0x6000 : args[0]==0x6800 && gear_hit ? 0x6800 : 0;
         if(args[0]==0x6810 || args[0]==0x6820 || args[0]==0x6900)return 0;
-        assert(args[0] == 0x6800);
+        assert(args[0] == 0x6800 || args[0] == 0x30000 || args[0] == 0x31000);
         if(args[3]==0xF7A234) return edit_kind==1 ? 0x30000 : 0;
         if(args[3]==0xF7AE0C) return edit_kind==2 ? 0x31000 : 0;
         assert(args[3] == 0xF44B08);
@@ -118,6 +123,17 @@ static uint32_t void_call_guest(uint32_t va, int n, const uint32_t *args, int po
     return mock_screen;
 }
 static uint32_t void_call_guest_this(uint32_t va, uint32_t self, int n, const uint32_t *args) {
+    if(va==0x470148){assert(self==0x31544&&!n);return console_visible;}
+    if(va==0x470134){
+        assert(self==0x6000&&n==1&&args[0]==0x10180);
+        assert(MEM32(args[0])==0x10190&&MEM32(args[0]+4)==0x1019B&&MEM32(args[0]+8)==0x1019C);
+        assert(!memcmp(ADDR(0x10190),"ShowConsole",12));console_hides++;console_visible=0;return 0;
+    }
+    if(va==0x669F50){
+        assert(self==mock_screen && n==1 && !args[0]);++console_actions;
+        if(console_focus){console_visible=edit_kind=1;focused_field=0x30000;}
+        return 0;
+    }
     /* A held world object's details (UI root +70 at the published point, forced). */
     if(va==0x487A84) {
         assert(self==0x6000&&n==2&&args[1]==1);++held_details;
@@ -236,7 +252,10 @@ static uint32_t void_call_guest_this(uint32_t va, uint32_t self, int n, const ui
         assert(self==0x4000 && n==1 && !args[0] && MEM32(0x4000)==(va>=0x680000 ? 0xE30EB4u : 0xE30CA4u));
         ++book_swipes;last_book_swipe=va;return 1;
     }
-    if(va==0xA4DCB0) {assert(self==0x6000 && !n);return focused_field;}
+    if(va==0xA4DCB0) {
+        assert((self==0x6000 || self==0x30000) && !n);
+        return self==0x6000 ? (console_screen_focus ? self : focused_field) : (focused_field==self ? self : 0);
+    }
     if(va==0xC3EF90 || va==0xC3EC00 || va==0xC89510 || va==0xC89570) {
         assert(self==(edit_kind==1 ? 0x30000u : 0x31000u) && n==1 && args[0]==0x10140);
         assert(MEM32(args[0]+36)==(va==0xC3EF90 || va==0xC89510 ? 0x42Fu : 8u));
@@ -277,7 +296,7 @@ static uint32_t void_call_guest_this(uint32_t va, uint32_t self, int n, const ui
     if (va == 0x544230) {
         assert(self==0x4000 && n==2);
         assert((args[0]==0x42F4 && args[1]==0x42EC) || (args[0]==0x10008 && args[1]==0x10000));
-        MEM32(args[0])=picked_active ? 0x8200 : 0;
+        MEM32(args[0])=picked_active ? 0x8200 : atb_unit && MEMF(args[1])<200 ? atb_unit : 0;
         MEM32(args[0]+0x10)=17; MEM32(args[0]+0x14)=23;
         if(combat_pick_changes_screen)mock_screen=0x5000;
         ++picks; return 0;
@@ -296,7 +315,10 @@ static uint32_t void_call_guest_this(uint32_t va, uint32_t self, int n, const ui
     if (va == 0x545490) {
         assert(self==0x4000 && n==1 && args[0]==0x10140);
         uint32_t packed=MEM32(args[0]+0x24);
-        assert((packed&0x7FFF)>=900 && ((packed>>15)&0x7FFF)>=400 && MEM32(0x433C)==0x8300);
+        assert(MEM32(0x433C)==0x8300);
+        if((packed&0x7FFF)==100 && ((packed>>15)&0x7FFF)==700)
+            assert(atb_unit && MEM32(0x42F4)==atb_unit);
+        else assert((packed&0x7FFF)>=900 && ((packed>>15)&0x7FFF)>=400);
         ++commands; MEM32(0x42E0)=0x200; return 0;
     }
     if (va == 0x5498C0) {
@@ -393,6 +415,8 @@ int void_touch_camera(uint32_t screen, int combat, float x, float y, float dx, f
 #include "touch_engine_actual.h"
 static void settle(void) { mock_now_ns += 1000000000ull; void_touch_ui_pump(); }
 static void reset(int kind) {
+    gear_hit=console_focus=console_visible=console_screen_focus=0;MEM32(0xA008)=0;
+    MEM32(0x60A4)=MEM32(0x60A8)=0;
     cursor_offset_x=cursor_offset_y=0;show_touch_cursor=0;
     void_touch_engine_init(); mock_screen=0x4000; mock_now_ns+=10000000000ull;
     lifted_tracker_calls=lifted_timeout_calls=camera_pose_gets=camera_pose_sets=tilts=0;
@@ -493,7 +517,69 @@ static void reset_loading(void) {
     MEM32(0x414C)=0x4F00;MEM32(0x4F00)=0x4F00;
 }
 int main(void) {
+    reset(0);console_key_downs=console_actions=0;console_enabled=0;
+    event(TOUCH_BEGIN,100,200);event(TOUCH_CONSOLE_TOGGLE,100,200);
+    assert(!console_key_downs&&!gesture.active&&!downs&&!commands);
+    console_enabled=1;event(TOUCH_CONSOLE_TOGGLE,100,200);
+    assert(console_actions==1&&!console_key_downs&&!key_down[0xC0]&&!commands);console_enabled=0;
     uint32_t text_field,text_epoch;int text_kind;
+    for(int world=1;world<=2;++world) for(int screen_focus=0;screen_focus<=1;++screen_focus) {
+        reset(world);console_enabled=gear_hit=console_focus=1;console_actions=console_hides=0;
+        console_screen_focus=screen_focus;
+        MEM32(0xA008)=0x95000;MEM8(0x95000)=0x8B;MEM8(0x95001)=0x81;
+        MEM32(0x95002)=0x120;MEM8(0x95006)=0xC3;MEM32(0x6920)=0x96000;
+        MEM32(0x96058)=0x97000;MEM32(0x9605C)=0x9700A;memcpy(ADDR(0x97000),"OnJog-Menu",10);
+        MEM32(0xABCDE + 8)=0x95000;MEM32(0x30120)=0x98000;
+        MEM32(0x98058)=0x9A000;MEM32(0x9805C)=0x9A00C;memcpy(ADDR(0x9A000),"ConsoleEntry",12);
+        MEM32(0x30028)=0x31500;MEM32(0x31500)=0xB600;MEM32(0xB608)=0x95000;MEM32(0xB62C)=0;
+        MEM32(0x31510)=0xB700;MEM32(0xB708)=0x34;MEM32(0x31544)=0xB800;MEM32(0xB848)=0x470148;
+        MEM32(0x6000)=0xB900;MEM32(0xB934)=0x470134;
+        MEM32(0x31620)=0x99000;MEM32(0x99058)=0x9A100;MEM32(0x9905C)=0x9A107;memcpy(ADDR(0x9A100),"Console",7);
+        MEM32(0x60A4)=0x9B000;MEM32(0x60A8)=0x9B004;MEM32(0x9B000)=0x31500;
+        MEM32(0x315A4)=0x9B100;MEM32(0x315A8)=0x9B104;MEM32(0x9B100)=0x30000;
+        event(TOUCH_BEGIN,100,200);event(TOUCH_HOLD_BEGIN,100,200);
+        assert(console_actions==1&&!gesture.active&&!downs&&!commands&&text_arms==1);
+        assert(void_touch_text_focus(&text_field,&text_kind,&text_epoch)&&text_field==0x30000&&text_kind==1);
+        assert(text_target.root_window==0x30000);
+        console_visible=0;assert(!void_touch_text_focus(&text_field,&text_kind,&text_epoch));
+        console_visible=1;text_choose_window(mock_screen,0x6000,0x30000);
+        assert(void_touch_text_focus(&text_field,&text_kind,&text_epoch));--text_arms;
+        if(screen_focus) {
+            MEM32(0x60A8)=0x9AFFF;assert(!console_focused(0x6000));
+            MEM32(0x60A8)=0x9B003;assert(!console_focused(0x6000));
+            MEM32(0x60A8)=0x9C004;assert(!console_focused(0x6000));
+            MEM32(0x60A8)=0x9B004;assert(console_focused(0x6000)==0x30000);
+            focused_field=0;assert(!console_focused(0x6000));focused_field=0x30000;
+        }
+        event(TOUCH_HOLD_DRAG,100,200);event(TOUCH_END,100,200);
+        assert(console_actions==1&&!downs&&!commands);
+        event(TOUCH_CONSOLE_TOGGLE,0,0);
+        assert(console_actions==1&&console_hides==1&&!void_touch_text_focus(&text_field,&text_kind,&text_epoch));
+        assert(focused_field==0x30000&&!console_visible);
+        event(TOUCH_CONSOLE_TOGGLE,0,0);
+        assert(console_actions==2&&console_hides==1&&console_visible);
+        assert(void_touch_text_focus(&text_field,&text_kind,&text_epoch));
+        event(TOUCH_CONSOLE_TOGGLE,0,0);assert(console_hides==2&&!console_visible);
+        console_focus=0;focused_field=0;
+        event(TOUCH_CONSOLE_TOGGLE,0,0);
+        assert(console_open_request.screen==mock_screen&&console_actions==3&&!console_visible&&text_arms==2);
+        void_touch_frame_presented();void_touch_ui_pump();assert(console_actions==4);
+        console_focus=1;
+        void_touch_frame_presented();void_touch_ui_pump();assert(console_actions==5&&console_visible);
+        void_touch_frame_presented();void_touch_ui_pump();
+        assert(!console_open_request.screen&&text_arms==3&&void_touch_text_focus(&text_field,&text_kind,&text_epoch));
+        event(TOUCH_CONSOLE_TOGGLE,0,0);assert(console_hides==3&&!console_visible);
+        console_focus=0;focused_field=0;event(TOUCH_CONSOLE_TOGGLE,0,0);
+        assert(console_open_request.screen==mock_screen&&console_actions==6);
+        mock_now_ns+=1000000001ull;void_touch_ui_pump();
+        assert(!console_open_request.screen&&console_actions==6&&!console_visible);
+        console_enabled=0;
+        event(TOUCH_BEGIN,100,200);event(TOUCH_TAP,100,200);event(TOUCH_END,100,200);
+        assert(console_actions==6&&console_hides==3&&downs==1&&ups==1);
+    }
+    reset(1);console_enabled=1;console_actions=0;
+    event(TOUCH_BEGIN,100,200);event(TOUCH_HOLD_BEGIN,100,200);event(TOUCH_END,100,200);
+    assert(!console_actions);console_enabled=0;
     for(int world=1;world<=2;++world) {
         reset(world);event(TOUCH_BEGIN,900,400);event(TOUCH_TAP,900,400);
         assert(commands==1); /* No frame pump, timer or subsequent touch required. */
@@ -908,7 +994,7 @@ int main(void) {
     void_touch_frame_presented(); int atb_hovers=hovers; void_touch_ui_pump(); void_touch_ui_pump();
     assert(hovers==atb_hovers+2 && MEMF(0x101E0)==91 && MEMF(0x101E4)==573);
     event(TOUCH_BEGIN,104,704); assert(gesture.atb && gesture.x==100 && gesture.y==700);
-    event(TOUCH_DOUBLE_TAP,104,704); event(TOUCH_END,104,704);
+    event(TOUCH_TAP,104,704); event(TOUCH_END,104,704);
     assert(held_details==1 && atb.card && atb.mode==1 && downs==1 && !doubles && ups==1);
     lifted_timeout_calls=0; g_esp=0x20000; sub_006B92E0(); assert(lifted_timeout_calls==1);   /* held like a finger */
     void_touch_frame_presented(); void_touch_ui_pump(); assert(MEMF(0x101E0)==91 && MEMF(0x101E4)==573);
@@ -925,6 +1011,19 @@ int main(void) {
     int atb_downs=downs; event(TOUCH_BEGIN,900,400); event(TOUCH_TAP,900,400); event(TOUCH_END,900,400);
     assert(!atb.unit && !atb.card && downs==atb_downs && held_details==4 && !commands && !picks);
     g_esp=0x20000; sub_006B92E0(); assert(g_eax==0x7FFFFFFF); MEM32(0x6008)=0;
+    /* Fast double taps reach the native attack handler; holds show a card without a preceding tap. */
+    reset(2);MEM32(0x4494)=0x8700;atb_unit=0x8A00;MEM32(0x6000)=0x94000;MEM32(0x94070)=0x487A84;MEM8(0xF39CA0)=1;
+    event(TOUCH_BEGIN,100,700);event(TOUCH_TAP,100,700);event(TOUCH_END,100,700);
+    event(TOUCH_BEGIN,100,700);event(TOUCH_DOUBLE_TAP,100,700);event(TOUCH_END,100,700);
+    assert(!doubles&&!held_details&&!atb.card&&commands==1&&picks==1&&MEM32(0x42F4)==atb_unit);
+    reset(2);MEM32(0x4494)=0x8700;atb_unit=0x8A00;busy=1;
+    event(TOUCH_BEGIN,100,700);event(TOUCH_DOUBLE_TAP,100,700);event(TOUCH_END,100,700);
+    assert(!commands&&!doubles&&!atb.card); /* Native ownership checks still reject the order. */
+    reset(2);MEM32(0x4494)=0x8700;atb_unit=0x8A00;MEM32(0x6000)=0x94000;MEM32(0x94070)=0x487A84;MEM8(0xF39CA0)=1;
+    event(TOUCH_BEGIN,100,700);event(TOUCH_HOLD_BEGIN,100,700);
+    assert(held_details==1&&gesture.card&&!downs&&!doubles&&!commands);event(TOUCH_END,100,700);
+    reset(2);MEM32(0x4494)=0x8700;atb_unit=0x8A00;atb_unit2=0x8B00;
+    MEM32(0x6000)=0x94000;MEM32(0x94070)=0x487A84;MEM8(0xF39CA0)=1;held_details=4;
     /* Another portrait while one is open or selected: that one is selected (and clicked); a tap on the field with a
        portrait only selected is an ordinary order; the bar moving under the selection ends it. */
     event(TOUCH_BEGIN,100,700); event(TOUCH_TAP,100,700); event(TOUCH_END,100,700);

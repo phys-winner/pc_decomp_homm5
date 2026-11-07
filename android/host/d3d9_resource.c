@@ -1,6 +1,9 @@
 /* Direct3D 9 resources: surfaces, textures, buffers, vertex declarations,
  * queries, state blocks and the implicit swap chain. */
 #include "d3d9_internal.h"
+#include "d3d9_thread.inc"
+#include <errno.h>
+#include <time.h>
 #include "touch.h"
 
 
@@ -46,18 +49,41 @@ static void_com_class surface_class;
 
 uint32_t d3d_wrap_surface(d3d_surface *s) { return s->com.guest; }
 
+/* Objects the render thread may still reach through recorded calls (its
+ * device's state, a draw not run yet) are freed there, after those calls; the
+ * game's thread keeps guest memory and COM to itself. */
+static void run_surface_free(void *args)
+{
+    d3d_surface *s = *(d3d_surface **)args;
+    if (s->gl) { d3d_gl_forget_texture(s->gl); glDeleteTextures(1, &s->gl); }
+    free(s);
+}
+
 static void surface_destroy(void_com_object *o)
 {
     d3d_surface *s = (d3d_surface *)o;
-    if (s->gl) { d3d_gl_forget_texture(s->gl); glDeleteTextures(1, &s->gl); }
     if (s->sysmem) void_gfree(s->sysmem);
-    free(s);
+    d3d_rt_call(run_surface_free, &s, sizeof s);
+}
+
+static void run_surface_create(void *args)
+{
+    d3d_surface *s = *(d3d_surface **)args;
+    glGenTextures(1, &s->gl);
+    d3d_gl_upload_unit();
+    glBindTexture(GL_TEXTURE_2D, s->gl);
+    glTexStorage2D(GL_TEXTURE_2D, 1, s->fmt->internal, (GLsizei)s->width, (GLsizei)s->height);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    apply_swizzle(GL_TEXTURE_2D, s->fmt, s->usage | (s->fmt->depth ? 0 : D3DUSAGE_RENDERTARGET));
+    GLenum e = glGetError();
+    if (e) void_log("[d3d9] surface %ux%u format %u: GL error %04X", s->width, s->height, s->format, e);
 }
 
 d3d_surface *d3d_surface_new(d3d_device *dev, uint32_t w, uint32_t h, uint32_t format, uint32_t usage,
     uint32_t pool, uint32_t multisample)
 {
-    d3d_surface *s = (d3d_surface *)calloc(1, sizeof *s);
+    d3d_surface *s = (d3d_surface *)calloc(1, sizeof(d3d_surface_rt));
     s->dev = dev;
     s->width = w ? w : 1; s->height = h ? h : 1;
     s->format = format; s->usage = usage; s->pool = pool; s->multisample = multisample;
@@ -68,18 +94,25 @@ d3d_surface *d3d_surface_new(d3d_device *dev, uint32_t w, uint32_t h, uint32_t f
     if (pool == D3DPOOL_SYSTEMMEM || pool == D3DPOOL_SCRATCH) {
         s->sysmem = void_galloc(s->pitch * (s->fmt ? d3d_format_rows(s->fmt, s->height) : s->height));
     } else if (s->fmt && s->fmt->internal) {
-        glGenTextures(1, &s->gl);
-        d3d_gl_upload_unit();
-        glBindTexture(GL_TEXTURE_2D, s->gl);
-        glTexStorage2D(GL_TEXTURE_2D, 1, s->fmt->internal, (GLsizei)s->width, (GLsizei)s->height);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        apply_swizzle(GL_TEXTURE_2D, s->fmt, usage | (s->fmt->depth ? 0 : D3DUSAGE_RENDERTARGET));
-        GLenum e = glGetError();
-        if (e) void_log("[d3d9] surface %ux%u format %u: GL error %04X", s->width, s->height, format, e);
+        SURF_RT(s)->has_gl = 1;
+        d3d_rt_call(run_surface_create, &s, sizeof s);
     }
     return s;
 }
+
+/* Private UI/filter targets: no COM or guest allocator on the render thread. */
+d3d_surface *d3d_gl_scratch_new(d3d_device *dev, uint32_t w, uint32_t h, uint32_t format, uint32_t usage)
+{
+    d3d_surface *s = (d3d_surface *)calloc(1, sizeof *s);
+    if (!s) return NULL;
+    s->dev = dev; s->width = w; s->height = h; s->format = format; s->usage = usage;
+    s->fmt = d3d_format_find(format);
+    if (!s->fmt || !s->fmt->internal) { free(s); return NULL; }
+    run_surface_create(&s);
+    return s;
+}
+
+void d3d_gl_scratch_free(d3d_surface *s) { run_surface_free(&s); }
 
 GLuint d3d_surface_gl_texture(d3d_surface *s, GLenum *target, GLint *level, GLint *layer)
 {
@@ -169,11 +202,13 @@ static uint32_t surface_storage(d3d_surface *s, int *persistent)
 /* Recreate a texture's GL storage for converted blocks (`native`) or for its
  * D3D format's own upload layout (NULL). Its levels' contents are refilled by
  * the caller; samplers are separate objects, so only the name changes. */
-static void texture_set_storage(d3d_texture *t, const d3d_native_format *native)
+typedef struct { d3d_texture *t; const d3d_native_format *native; } storage_args;
+
+static void run_set_storage(void *args)
 {
-    if (t->native == native) return;
-    if (!t->gl) { t->native = native; return; }     /* a system copy only remembers it */
-    if (t->target != GL_TEXTURE_2D) return;          /* never converted */
+    const storage_args *a = (const storage_args *)args;
+    d3d_texture *t = a->t;
+    const d3d_native_format *native = a->native;
     GLuint old = t->gl;
     glGenTextures(1, &t->gl);
     d3d_gl_upload_unit();
@@ -187,6 +222,16 @@ static void texture_set_storage(d3d_texture *t, const d3d_native_format *native)
     GLenum e = glGetError();
     if (e) void_log("[d3d9] texture %ux%u storage %.4s: GL error %04X", t->width, t->height,
                     native ? (const char *)&native->fourcc : "dxt", e);
+    TEX_RT(t)->rt_native = native;
+}
+
+static void texture_set_storage(d3d_texture *t, const d3d_native_format *native)
+{
+    if (t->native == native) return;
+    if (!TEX_RT(t)->has_gl) { t->native = native; return; }     /* a system copy only remembers it */
+    if (t->target != GL_TEXTURE_2D) return;
+    storage_args a = { t, native };
+    d3d_rt_call(run_set_storage, &a, sizeof a);
     t->native = native;
     t->native_lock_logged = 0;
 }
@@ -211,7 +256,7 @@ COM_METHOD(surf, LockRect, 4)
         s->lock_rect[0] = s->lock_rect[1] = 0; s->lock_rect[2] = s->width; s->lock_rect[3] = s->height;
     }
     if (!persistent && !(flags & D3DLOCK_DISCARD) && !s->fmt->block_bytes && !s->fmt->depth &&
-        (s->gl || (s->container && s->container->gl)))
+        (SURF_RT(s)->has_gl || (s->container && TEX_RT(s->container)->has_gl)))
         d3d_gl_read_surface(s, mem, s->pitch);      /* reading a GPU-only surface */
     if (s->container && s->fmt->block_bytes && !(flags & D3DLOCK_READONLY)) {
         /* The engine's loader fills DXT textures level by level, reusing them
@@ -226,6 +271,23 @@ COM_METHOD(surf, LockRect, 4)
     MEM32(out) = s->pitch;
     MEM32(out + 4) = mem + offset;
     return D3D_OK;
+}
+
+typedef struct { d3d_surface *s; uint32_t x, y, w, h; } surface_upload_args;
+
+static void run_surface_upload(void *args)
+{
+    const surface_upload_args *a = (const surface_upload_args *)args;
+    d3d_surface *s = a->s;
+    void *owned;
+    size_t size;
+    const void *gl_data = d3d_format_convert(s->fmt, (const uint8_t *)(a + 1), a->w, a->h, s->pitch, &owned, &size, 1);
+    d3d_gl_upload_unit();
+    glBindTexture(GL_TEXTURE_2D, s->gl);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, (GLint)a->x, (GLint)a->y, (GLsizei)a->w, (GLsizei)a->h, s->fmt->format,
+        s->fmt->type, gl_data);
+    free(owned);
 }
 
 /* Upload rect (x0, y0, x1, y1) of guest-layout data `mem` laid out like the
@@ -245,17 +307,13 @@ static void surface_upload_rect(d3d_surface *s, uint32_t mem, const uint32_t *re
     const uint8_t *data = (const uint8_t *)GPTR(mem + offset);
     if (s->container) {
         d3d_texture_upload_rect(s->container, s->face, s->level, x0, y0, x1 - x0, y1 - y0, data, s->pitch);
-    } else if (s->gl && s->fmt->internal && !s->fmt->depth) {
+    } else if (SURF_RT(s)->has_gl && s->fmt->internal && !s->fmt->depth) {
         /* Standalone GPU surfaces are stored like render targets (d3d_surface_new). */
-        void *owned;
-        size_t size;
-        const void *gl_data = d3d_format_convert(s->fmt, data, x1 - x0, y1 - y0, s->pitch, &owned, &size, 1);
-        d3d_gl_upload_unit();
-        glBindTexture(GL_TEXTURE_2D, s->gl);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, (GLint)x0, (GLint)y0, (GLsizei)(x1 - x0), (GLsizei)(y1 - y0), s->fmt->format,
-            s->fmt->type, gl_data);
-        free(owned);
+        uint32_t bytes = s->pitch * (d3d_format_rows(s->fmt, y1 - y0) - 1u) + d3d_format_pitch(s->fmt, x1 - x0);
+        surface_upload_args *a = (surface_upload_args *)d3d_rt_begin(run_surface_upload, (uint32_t)sizeof *a + bytes);
+        *a = (surface_upload_args){ s, x0, y0, x1 - x0, y1 - y0 };
+        memcpy(a + 1, data, bytes);
+        d3d_rt_commit();
     }
 }
 
@@ -344,28 +402,58 @@ static void_com_class surface_class = { "IDirect3DSurface9", 17, surface_methods
 /* ================================================================ textures */
 static void_com_class texture_class, cube_class, volume_class;
 
+static void run_texture_free(void *args)
+{
+    d3d_texture *t = *(d3d_texture **)args;
+    if (t->gl) { d3d_gl_forget_texture(t->gl); glDeleteTextures(1, &t->gl); }
+    free(t->surfaces);
+    free(t);
+}
+
 static void texture_destroy(void_com_object *o)
 {
     d3d_texture *t = (d3d_texture *)o;
-    if (t->gl) { d3d_gl_forget_texture(t->gl); glDeleteTextures(1, &t->gl); }
     int n = t->faces * (int)t->levels;
     for (int i = 0; i < n; ++i) {
         if (t->surfaces && t->surfaces[i]) {
+            /* Its surfaces go with it (their structures on the render thread, before the texture's). */
             d3d_surface *s = t->surfaces[i];
-            s->container = NULL;
             s->com.refs = 1;
             void_com_release(&s->com);
         }
         if (t->sysmem && t->sysmem[i]) void_gfree(t->sysmem[i]);
     }
-    free(t->surfaces);
     free(t->sysmem);
-    free(t);
+    t->sysmem = NULL;
+    d3d_rt_call(run_texture_free, &t, sizeof t);
 }
 
 void d3d_texture_level_size(d3d_texture *t, uint32_t level, uint32_t *w, uint32_t *h)
 {
     level_dims(t->width, t->height, level, w, h);
+}
+
+/* GL storage of a texture: in its D3D format's upload layout, or in the
+ * converted blocks rt_native when set before. */
+static void run_texture_create(void *args)
+{
+    d3d_texture *t = *(d3d_texture **)args;
+    const d3d_native_format *native = TEX_RT(t)->rt_native;
+    GLenum internal = native ? native->internal : t->fmt->internal;
+    glGenTextures(1, &t->gl);
+    d3d_gl_upload_unit();
+    glBindTexture(t->target, t->gl);
+    if (t->target == GL_TEXTURE_3D)
+        glTexStorage3D(GL_TEXTURE_3D, (GLsizei)t->levels, internal, (GLsizei)t->width, (GLsizei)t->height, (GLsizei)t->depth);
+    else
+        glTexStorage2D(t->target, (GLsizei)t->levels, internal, (GLsizei)t->width, (GLsizei)t->height);
+    glTexParameteri(t->target, GL_TEXTURE_MAX_LEVEL, (GLint)t->levels - 1);
+    apply_swizzle(t->target, t->fmt, t->usage);
+    GLenum e = glGetError();
+    if (e && native) void_log("[d3d9] converted texture %ux%u levels %u format %.4s: GL error %04X", t->width, t->height,
+                              t->levels, (const char *)&native->fourcc, e);
+    else if (e) void_log("[d3d9] texture %ux%u levels %u format %u: GL error %04X", t->width, t->height, t->levels,
+                         t->format, e);
 }
 
 d3d_texture *d3d_texture_new(d3d_device *dev, uint32_t rtype, uint32_t w, uint32_t h, uint32_t d,
@@ -376,7 +464,7 @@ d3d_texture *d3d_texture_new(d3d_device *dev, uint32_t rtype, uint32_t w, uint32
     uint32_t full = mip_levels(w, h, rtype == D3DRTYPE_VOLUMETEXTURE ? d : 1);
     if (usage & D3DUSAGE_AUTOGENMIPMAP) levels = (levels == 0 || levels > 1) ? full : 1;
     if (!levels || levels > full) levels = full;
-    d3d_texture *t = (d3d_texture *)calloc(1, sizeof *t);
+    d3d_texture *t = (d3d_texture *)calloc(1, sizeof(d3d_texture_rt));
     t->dev = dev;
     t->rtype = rtype;
     t->width = w; t->height = h; t->depth = d ? d : 1;
@@ -389,17 +477,8 @@ d3d_texture *d3d_texture_new(d3d_device *dev, uint32_t rtype, uint32_t w, uint32
     if (pool == D3DPOOL_MANAGED || pool == D3DPOOL_SYSTEMMEM || pool == D3DPOOL_SCRATCH)
         t->sysmem = (uint32_t *)calloc((size_t)t->faces * levels, sizeof *t->sysmem);
     if (pool != D3DPOOL_SYSTEMMEM && pool != D3DPOOL_SCRATCH && f->internal) {
-        glGenTextures(1, &t->gl);
-        d3d_gl_upload_unit();
-        glBindTexture(t->target, t->gl);
-        if (t->target == GL_TEXTURE_3D)
-            glTexStorage3D(GL_TEXTURE_3D, (GLsizei)levels, f->internal, (GLsizei)w, (GLsizei)h, (GLsizei)t->depth);
-        else
-            glTexStorage2D(t->target, (GLsizei)levels, f->internal, (GLsizei)w, (GLsizei)h);
-        glTexParameteri(t->target, GL_TEXTURE_MAX_LEVEL, (GLint)levels - 1);
-        apply_swizzle(t->target, f, usage);
-        GLenum e = glGetError();
-        if (e) void_log("[d3d9] texture %ux%u levels %u format %u: GL error %04X", w, h, levels, format, e);
+        TEX_RT(t)->has_gl = 1;
+        d3d_rt_call(run_texture_create, &t, sizeof t);
     }
     return t;
 }
@@ -412,7 +491,7 @@ d3d_texture *d3d_texture_new_native(d3d_device *dev, uint32_t rtype, uint32_t w,
         (usage & (D3DUSAGE_RENDERTARGET | D3DUSAGE_DEPTHSTENCIL | D3DUSAGE_AUTOGENMIPMAP))) return NULL;
     uint32_t full = mip_levels(w, h, 1);
     if (!levels || levels > full) levels = full;
-    d3d_texture *t = (d3d_texture *)calloc(1, sizeof *t);
+    d3d_texture *t = (d3d_texture *)calloc(1, sizeof(d3d_texture_rt));
     t->dev = dev;
     t->rtype = rtype;
     t->width = w; t->height = h; t->depth = 1;
@@ -424,22 +503,43 @@ d3d_texture *d3d_texture_new_native(d3d_device *dev, uint32_t rtype, uint32_t w,
     t->autogen_filter = 2;
     t->surfaces = (d3d_surface **)calloc((size_t)t->faces * levels, sizeof *t->surfaces);
     /* No system copy: the game never gets these blocks back (they are not DXT). */
-    glGenTextures(1, &t->gl);
+    TEX_RT(t)->has_gl = 1;
+    TEX_RT(t)->rt_native = native;      /* before the record: the render thread reads it there */
+    d3d_rt_call(run_texture_create, &t, sizeof t);
+    return t;
+}
+
+/* Converted blocks of a whole level, copied after the arguments. */
+typedef struct { d3d_texture *t; uint32_t face, level, w, h, size; GLenum internal; } native_upload_args;
+
+static void run_native_upload(void *args)
+{
+    const native_upload_args *a = (const native_upload_args *)args;
+    d3d_texture *t = a->t;
+    uint64_t start = void_perf_now_ns();
     d3d_gl_upload_unit();
     glBindTexture(t->target, t->gl);
-    glTexStorage2D(t->target, (GLsizei)levels, native->internal, (GLsizei)w, (GLsizei)h);
-    glTexParameteri(t->target, GL_TEXTURE_MAX_LEVEL, (GLint)levels - 1);
-    apply_swizzle(t->target, f, usage);
+    glCompressedTexSubImage2D(face_target(t, a->face), (GLint)a->level, 0, 0, (GLsizei)a->w, (GLsizei)a->h, a->internal,
+        (GLsizei)a->size, a + 1);
     GLenum e = glGetError();
-    if (e) void_log("[d3d9] converted texture %ux%u levels %u format %.4s: GL error %04X", w, h, levels,
-                    (const char *)&native->fourcc, e);
-    return t;
+    if (e) void_log("[d3d9] converted upload %ux%u level %u internal %04X: GL error %04X", a->w, a->h, a->level,
+                    a->internal, e);
+    void_perf_add(VOID_PERF_TEXTURE, void_perf_now_ns() - start, a->size);
+}
+
+static void record_native_upload(d3d_texture *t, uint32_t face, uint32_t level, uint32_t w, uint32_t h,
+    const uint8_t *data, uint32_t size)
+{
+    native_upload_args *a = (native_upload_args *)d3d_rt_begin(run_native_upload, (uint32_t)sizeof *a + size);
+    *a = (native_upload_args){ t, face, level, w, h, size, t->native->internal };
+    memcpy(a + 1, data, size);
+    d3d_rt_commit();
 }
 
 /* One whole level of a converted texture, as its blocks are stored. */
 void d3d_texture_upload_native(d3d_texture *t, uint32_t face, uint32_t level, const uint8_t *data, uint32_t size)
 {
-    if (!t->gl || !t->native || level >= t->levels) return;
+    if (!TEX_RT(t)->has_gl || !t->native || level >= t->levels) return;
     uint32_t w, h;
     level_dims(t->width, t->height, level, &w, &h);
     if (size != d3d_native_size(t->native, w, h)) {
@@ -447,14 +547,7 @@ void d3d_texture_upload_native(d3d_texture *t, uint32_t face, uint32_t level, co
                  d3d_native_size(t->native, w, h));
         return;
     }
-    uint64_t start = void_perf_now_ns();
-    d3d_gl_upload_unit();
-    glBindTexture(t->target, t->gl);
-    glCompressedTexSubImage2D(face_target(t, face), (GLint)level, 0, 0, (GLsizei)w, (GLsizei)h, t->native->internal,
-        (GLsizei)size, data);
-    GLenum e = glGetError();
-    if (e) void_log("[d3d9] converted upload %ux%u level %u: GL error %04X", w, h, level, e);
-    void_perf_add(VOID_PERF_TEXTURE, void_perf_now_ns() - start, size);
+    record_native_upload(t, face, level, w, h, data, size);
 }
 
 uint32_t d3d_wrap_texture(d3d_texture *t)
@@ -470,7 +563,7 @@ uint32_t d3d_texture_surface(d3d_texture *t, uint32_t face, uint32_t level)
     if (level >= t->levels || face >= (uint32_t)t->faces) return 0;
     uint32_t index = face * t->levels + level;
     if (!t->surfaces[index]) {
-        d3d_surface *s = (d3d_surface *)calloc(1, sizeof *s);
+        d3d_surface *s = (d3d_surface *)calloc(1, sizeof(d3d_surface_rt));
         s->dev = t->dev;
         level_dims(t->width, t->height, level, &s->width, &s->height);
         s->format = t->format; s->usage = t->usage; s->pool = t->pool;
@@ -488,10 +581,43 @@ uint32_t d3d_texture_surface(d3d_texture *t, uint32_t face, uint32_t level)
 
 /* Upload a w x h rect at (x, y) of a level from guest-layout data whose first
  * row (or block row) is at `data`. */
+/* Guest-layout rows of a rect, copied after the arguments; converted there. */
+typedef struct { d3d_texture *t; uint32_t face, level, x, y, w, h, pitch; } texture_upload_args;
+
+static void run_texture_upload(void *args)
+{
+    const texture_upload_args *a = (const texture_upload_args *)args;
+    d3d_texture *t = a->t;
+    uint32_t face = a->face, level = a->level;
+    void *owned;
+    size_t size;
+    uint64_t start = void_perf_now_ns();
+    const void *gl_data = d3d_format_convert(t->fmt, (const uint8_t *)(a + 1), a->w, a->h, a->pitch, &owned, &size,
+                                             (t->usage & D3DUSAGE_RENDERTARGET) != 0);
+    d3d_gl_upload_unit();
+    glBindTexture(t->target, t->gl);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    if (t->target == GL_TEXTURE_3D) {
+        uint32_t d = t->depth >> level;
+        if (!d) d = 1;
+        glTexSubImage3D(GL_TEXTURE_3D, (GLint)level, (GLint)a->x, (GLint)a->y, 0, (GLsizei)a->w, (GLsizei)a->h, (GLsizei)d,
+            t->fmt->format, t->fmt->type, gl_data);
+    } else {
+        glTexSubImage2D(face_target(t, face), (GLint)level, (GLint)a->x, (GLint)a->y, (GLsizei)a->w, (GLsizei)a->h,
+            t->fmt->format, t->fmt->type, gl_data);
+    }
+    GLenum e = glGetError();
+    if (e) void_log("[d3d9] upload %ux%u at %u,%u level %u format %u: GL error %04X", a->w, a->h, a->x, a->y, level,
+                    t->format, e);
+    free(owned);
+    void_perf_add(VOID_PERF_TEXTURE, void_perf_now_ns() - start, size);
+    if (level == 0 && (t->usage & D3DUSAGE_AUTOGENMIPMAP)) t->mips_dirty = 1;
+}
+
 void d3d_texture_upload_rect(d3d_texture *t, uint32_t face, uint32_t level, uint32_t x, uint32_t y, uint32_t w, uint32_t h,
     const uint8_t *data, uint32_t pitch)
 {
-    if (!t->gl || !w || !h) return;
+    if (!TEX_RT(t)->has_gl || !w || !h) return;
     if (t->native) {
         uint32_t lw, lh;
         level_dims(t->width, t->height, level, &lw, &lh);
@@ -502,39 +628,19 @@ void d3d_texture_upload_rect(d3d_texture *t, uint32_t face, uint32_t level, uint
                          w, h, x, y, level);
             return;
         }
-        uint64_t started = void_perf_now_ns();
-        d3d_gl_upload_unit();
-        glBindTexture(t->target, t->gl);
-        glCompressedTexSubImage2D(face_target(t, face), (GLint)level, 0, 0, (GLsizei)lw, (GLsizei)lh, t->native->internal,
-                                  (GLsizei)size, data);
-        GLenum e = glGetError();
-        if (e) void_log("[d3d9] converted upload %ux%u level %u %.4s: GL error %04X", lw, lh, level,
-                        (const char *)&t->native->fourcc, e);
-        void_perf_add(VOID_PERF_TEXTURE, void_perf_now_ns() - started, size);
+        record_native_upload(t, face, level, lw, lh, data, size);
         (void)pitch;
         return;
     }
-    void *owned;
-    size_t size;
-    uint64_t start = void_perf_now_ns();
-    const void *gl_data = d3d_format_convert(t->fmt, data, w, h, pitch, &owned, &size, (t->usage & D3DUSAGE_RENDERTARGET) != 0);
-    d3d_gl_upload_unit();
-    glBindTexture(t->target, t->gl);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    if (t->target == GL_TEXTURE_3D) {
-        uint32_t d = t->depth >> level;
-        if (!d) d = 1;
-        glTexSubImage3D(GL_TEXTURE_3D, (GLint)level, (GLint)x, (GLint)y, 0, (GLsizei)w, (GLsizei)h, (GLsizei)d, t->fmt->format,
-            t->fmt->type, gl_data);
-    } else {
-        glTexSubImage2D(face_target(t, face), (GLint)level, (GLint)x, (GLint)y, (GLsizei)w, (GLsizei)h, t->fmt->format,
-            t->fmt->type, gl_data);
-    }
-    GLenum e = glGetError();
-    if (e) void_log("[d3d9] upload %ux%u at %u,%u level %u format %u: GL error %04X", w, h, x, y, level, t->format, e);
-    free(owned);
-    void_perf_add(VOID_PERF_TEXTURE, void_perf_now_ns() - start, size);
-    if (level == 0 && (t->usage & D3DUSAGE_AUTOGENMIPMAP)) t->mips_dirty = 1;
+    /* What d3d_format_convert reads of the source: its rows, for volumes each slice. */
+    uint32_t slices = 1;
+    if (t->target == GL_TEXTURE_3D) { slices = t->depth >> level; if (!slices) slices = 1; }
+    uint32_t bytes = slices > 1 ? pitch * d3d_format_rows(t->fmt, h) * slices
+                                : pitch * (d3d_format_rows(t->fmt, h) - 1u) + d3d_format_pitch(t->fmt, w);
+    texture_upload_args *a = (texture_upload_args *)d3d_rt_begin(run_texture_upload, (uint32_t)sizeof *a + bytes);
+    *a = (texture_upload_args){ t, face, level, x, y, w, h, pitch };
+    memcpy(a + 1, data, bytes);
+    d3d_rt_commit();
 }
 
 void d3d_texture_upload_level(d3d_texture *t, uint32_t face, uint32_t level, const uint8_t *data, uint32_t pitch)
@@ -544,14 +650,26 @@ void d3d_texture_upload_level(d3d_texture *t, uint32_t face, uint32_t level, con
     d3d_texture_upload_rect(t, face, level, 0, 0, w, h, data, pitch);
 }
 
-void d3d_generate_mips(d3d_texture *t)
+static void gl_generate_mips(d3d_texture *t)
 {
-    if (!t->gl || t->levels < 2 || t->native) return;   /* converted textures store every level */
+    if (!t->gl || t->levels < 2 || TEX_RT(t)->rt_native) return;   /* converted textures store every level */
     d3d_gl_upload_unit();
     glBindTexture(t->target, t->gl);
     glGenerateMipmap(t->target);
     t->mips_dirty = 0;
 }
+
+static void run_generate_mips(void *args) { gl_generate_mips(*(d3d_texture **)args); }
+
+/* Draws (render thread) and GenerateMipSubLevels (the game's). */
+void d3d_generate_mips(d3d_texture *t)
+{
+    if (d3d_rt_executing()) gl_generate_mips(t);
+    else d3d_rt_call(run_generate_mips, &t, sizeof t);
+}
+
+typedef struct { d3d_texture *t; uint32_t lod; } lod_args;
+static void run_set_lod(void *args) { const lod_args *a = (const lod_args *)args; TEX_RT(a->t)->rt_lod = a->lod; }
 
 #define TEX ((d3d_texture *)void_com_host(THIS_))
 
@@ -582,7 +700,14 @@ COM_METHOD(tex, SetPriority, 2) { return 0; }
 COM_METHOD(tex, GetPriority, 1) { return 0; }
 COM_METHOD(tex, PreLoad, 1) { return 0; }
 COM_METHOD(tex, GetType, 1) { return TEX->rtype; }
-COM_METHOD(tex, SetLOD, 2) { d3d_texture *t = TEX; uint32_t old = t->lod; t->lod = ARG(1) < t->levels ? ARG(1) : t->levels - 1; return old; }
+COM_METHOD(tex, SetLOD, 2)
+{
+    d3d_texture *t = TEX;
+    uint32_t old = t->lod;
+    t->lod = ARG(1) < t->levels ? ARG(1) : t->levels - 1;
+    if (t->lod != old) { lod_args a = { t, t->lod }; d3d_rt_call(run_set_lod, &a, sizeof a); }
+    return old;
+}
 COM_METHOD(tex, GetLOD, 1) { return TEX->lod; }
 COM_METHOD(tex, GetLevelCount, 1) { d3d_texture *t = TEX; return (t->usage & D3DUSAGE_AUTOGENMIPMAP) ? 1 : t->levels; }
 COM_METHOD(tex, SetAutoGenFilterType, 2) { TEX->autogen_filter = ARG(1); return D3D_OK; }
@@ -715,31 +840,85 @@ void d3d_update_texture(d3d_texture *src, d3d_texture *dst)
 /* ================================================================= buffers */
 static void_com_class vbuffer_class, ibuffer_class;
 
+/* The guest copy (shadow) is what Lock returns and what the render thread
+ * uploads from, at the draws that need it. It is never written under the
+ * render thread: a DISCARD lock while records not yet run read the copy gets
+ * a fresh one (D3D's renaming), a lock without NOOVERWRITE waits until they
+ * have run, and NOOVERWRITE promises not to touch what they read. Copies the
+ * render thread may still read are retired, then freed (or reused) once it is
+ * past them. */
+typedef struct { uint32_t shadow, size; uint64_t at; } retired_shadow;
+static retired_shadow *retired;
+static uint32_t retired_count, retired_cap;
+static uint64_t shadow_renames, shadow_waits;
+
+static void shadow_retire(uint32_t shadow, uint32_t size, uint64_t at)
+{
+    if (d3d_rt_reached(at)) { void_gfree(shadow); return; }
+    if (retired_count == retired_cap) {
+        uint32_t cap = retired_cap ? retired_cap * 2 : 64;
+        retired_shadow *grown = (retired_shadow *)realloc(retired, cap * sizeof *grown);
+        if (!grown) { d3d_rt_wait_for(at); void_gfree(shadow); return; }
+        retired = grown; retired_cap = cap;
+    }
+    retired[retired_count++] = (retired_shadow){ shadow, size, at };
+}
+
+/* Frees the retired copies the render thread is past; returns one of `size` for reuse, if asked. */
+static uint32_t shadow_collect(uint32_t size)
+{
+    uint32_t reuse = 0;
+    for (uint32_t i = 0; i < retired_count;) {
+        if (!d3d_rt_reached(retired[i].at)) { ++i; continue; }
+        if (!reuse && size && retired[i].size == size) reuse = retired[i].shadow;
+        else void_gfree(retired[i].shadow);
+        retired[i] = retired[--retired_count];
+    }
+    return reuse;
+}
+
+static void run_buffer_free(void *args)
+{
+    d3d_buffer *b = *(d3d_buffer **)args;
+    if (b->gl) { d3d_gl_forget_buffer(b->gl); glDeleteBuffers(1, &b->gl); }
+    free(b->dirty_pages);
+    free(b);
+}
+
 static void buffer_destroy(void_com_object *o)
 {
     d3d_buffer *b = (d3d_buffer *)o;
-    if (b->gl) { d3d_gl_forget_buffer(b->gl); glDeleteBuffers(1, &b->gl); }
-    if (b->shadow) void_gfree(b->shadow);
-    free(b->dirty_pages);
-    free(b);
+    uint32_t shadow = b->shadow, size = b->size;
+    d3d_rt_call(run_buffer_free, &b, sizeof b);
+    if (shadow) shadow_retire(shadow, size, d3d_rt_position());
+    shadow_collect(0);
+}
+
+static void run_buffer_create(void *args)
+{
+    d3d_buffer *b = *(d3d_buffer **)args;
+    glGenBuffers(1, &b->gl);
+    /* Created through the copy target, which no vertex array object records. */
+    glBindBuffer(GL_COPY_WRITE_BUFFER, b->gl);
+    glBufferData(GL_COPY_WRITE_BUFFER, b->size, NULL, (b->usage & D3DUSAGE_DYNAMIC) ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW);
 }
 
 uint32_t d3d_buffer_create(d3d_device *dev, int index, uint32_t length, uint32_t usage, uint32_t format, uint32_t pool)
 {
     if (!length) return 0;
-    d3d_buffer *b = (d3d_buffer *)calloc(1, sizeof *b);
+    d3d_buffer *b = (d3d_buffer *)calloc(1, sizeof(d3d_buffer_rt));
     b->dev = dev; b->index = index; b->size = length; b->usage = usage; b->format = format; b->pool = pool;
     b->shadow = void_galloc(length);
     if (!b->shadow) { free(b); return 0; }
-    glGenBuffers(1, &b->gl);
-    /* Created through the copy target, which no vertex array object records. */
-    glBindBuffer(GL_COPY_WRITE_BUFFER, b->gl);
-    glBufferData(GL_COPY_WRITE_BUFFER, length, NULL, (usage & D3DUSAGE_DYNAMIC) ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW);
+    BUF_RT(b)->rt_shadow = b->shadow;
     b->dirty_lo = 0xFFFFFFFFu;
+    d3d_rt_call(run_buffer_create, &b, sizeof b);
     uint32_t guest = void_com_wrap(&b->com, index ? &ibuffer_class : &vbuffer_class, 0);
     b->com.destroy = buffer_destroy;
     return guest;
 }
+
+void d3d_buffer_read_by(d3d_buffer *b, uint64_t position) { BUF_RT(b)->read_at = position; }
 
 /* A pooled allocator may Lock(0, 0, NOOVERWRITE), modify a few suballocations,
  * then unlock before drawing just one of them. Keep the unconsumed pages dirty;
@@ -767,14 +946,14 @@ void d3d_buffer_flush(d3d_buffer *b)
      * so neither the bound VAO's element buffer nor its attributes change. */
     GLenum target = GL_COPY_WRITE_BUFFER;
     glBindBuffer(target, b->gl);
-    const uint8_t *src = (const uint8_t *)GPTR(b->shadow) + b->dirty_lo;
+    const uint8_t *src = (const uint8_t *)GPTR(BUF_RT(b)->rt_shadow) + b->dirty_lo;
     uint32_t length = b->dirty_hi - b->dirty_lo;
     if (b->discard_pending) {
         /* DISCARD invalidates the whole buffer, even for a partial lock. */
         glBufferData(target, b->size, NULL, (b->usage & D3DUSAGE_DYNAMIC) ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW);
         glBufferSubData(target, b->dirty_lo, length, src);
     } else if (b->dirty_lo == 0 && b->dirty_hi >= b->size) {
-        glBufferData(target, b->size, GPTR(b->shadow), (b->usage & D3DUSAGE_DYNAMIC) ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW);
+        glBufferData(target, b->size, GPTR(BUF_RT(b)->rt_shadow), (b->usage & D3DUSAGE_DYNAMIC) ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW);
     } else if (!b->overwrite_pending) {
         /* Only D3DLOCK_NOOVERWRITE locks: the game promises not to touch what
          * queued draws read, so write without waiting for the GPU. A plain
@@ -819,7 +998,7 @@ void d3d_buffer_flush_range(d3d_buffer *b, uint32_t lo, uint32_t hi)
         /* Page expansion can include unchanged bytes still used by earlier
          * draws. Synchronized SubData, never an unsynchronized map, is required. */
         glBufferSubData(GL_COPY_WRITE_BUFFER, start, stop - start,
-            (const uint8_t *)GPTR(b->shadow) + start);
+            (const uint8_t *)GPTR(BUF_RT(b)->rt_shadow) + start);
     }
     if (!b->dirty_page_count) {
         b->dirty_lo = 0xFFFFFFFFu; b->dirty_hi = 0; b->overwrite_pending = 0;
@@ -848,12 +1027,17 @@ COM_METHOD(buf, GetPriority, 1) { return 0; }
 COM_METHOD(buf, PreLoad, 1) { return 0; }
 COM_METHOD(buf, GetType, 1) { return BUF->index ? D3DRTYPE_INDEXBUFFER : D3DRTYPE_VERTEXBUFFER; }
 
-COM_METHOD(buf, Lock, 5)
+/* The lock's bookkeeping, on the render thread, in order with the draws: what
+ * becomes dirty, and (fresh) the copy its records read from here on. */
+typedef struct { d3d_buffer *b; uint32_t offset, size, flags, fresh; } lock_args;
+
+static void run_buffer_lock(void *args)
 {
-    d3d_buffer *b = BUF;
-    uint32_t offset = ARG(1), size = ARG(2), out = ARG(3), flags = ARG(4);
-    if (offset > b->size) return D3DERR_INVALIDCALL;
-    if (!size || size > b->size - offset) size = b->size - offset;
+    const lock_args *a = (const lock_args *)args;
+    d3d_buffer *b = a->b;
+    uint32_t offset = a->offset, size = a->size, flags = a->flags;
+    if (a->fresh) BUF_RT(b)->rt_shadow = a->fresh;
+    ++BUF_RT(b)->rt_locks;
     if (!(flags & D3DLOCK_READONLY)) {
         b->bounds_count = 0;
         if (!b->dirty_pages && !offset && size == b->size && (flags & D3DLOCK_NOOVERWRITE)) {
@@ -875,16 +1059,47 @@ COM_METHOD(buf, Lock, 5)
         else if (!(flags & D3DLOCK_NOOVERWRITE)) b->overwrite_pending = 1;
         buffer_dirty_pages(b, offset, offset + size);
     }
+}
+
+COM_METHOD(buf, Lock, 5)
+{
+    d3d_buffer *b = BUF;
+    uint32_t offset = ARG(1), size = ARG(2), out = ARG(3), flags = ARG(4);
+    if (offset > b->size) return D3DERR_INVALIDCALL;
+    if (!size || size > b->size - offset) size = b->size - offset;
+    uint32_t fresh = 0, old = 0;
+    if (!(flags & D3DLOCK_READONLY) && !d3d_rt_reached(BUF_RT(b)->read_at)) {
+        if (flags & D3DLOCK_DISCARD) {
+            fresh = shadow_collect(b->size);
+            if (!fresh) fresh = void_galloc(b->size);
+            if (fresh) { old = b->shadow; b->shadow = fresh; ++shadow_renames; }
+        }
+        if (!fresh && !(flags & D3DLOCK_NOOVERWRITE)) {
+            ++shadow_waits;
+            d3d_rt_wait_for(BUF_RT(b)->read_at);
+        }
+    }
+    lock_args a = { b, offset, size, flags, fresh };
+    d3d_rt_call(run_buffer_lock, &a, sizeof a);
+    if (old) shadow_retire(old, b->size, d3d_rt_position());
     ++b->locks;
     MEM32(out) = b->shadow + offset;
     return D3D_OK;
+}
+
+static void run_buffer_unlock(void *args)
+{
+    d3d_buffer *b = *(d3d_buffer **)args;
+    if (--BUF_RT(b)->rt_locks == 0 && !b->dirty_pages) d3d_buffer_flush(b);
 }
 
 COM_METHOD(buf, Unlock, 1)
 {
     d3d_buffer *b = BUF;
     if (!b->locks) return D3DERR_INVALIDCALL;
-    if (--b->locks == 0 && !b->dirty_pages) d3d_buffer_flush(b);
+    --b->locks;
+    d3d_rt_call(run_buffer_unlock, &b, sizeof b);
+    BUF_RT(b)->read_at = d3d_rt_position();     /* the flush reads the copy */
     return D3D_OK;
 }
 
@@ -908,6 +1123,13 @@ static void_com_class ibuffer_class = { "IDirect3DIndexBuffer9", 14, buffer_meth
 
 /* ===================================================== vertex declarations */
 static void_com_class decl_class;
+
+static void run_decl_free(void *args) { free(*(d3d_decl **)args); }
+static void decl_destroy(void_com_object *o)
+{
+    d3d_decl *d = (d3d_decl *)o;
+    d3d_rt_call(run_decl_free, &d, sizeof d);
+}
 
 static void decl_add(d3d_decl *d, uint16_t stream, uint16_t offset, uint8_t type, uint8_t usage, uint8_t index)
 {
@@ -954,6 +1176,7 @@ uint32_t d3d_decl_create(d3d_device *dev, uint32_t elements, uint32_t fvf)
         }
     }
     uint32_t guest = void_com_wrap(&d->com, &decl_class, 0);
+    d->com.destroy = decl_destroy;
     return guest;
 }
 
@@ -993,20 +1216,189 @@ static void_com_class decl_class = { "IDirect3DVertexDeclaration9", 5, decl_meth
 static void_com_class query_class;
 #define QRY ((d3d_query *)void_com_host(THIS_))
 
-static void query_destroy(void_com_object *o)
+/* Occlusion queries borrow a GL query object from a pool of at most QUERY_POOL for one BEGIN..result
+ * span: `gl` is 1 + the borrowed entry (0: none), `ended` the result state. PowerVR's GLES driver
+ * (DXT-48-1536, build 26.1) answers ANY_SAMPLES_PASSED with false zeros once more than 1024 query
+ * objects take turns (device probe: 1536 objects in random order, ~5% of the results; 1024 objects,
+ * random or LIFO, none), and UE3 keeps a D3D9 query per tested primitive, so meshes blinked on WAR-Torlan. */
+#define QUERY_POOL 1024
+enum { QUERY_NONE, QUERY_PENDING, QUERY_HIDDEN, QUERY_VISIBLE };
+static GLuint query_names[QUERY_POOL];
+static d3d_query *query_owners[QUERY_POOL];
+static uint16_t query_free[QUERY_POOL];
+static uint32_t query_free_count, query_count, query_live, query_unbacked, query_collected_frame = ~0u;
+
+static void query_release(d3d_query *q)
 {
-    d3d_query *q = (d3d_query *)o;
-    if (q->gl) glDeleteQueries(1, &q->gl);
+    if (!q->gl) return;
+    query_owners[q->gl - 1] = NULL;
+    query_free[query_free_count++] = (uint16_t)(q->gl - 1);
+    q->gl = 0;
+}
+
+/* The render thread publishes a result for the game's thread: the serial of
+ * the end it belongs to and the state (release: the game reads it as is). */
+static void query_publish(d3d_query *q, uint32_t state)
+{
+    atomic_store_explicit(&QRY_RT(q)->answer, QRY_RT(q)->rt_serial << 2 | state, memory_order_release);
+}
+
+/* Keeps a finished result in the query and gives the GL object back; 0 while the GPU is not done. */
+static int query_collect(d3d_query *q)
+{
+    GLuint available = 0, any = 0;
+    glGetQueryObjectuiv(query_names[q->gl - 1], GL_QUERY_RESULT_AVAILABLE, &available);
+    if (!available) return 0;
+    glGetQueryObjectuiv(query_names[q->gl - 1], GL_QUERY_RESULT, &any);
+    q->ended = any ? QUERY_VISIBLE : QUERY_HIDDEN;
+    query_release(q);
+    query_publish(q, (uint32_t)q->ended);
+    return 1;
+}
+
+static uint32_t query_take(d3d_query *q)
+{
+    if (!query_free_count && query_count < QUERY_POOL) {
+        glGenQueries(1, &query_names[query_count]);
+        query_free[query_free_count++] = (uint16_t)query_count++;
+        if (query_count == 256 || query_count == 512 || query_count == QUERY_POOL)
+            void_log("[gl] occlusion query pool %u (%u D3D9 queries)", query_count, query_live);
+    }
+    /* Pool used up: once a frame, collect the finished results nobody read (UE3 pools queries it
+     * stopped asking about). A query without a GL object then measures nothing and counts as visible. */
+    if (!query_free_count && query_collected_frame != d3d_rt_device()->frame) {
+        query_collected_frame = d3d_rt_device()->frame;
+        for (uint32_t i = 0; i < query_count; ++i)
+            if (query_owners[i] && query_owners[i]->ended == QUERY_PENDING) query_collect(query_owners[i]);
+    }
+    if (!query_free_count) {
+        if (query_unbacked++ % 4096 == 0)
+            void_log("[gl] occlusion query pool full: %u queries counted as visible (%u D3D9 queries)", query_unbacked, query_live);
+        return 0;
+    }
+    uint32_t slot = query_free[--query_free_count];
+    query_owners[slot] = q;
+    return slot + 1;
+}
+
+/* Results the render thread looks for unasked: every end it runs joins a
+ * queue in submission order, and between batches of records and while idle
+ * (d3d_rt_set_idle) it publishes what the GPU has finished from the front, so
+ * the game's first poll usually finds the answer. The GPU finishes in order:
+ * the first unfinished entry ends a look. Entries of a query begun again or
+ * destroyed since are skipped (serial) or removed. */
+typedef struct { d3d_query *q; uint32_t serial; } watched;
+static watched *watch;
+static uint32_t watch_head, watch_count, watch_cap;     /* a ring of watch_cap entries */
+static _Atomic uint64_t poll_answered_idle;
+static int watch_flushed = 1;                           /* GL work flushed since the last end */
+
+static void watch_push(d3d_query *q)
+{
+    if (!d3d_rt_threaded()) return;                    /* inline, every poll of the game's looks */
+    if (watch_count == watch_cap) {
+        uint32_t cap = watch_cap ? watch_cap * 2 : 1024;
+        watched *grown = (watched *)malloc(cap * sizeof *grown);
+        if (!grown) return;                             /* the game's own polls still ask */
+        for (uint32_t i = 0; i < watch_count; ++i) grown[i] = watch[(watch_head + i) % watch_cap];
+        free(watch);
+        watch = grown; watch_cap = cap; watch_head = 0;
+    }
+    watch[(watch_head + watch_count++) % watch_cap] = (watched){ q, QRY_RT(q)->rt_serial };
+    watch_flushed = 0;
+}
+
+static void watch_remove(d3d_query *q)
+{
+    for (uint32_t i = 0; i < watch_count; ++i)
+        if (watch[(watch_head + i) % watch_cap].q == q) watch[(watch_head + i) % watch_cap].q = NULL;
+}
+
+/* Whether the result of q's last end is known now; publishes it if so. */
+static int query_answer(d3d_query *q)
+{
+    if (q->type == 8) {
+        if (q->fence) {
+            GLenum r = glClientWaitSync(q->fence, 0, 0);
+            if (r == GL_TIMEOUT_EXPIRED) return 0;
+        }
+        query_publish(q, 1);
+        return 1;
+    }
+    if (q->ended == QUERY_PENDING && (!q->gl || !query_collect(q))) return 0;
+    query_publish(q, q->ended == QUERY_HIDDEN ? QUERY_HIDDEN : QUERY_VISIBLE);
+    return 1;
+}
+
+static int answered(d3d_query *q)
+{
+    uint32_t a = atomic_load_explicit(&QRY_RT(q)->answer, memory_order_relaxed);
+    return a >> 2 == (QRY_RT(q)->rt_serial & 0x3FFFFFFFu) && (a & 3u);
+}
+
+int d3d_query_watch(int idle)
+{
+    while (watch_count) {
+        watched *e = &watch[watch_head];
+        d3d_query *q = e->q;
+        if (q && QRY_RT(q)->rt_serial == e->serial && !answered(q)) {
+            if (!query_answer(q)) break;
+            atomic_fetch_add_explicit(&poll_answered_idle, 1, memory_order_relaxed);
+        }
+        watch_head = (watch_head + 1) % watch_cap;
+        --watch_count;
+    }
+    /* Out of records with results outstanding: hand the GPU what it has. */
+    if (idle && watch_count && !watch_flushed) { glFlush(); watch_flushed = 1; }
+    return watch_count != 0;
+}
+
+typedef struct { d3d_query *q; uint32_t flush; } poll_args;
+
+/* The game asked and found no answer: look now (after submitting queued work
+ * when it said D3DGETDATA_FLUSH); the queue answers later otherwise. */
+static void run_query_poll(void *args)
+{
+    const poll_args *a = (const poll_args *)args;
+    d3d_query *q = a->q;
+    if (a->flush) { glFlush(); watch_flushed = 1; }
+    if (!answered(q)) query_answer(q);
+    atomic_store_explicit(&QRY_RT(q)->polling, 0, memory_order_release);
+}
+
+static void run_query_destroy(void *args)
+{
+    d3d_query *q = *(d3d_query **)args;
+    watch_remove(q);
+    if (q->type == 9) {
+        if (q->issued && q->gl) glEndQuery(GL_ANY_SAMPLES_PASSED_CONSERVATIVE);
+        query_release(q);
+        --query_live;
+    }
     if (q->fence) glDeleteSync(q->fence);
     free(q);
 }
 
+static void query_destroy(void_com_object *o)
+{
+    d3d_query *q = (d3d_query *)o;
+    d3d_rt_call(run_query_destroy, &q, sizeof q);
+}
+
+static void run_query_create(void *args)
+{
+    d3d_query *q = *(d3d_query **)args;
+    if (q->type == 9) ++query_live;
+}
+
 uint32_t d3d_query_create(d3d_device *dev, uint32_t type)
 {
-    d3d_query *q = (d3d_query *)calloc(1, sizeof *q);
+    static int idle_set;
+    if (!idle_set) { idle_set = 1; d3d_rt_set_idle(d3d_query_watch); }
+    d3d_query *q = (d3d_query *)calloc(1, sizeof(d3d_query_rt));
     q->dev = dev;
     q->type = type;
-    if (type == 9) glGenQueries(1, &q->gl);
+    d3d_rt_call(run_query_create, &q, sizeof q);
     uint32_t guest = void_com_wrap(&q->com, &query_class, 0);
     q->com.destroy = query_destroy;
     return guest;
@@ -1026,19 +1418,111 @@ COM_METHOD(qry, GetDevice, 2) { d3d_query *q = QRY; void_com_addref(&q->dev->com
 COM_METHOD(qry, GetType, 1) { return QRY->type; }
 COM_METHOD(qry, GetDataSize, 1) { d3d_query *q = QRY; return q->type == 4 ? 16u : 4u; }
 
-COM_METHOD(qry, Issue, 2)
+static _Thread_local unsigned query_pending_spins;
+/* The game's polls, for the frame statistics: GetData calls of occlusion and
+ * event queries, those still pending (with FLUSH), polls handed over, sleeps. */
+static uint64_t poll_calls[2], poll_pending[2], poll_pending_flush[2], poll_recorded, poll_sleep_ns;
+static uint32_t query_pending_result(uint32_t flags)
 {
-    d3d_query *q = QRY;
-    uint32_t flags = ARG(1);
+    if (!(flags & 1u)) { query_pending_spins = 0; return S_FALSE_D3D; }
+    if (query_pending_spins < 8) { ++query_pending_spins; return S_FALSE_D3D; }
+    /* UE3 spins until its deadline; pending FLUSH probes let GPU workers and guest threads run. */
+    struct timespec delay = { 0, 50000 };
+    uint64_t start = void_monotonic_ns();
+    void_blocking_begin();
+    while (nanosleep(&delay, &delay) && errno == EINTR) {}
+    void_blocking_end();
+    poll_sleep_ns += void_monotonic_ns() - start;
+    return S_FALSE_D3D;
+}
+
+void d3d_query_log(uint32_t frames);
+void d3d_query_log(uint32_t frames)
+{
+    static uint64_t last[9];
+    uint64_t now[9] = { poll_calls[0], poll_pending[0], poll_pending_flush[0], poll_calls[1], poll_pending[1],
+                        poll_pending_flush[1], poll_recorded, poll_sleep_ns, atomic_load(&poll_answered_idle) };
+    if (frames)
+        void_log("[rt] queries per frame: occlusion %.0f polls, %.0f pending (%.0f flush); event %.0f polls, %.0f pending "
+                 "(%.0f flush); %.0f handed over, %.0f answered unasked; %.2f ms asleep",
+                 (double)(now[0] - last[0]) / frames, (double)(now[1] - last[1]) / frames, (double)(now[2] - last[2]) / frames,
+                 (double)(now[3] - last[3]) / frames, (double)(now[4] - last[4]) / frames, (double)(now[5] - last[5]) / frames,
+                 (double)(now[6] - last[6]) / frames, (double)(now[8] - last[8]) / frames,
+                 (double)(now[7] - last[7]) / 1e6 / frames);
+    memcpy(last, now, sizeof last);
+}
+
+typedef struct { d3d_query *q; uint32_t flags, serial; } issue_args;
+
+static void run_query_issue(void *args)
+{
+    const issue_args *a = (const issue_args *)args;
+    d3d_query *q = a->q;
+    uint32_t flags = a->flags;
+    QRY_RT(q)->rt_serial = a->serial;
     if (q->type == 9) {
-        if (flags & 2u) { glBeginQuery(GL_ANY_SAMPLES_PASSED_CONSERVATIVE, q->gl); q->issued = 1; q->ended = 0; }
-        if ((flags & 1u) && q->issued) { glEndQuery(GL_ANY_SAMPLES_PASSED_CONSERVATIVE); q->ended = 1; q->issued = 0; }
+        if (flags & 2u) {
+            if (q->issued && q->gl) glEndQuery(GL_ANY_SAMPLES_PASSED_CONSERVATIVE);
+            if (!q->gl) q->gl = query_take(q);
+            if (q->gl) glBeginQuery(GL_ANY_SAMPLES_PASSED_CONSERVATIVE, query_names[q->gl - 1]);
+            q->issued = 1;
+            q->ended = QUERY_NONE;
+        }
+        if ((flags & 1u) && q->issued) {
+            if (q->gl) glEndQuery(GL_ANY_SAMPLES_PASSED_CONSERVATIVE);
+            q->ended = q->gl ? QUERY_PENDING : QUERY_VISIBLE;
+            q->issued = 0;
+            if (q->gl) watch_push(q);
+            else query_publish(q, QUERY_VISIBLE);
+        }
     } else if (q->type == 8 && (flags & 1u)) {
         if (q->fence) glDeleteSync(q->fence);
         q->fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
         q->ended = 1;
+        watch_push(q);
     }
+}
+
+/* The game's thread keeps the issue state it answers from (game_state: 0 not
+ * ended since its last begin, 1 begun, 2 ended); the render thread runs the
+ * GL side and publishes the result of each end by its serial. */
+COM_METHOD(qry, Issue, 2)
+{
+    d3d_query *q = QRY;
+    d3d_query_rt *x = QRY_RT(q);
+    uint32_t flags = ARG(1);
+    if (q->type == 9) {
+        if (flags & 2u) x->game_state = 1;
+        if ((flags & 1u) && x->game_state == 1) { ++x->serial; x->game_state = 2; }
+    } else if (q->type == 8 && (flags & 1u)) {
+        ++x->serial;
+        x->game_state = 2;
+    } else {
+        return D3D_OK;
+    }
+    issue_args a = { q, flags, x->serial };
+    d3d_rt_call(run_query_issue, &a, sizeof a);
     return D3D_OK;
+}
+
+/* The answer to the game's last end, if the render thread has published it:
+ * the state, or -1. Otherwise asks it to look (once per end), and to submit
+ * queued work first when the game says D3DGETDATA_FLUSH. */
+static int query_result(d3d_query *q, uint32_t flags)
+{
+    d3d_query_rt *x = QRY_RT(q);
+    uint32_t a = atomic_load_explicit(&x->answer, memory_order_acquire);
+    if (a >> 2 == (x->serial & 0x3FFFFFFFu) && (a & 3u)) return (int)(a & 3u);
+    /* Without the thread nobody looks unasked: every poll looks. */
+    if (!d3d_rt_threaded() || !atomic_exchange_explicit(&x->polling, 1, memory_order_acq_rel)) {
+        poll_args p = { q, flags & 1u };
+        ++poll_recorded;
+        d3d_rt_call(run_query_poll, &p, sizeof p);
+        d3d_rt_flush();
+        a = atomic_load_explicit(&x->answer, memory_order_acquire);   /* without the thread: answered already */
+        if (a >> 2 == (x->serial & 0x3FFFFFFFu) && (a & 3u)) return (int)(a & 3u);
+    }
+    return -1;
 }
 
 COM_METHOD(qry, GetData, 4)
@@ -1046,27 +1530,32 @@ COM_METHOD(qry, GetData, 4)
     d3d_query *q = QRY;
     uint32_t out = ARG(1), size = ARG(2), flags = ARG(3);
     if (q->type == 4) {
+        query_pending_spins = 0;
         if (out && size >= 16) { MEM32(out) = FOURCC('C','A','C','H'); MEM32(out + 4) = 1; MEM32(out + 8) = 16; MEM32(out + 12) = 7; }
         return D3D_OK;
     }
+    d3d_query_rt *x = QRY_RT(q);
+    int kind = q->type == 8;
+    ++poll_calls[kind];
     if (q->type == 8) {
-        if (q->fence) {
-            GLenum r = glClientWaitSync(q->fence, flags & 1u ? GL_SYNC_FLUSH_COMMANDS_BIT : 0, 0);
-            if (r == GL_TIMEOUT_EXPIRED) return S_FALSE_D3D;
+        if (x->game_state == 2 && query_result(q, flags) < 0) {
+            ++poll_pending[kind]; poll_pending_flush[kind] += flags & 1u;
+            return query_pending_result(flags);
         }
+        query_pending_spins = 0;
         if (out && size >= 4) MEM32(out) = 1;
         return D3D_OK;
     }
-    if (!q->ended) { if (out && size >= 4) MEM32(out) = 0; return D3D_OK; }
-    /* D3DGETDATA_FLUSH submits queued work; GetData remains a status poll. */
-    if (flags & 1u) glFlush();
-    GLuint available = 0;
-    glGetQueryObjectuiv(q->gl, GL_QUERY_RESULT_AVAILABLE, &available);
-    if (!available) return S_FALSE_D3D;
-    GLuint any = 0;
-    glGetQueryObjectuiv(q->gl, GL_QUERY_RESULT, &any);
-    /* GLES reports only "any samples": answer with the viewport's pixel count. */
-    if (out && size >= 4) MEM32(out) = any ? q->dev->st.viewport[2] * q->dev->st.viewport[3] : 0;
+    if (x->game_state != 2) { if (out && size >= 4) MEM32(out) = 0; return D3D_OK; }
+    int state = QUERY_NONE;
+    if (x->game_state == 2 && (state = query_result(q, flags)) < 0) {
+        ++poll_pending[kind]; poll_pending_flush[kind] += flags & 1u;
+        return query_pending_result(flags);
+    }
+    query_pending_spins = 0;
+    /* Only a measured zero hides: a query never ended counts as visible, as UE3's own timeout does.
+     * GLES reports only "any samples": answer with the viewport's pixel count. */
+    if (out && size >= 4) MEM32(out) = state == QUERY_HIDDEN ? 0 : q->dev->st.viewport[2] * q->dev->st.viewport[3];
     return D3D_OK;
 }
 

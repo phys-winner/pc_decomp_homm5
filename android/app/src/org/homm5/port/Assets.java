@@ -8,14 +8,46 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 
 /** What the APK carries beside the library (tools/build_game_apk.py):
- *  assets/lifted, the PE images the lifted code runs on (the game's own
- *  H5_Game.exe and DLLs as they were lifted, FMOD unpacked), and
+ *  assets/lifted, prepared DLLs (FMOD unpacked) and the original-image manifest;
+ *  H5_Game.exe and granny2.dll are read directly from the selected installation;
  *  assets/overlay, the port's files that shadow the installation for reading
- *  (android/host/files.c): profiles, the options pages' additions, the town
- *  music pauses and, when the intro is skipped, an empty intro playlist.
+ *  (android/host/files.c): profiles, the options pages' additions and, when
+ *  the intro is skipped, an empty intro playlist.
  *  Each is copied into the app's own files once per APK (its index). */
 final class Assets {
     private Assets() { }
+
+    /** Hash on the existing startup worker: an installed EXE must match its ARM64 engine. */
+    static void verifyOriginals(Context c, File game, String edition) throws IOException {
+        String manifest;
+        try {
+            manifest = new String(read(c, Games.images(edition) + "/originals.txt"), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            if (carriesImages(c, edition)) throw e;
+            return; // CLI deployments already validate their original inputs.
+        }
+        int checked = 0;
+        String bin = "hof".equals(edition) ? "bina1/" : "bin/";
+        for (String line : manifest.split("\n")) {
+            if (line.trim().isEmpty()) continue;
+            String[] row = line.trim().split(" ");
+            int bit = row[0].equals(bin + "H5_Game.exe") ? 1 : row[0].equals(bin + "granny2.dll") ? 2 : 0;
+            if (row.length != 3 || bit == 0 || (checked & bit) != 0)
+                throw new IOException("Invalid original-image manifest: " + edition);
+            File file = Games.child(game, row[0]);
+            if (file == null || !file.isFile() || !file.canRead())
+                throw new IOException("Required original file is missing: " + row[0]);
+            try {
+                if (file.length() != Long.parseLong(row[1]) || !row[2].equals(NativeLibrary.sha256(file)))
+                    throw new IOException("Unsupported original file: " + row[0] + " (expected "
+                        + Games.title(edition) + " " + Games.version(edition) + ")");
+            } catch (NumberFormatException e) {
+                throw new IOException("Invalid original-image size: " + row[0], e);
+            }
+            checked |= bit;
+        }
+        if (checked != 3) throw new IOException("Incomplete original-image manifest: " + edition);
+    }
 
     /** The folder the game reads its images from (nativeStart's images). */
     static File images(Context c, File base) {
@@ -79,7 +111,7 @@ final class Assets {
     static boolean runtimeAvailable(Context c, File base, String edition) {
         if (!NativeLibrary.available(c, Games.library(edition))) return false;
         if (carriesImages(c, edition)) return carries(c, Games.overlay(edition) + "/index.txt");
-        return "toe".equals(edition) && new File(base, "lifted/H5_Game.exe").isFile();
+        return "toe".equals(edition) && new File(base, "lifted/fmod.dll").isFile();
     }
 
     /* assets/<name>/index.txt: "path size sha256" a line; the copy notes the

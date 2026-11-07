@@ -1,6 +1,8 @@
 /* The GL side of Direct3D 9: EGL, render targets, state, draws, blits, present. */
 #define _GNU_SOURCE
 #include "d3d9_internal.h"
+#include "d3d9_thread.inc"
+#include "touch.h"
 #include <time.h>
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -12,6 +14,7 @@ static EGLDisplay egl_display = EGL_NO_DISPLAY;
 static EGLContext egl_context = EGL_NO_CONTEXT;
 static EGLSurface egl_surface = EGL_NO_SURFACE;
 static int window_mode;
+static int egl_swap_interval = 1;
 static int dump_every;
 d3d_gl_limits_t d3d_gl_limits;
 static uint32_t trace_frame;   /* defined with the tracing helpers */
@@ -29,8 +32,89 @@ static attr_state attr_cache[16];
 static GLuint elem_buffer = FB_UNKNOWN;
 static int attr_cache_ready;
 static int raster_state_valid;
-static uint64_t frame_deadline_ns, frame_period_ns;
+static uint64_t frame_deadline_ns, frame_period_ns;       /* the game's thread: frame limiter */
+/* Render thread -> game: a window surface to present into; the limiter starts over. */
+static _Atomic int surface_live, pace_restart;
+void d3d_rt_settle(void);
+void d3d_rt_mirror_frame(uint32_t frame);
 extern uint32_t d3d_constant_generation;
+
+/* Opt-in GPU render-span measurements; availability polling never stalls the pipeline. */
+#define GPU_PROFILE_QUERIES 8
+static PFNGLBEGINQUERYEXTPROC gpu_begin_query;
+static PFNGLENDQUERYEXTPROC gpu_end_query;
+static PFNGLGETQUERYOBJECTUI64VEXTPROC gpu_query_result;
+static GLuint gpu_queries[GPU_PROFILE_QUERIES];
+static uint32_t gpu_frames[GPU_PROFILE_QUERIES];
+static uint64_t gpu_started_ns[GPU_PROFILE_QUERIES];
+static unsigned char gpu_pending[GPU_PROFILE_QUERIES], gpu_valid[GPU_PROFILE_QUERIES];
+static int gpu_active = -1, gpu_attempted;
+
+static void gpu_profile_init(const char *extensions)
+{
+    char path[1100];
+    snprintf(path, sizeof path, "%s/gpu-profile", void_data_dir());
+    FILE *flag = fopen(path, "rb");
+    if (!flag) return;
+    fclose(flag);
+    if (!extensions || !strstr(extensions, "GL_EXT_disjoint_timer_query")) {
+        void_log("[gpu] EXT_disjoint_timer_query unavailable");
+        return;
+    }
+    gpu_begin_query = (PFNGLBEGINQUERYEXTPROC)eglGetProcAddress("glBeginQueryEXT");
+    gpu_end_query = (PFNGLENDQUERYEXTPROC)eglGetProcAddress("glEndQueryEXT");
+    gpu_query_result = (PFNGLGETQUERYOBJECTUI64VEXTPROC)eglGetProcAddress("glGetQueryObjectui64vEXT");
+    if (!gpu_begin_query || !gpu_end_query || !gpu_query_result) { gpu_begin_query = NULL; return; }
+    GLint bits = 0, disjoint = 0;
+    glGetQueryiv(GL_TIME_ELAPSED_EXT, GL_QUERY_COUNTER_BITS_EXT, &bits);
+    if (!bits) { gpu_begin_query = NULL; void_log("[gpu] elapsed counter has no useful bits"); return; }
+    glGetIntegerv(GL_GPU_DISJOINT_EXT, &disjoint);
+    glGenQueries(GPU_PROFILE_QUERIES, gpu_queries);
+    void_log("[gpu] asynchronous render spans enabled (%d counter bits); spans can include GPU starvation by CPU submission", bits);
+}
+
+static void gpu_profile_begin(uint32_t frame)
+{
+    if (!gpu_begin_query || gpu_attempted) return;
+    gpu_attempted = 1;
+    for (unsigned i = 0; i < GPU_PROFILE_QUERIES; ++i) if (!gpu_pending[i]) {
+        gpu_active = (int)i;
+        gpu_frames[i] = frame;
+        gpu_started_ns[i] = void_perf_now_ns();
+        gpu_begin_query(GL_TIME_ELAPSED_EXT, gpu_queries[i]);
+        break;
+    }
+}
+
+static void gpu_profile_end(uint32_t frame)
+{
+    if (!gpu_begin_query) return;
+    if (gpu_active >= 0) {
+        gpu_end_query(GL_TIME_ELAPSED_EXT);
+        gpu_pending[gpu_active] = gpu_valid[gpu_active] = 1;
+        gpu_active = -1;
+    }
+    GLint disjoint = 0;
+    glGetIntegerv(GL_GPU_DISJOINT_EXT, &disjoint);
+    if (disjoint) {
+        memset(gpu_valid, 0, sizeof gpu_valid);
+        void_log("[gpu] disjoint at frame %u; pending timings discarded", frame);
+    }
+    for (unsigned i = 0; i < GPU_PROFILE_QUERIES; ++i) if (gpu_pending[i]) {
+        GLuint available = 0;
+        glGetQueryObjectuiv(gpu_queries[i], GL_QUERY_RESULT_AVAILABLE, &available);
+        if (!available) continue;
+        if (gpu_valid[i]) {
+            GLuint64 elapsed = 0;
+            gpu_query_result(gpu_queries[i], GL_QUERY_RESULT, &elapsed);
+            if (elapsed <= void_perf_now_ns() - gpu_started_ns[i])
+                void_log("[gpu] frame %u render_ns %llu", gpu_frames[i], (unsigned long long)elapsed);
+            else void_log("[gpu] frame %u invalid timer result exceeds host interval", gpu_frames[i]);
+        }
+        gpu_pending[i] = 0;
+    }
+    gpu_attempted = 0;
+}
 
 /* The Android activity provides the window; the shell build has none. */
 __attribute__((weak)) void *void_android_window(void) { return NULL; }
@@ -52,18 +136,19 @@ static void follow_window(void)
     uint32_t serial;
     void *window = void_android_window_current(&serial, 0);
     if (serial == egl_window_serial) return;
-    frame_deadline_ns = 0;
+    atomic_store(&pace_restart, 1);
     raster_state_valid = 0;
     eglMakeCurrent(egl_display, egl_pbuffer, egl_pbuffer, egl_context);
     if (egl_surface != EGL_NO_SURFACE) eglDestroySurface(egl_display, egl_surface);
     egl_surface = EGL_NO_SURFACE;
+    atomic_store(&surface_live, 0);
     egl_window_serial = serial;
     void_android_window_ack(serial);
     if (!window) {
         void_log("[gl] surface gone: the game waits for the activity");
-        void_blocking_begin();
+        d3d_rt_wait_begin();
         window = void_android_window_current(&serial, 1);
-        void_blocking_end();
+        d3d_rt_wait_end();
         egl_window_serial = serial;
     }
     egl_surface = eglCreateWindowSurface(egl_display, egl_config, (EGLNativeWindowType)window, NULL);
@@ -73,15 +158,15 @@ static void follow_window(void)
         egl_surface = EGL_NO_SURFACE;
     } else {
         eglSwapInterval(egl_display, 1);
+        atomic_store(&surface_live, 1);
         void_log("[gl] presenting into a new window surface");
     }
     void_android_window_ack(serial);
 }
 
-int d3d_gl_init(void)
+static int gl_init(void)
 {
     raster_state_valid = 0;
-    frame_deadline_ns = 0;
     if (egl_context != EGL_NO_CONTEXT) {
         if (!vao) { glGenVertexArrays(1, &vao); glBindVertexArray(vao); }
         return 1;
@@ -114,6 +199,7 @@ int d3d_gl_init(void)
         return 0;
     }
     if (window_mode) eglSwapInterval(egl_display, 1);
+    atomic_store(&surface_live, window_mode);
     void_log("[gl] %s / %s / %s (%s)", glGetString(GL_VENDOR), glGetString(GL_RENDERER), glGetString(GL_VERSION),
         window_mode ? "window" : "pbuffer");
     GLint value = 0;
@@ -122,6 +208,17 @@ int d3d_gl_init(void)
     glGetIntegerv(GL_MAX_DRAW_BUFFERS, &value); d3d_gl_limits.max_draw_buffers = (uint32_t)value;
     const char *extensions = (const char *)glGetString(GL_EXTENSIONS);
     d3d_gl_limits.astc_ldr = extensions && strstr(extensions, "GL_KHR_texture_compression_astc_ldr") != NULL;
+    d3d_gl_limits.max_anisotropy = 1.0f;
+    GLint extension_count = 0;
+    glGetIntegerv(GL_NUM_EXTENSIONS, &extension_count);
+    for (GLint i = 0; i < extension_count; ++i) {
+        const char *extension = (const char *)glGetStringi(GL_EXTENSIONS, (GLuint)i);
+        if (extension && !strcmp(extension, "GL_EXT_texture_filter_anisotropic")) {
+            glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &d3d_gl_limits.max_anisotropy);
+            break;
+        }
+    }
+    gpu_profile_init(extensions);
     void_log("[gl] limits: texture %u, 3D texture %u, draw buffers %u, ASTC %s", d3d_gl_limits.max_texture,
         d3d_gl_limits.max_3d_texture, d3d_gl_limits.max_draw_buffers, d3d_gl_limits.astc_ldr ? "yes" : "no");
     const char *dump = getenv("VOID_DUMP_FRAMES");
@@ -135,6 +232,45 @@ int d3d_gl_init(void)
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     return 1;
+}
+
+static void run_gl_init(void *ok) { *(int *)ok = gl_init(); }
+
+/* The game's thread: the render thread (d3d9_thread.c) creates the context and
+ * owns it from here on. */
+int d3d_gl_init(void)
+{
+    frame_deadline_ns = 0;
+    d3d_rt_start();
+    int ok = 0;
+    d3d_rt_sync(run_gl_init, &ok);
+    if (ok) d3d_rt_settle();
+    return ok;
+}
+
+static void run_present_interval(void *args)
+{
+    egl_swap_interval = *(const int *)args;
+    if (window_mode && egl_surface != EGL_NO_SURFACE && !eglSwapInterval(egl_display, egl_swap_interval))
+        void_log("[gl] swap interval %d rejected: %04X", egl_swap_interval, eglGetError());
+
+}
+
+void d3d_gl_set_present_interval(uint32_t interval)
+{
+    int swap = interval == 0x80000000u ? 0 : 1;
+    frame_deadline_ns = 0;
+    d3d_rt_call(run_present_interval, &swap, sizeof swap);
+}
+
+/* The GL error state, for checks made on the game's thread. */
+GLenum d3d_gl_error(void);
+static void run_gl_error(void *out) { *(GLenum *)out = glGetError(); }
+GLenum d3d_gl_error(void)
+{
+    GLenum e = GL_NO_ERROR;
+    d3d_rt_sync(run_gl_error, &e);
+    return e;
 }
 
 /* ------------------------------------------------------------- targets */
@@ -170,6 +306,7 @@ static unsigned trace_seq;
 static d3d_surface *trace_rt;
 
 static int tracing(d3d_device *d) { return d->frame == trace_frame; }
+#define RDEV d3d_rt_device()   /* the render thread's device */
 void d3d_shader_trace(void);
 
 /* VOID_TRACE_DIFF: render target 0 before each traced draw, to report what
@@ -294,7 +431,20 @@ void d3d_gl_forget_texture(GLuint tex)
 }
 
 /* The native quad renderer is shared by text, buttons and UI panels. */
-static unsigned ui_quad_depth;
+static unsigned ui_quad_depth;             /* game: original quad call depth */
+static int render_ui, render_filter[2];     /* render: this draw's snapshot */
+static float render_sharpness;
+int d3d_gl_ui_drawing(void) { return render_ui; }
+int d3d_gl_ui_filter(void) { return render_filter[1]; }
+
+void d3d_gl_filter_done(d3d_device *dev)
+{
+    active_unit = -1;
+    unit_tex[31] = unit_sampler[31] = unit_target[31] = 0;
+    raster_state_valid = 0;
+    d3d_shader_forget_current();
+    dev->fbo_dirty = 1;
+}
 static int ui_active;
 static d3d_device *ui_owner;
 static d3d_surface *ui_backbuffer, *ui_color, *ui_depth, *ui_depth_source;
@@ -309,7 +459,7 @@ void sub_00A46BC0(void)
 
 static void ui_release(d3d_surface **surface)
 {
-    if (*surface) void_com_release(&(*surface)->com);
+    if (*surface) d3d_gl_scratch_free(*surface);
     *surface = NULL;
 }
 
@@ -318,7 +468,7 @@ static int ui_allocate(d3d_device *d, d3d_surface **surface, d3d_surface *source
     if (*surface && ((*surface)->dev != d || (*surface)->width != w || (*surface)->height != h ||
                      (*surface)->format != source->format)) ui_release(surface);
     if (!*surface) {
-        *surface = d3d_surface_new(d, w, h, source->format, source->usage, D3DPOOL_DEFAULT, 0);
+        *surface = d3d_gl_scratch_new(d, w, h, source->format, source->usage);
         GLint allocated = 0;
         if (*surface && (*surface)->gl) glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &allocated);
         if (allocated != (GLint)w) { ui_release(surface); return 0; }
@@ -341,11 +491,11 @@ static void ui_copy(d3d_surface *source, d3d_surface *target)
     int active = ui_active;
     d3d_surface *depth_source = ui_depth_source;
     ui_active = 0;
-    source->dev->fbo_dirty = 1;
+    RDEV->fbo_dirty = 1;
     d3d_gl_blit(source, from, target, to, source->fmt->depth ? 1 : 2);
     ui_active = active;
     ui_depth_source = depth_source;
-    source->dev->fbo_dirty = 1;
+    RDEV->fbo_dirty = 1;
 }
 
 static void ui_prepare_depth(d3d_device *d)
@@ -382,7 +532,7 @@ static void ui_promote(d3d_device *d)
     if (width > d3d_gl_limits.max_texture || height > d3d_gl_limits.max_texture) return;
     int changed = !ui_color || ui_color->width != width || ui_color->height != height;
     if (!ui_allocate(d, &ui_color, bb, width, height)) return;
-    ui_copy(bb, ui_color);
+    if (!d3d_filter_blit(bb, ui_color, render_filter[0], render_sharpness)) ui_copy(bb, ui_color);
     ui_owner = d;
     ui_backbuffer = bb;
     ui_depth_source = NULL;
@@ -663,9 +813,11 @@ static GLuint sampler_for(const uint32_t *ss, int no_filter, uint32_t levels, ui
     else if (mip == 1) minf = linear ? GL_LINEAR_MIPMAP_NEAREST : GL_NEAREST_MIPMAP_NEAREST;
     else minf = linear ? GL_LINEAR_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_LINEAR;
     glSamplerParameteri(s, GL_TEXTURE_MIN_FILTER, (GLint)minf);
-    float aniso = (min == 3 || mag == 3) ? (float)(key[7] ? key[7] : 1) : 1.0f;
-    if (aniso > 16.0f) aniso = 16.0f;
-    glSamplerParameterf(s, GL_TEXTURE_MAX_ANISOTROPY_EXT, aniso);
+    if (d3d_gl_limits.max_anisotropy > 1.0f) {
+        float aniso = (min == 3 || mag == 3) ? (float)(key[7] ? key[7] : 1) : 1.0f;
+        if (aniso > d3d_gl_limits.max_anisotropy) aniso = d3d_gl_limits.max_anisotropy;
+        glSamplerParameterf(s, GL_TEXTURE_MAX_ANISOTROPY_EXT, aniso);
+    }
     glSamplerParameterf(s, GL_TEXTURE_MIN_LOD, (float)key[8]);
     if (sampler_count < 512) {
         memcpy(sampler_cache[sampler_count].key, key, sizeof key);
@@ -719,10 +871,10 @@ static void bind_texture(d3d_device *d, int slot, GLuint unit)
         uint32_t ss[14];
         memcpy(ss, d->st.ss[slot], sizeof ss);
         ss[7] = 0;
-        GLuint sampler = sampler_for(ss, no_filter, t->levels, t->lod);
+        GLuint sampler = sampler_for(ss, no_filter, t->levels, TEX_RT(t)->rt_lod);
         if (unit_sampler[unit] != sampler) { glBindSampler(unit, sampler); unit_sampler[unit] = sampler; }
     } else {
-        GLuint sampler = sampler_for(d->st.ss[slot], no_filter, t->levels, t->lod);
+        GLuint sampler = sampler_for(d->st.ss[slot], no_filter, t->levels, TEX_RT(t)->rt_lod);
         if (unit_sampler[unit] != sampler) { glBindSampler(unit, sampler); unit_sampler[unit] = sampler; }
     }
 }
@@ -768,7 +920,7 @@ static void depth_trace_draw(d3d_device *d, uint32_t ps, uint32_t vs, uint32_t v
         d3d_texture *t = (d3d_texture *)d->st.textures[slot];
         int n = snprintf(textures + used, sizeof textures - used,
             " %c%u=%u/%X(t=%u,levels=%u,lod=%u,mip=%u)", slot < 16 ? 'p' : 'v', slot < 16 ? slot : slot - 16,
-            unit_tex[slot], unit_target[slot], t ? t->gl : 0, t ? t->levels : 0, t ? t->lod : 0, d->st.ss[slot][7]);
+            unit_tex[slot], unit_target[slot], t ? t->gl : 0, t ? t->levels : 0, t ? TEX_RT(t)->rt_lod : 0, d->st.ss[slot][7]);
         if (n < 0 || (size_t)n >= sizeof textures - used) break;
         used += (size_t)n;
     }
@@ -847,9 +999,9 @@ static int draw_vertex_bounds(d3d_buffer *ib, const void *up_indices, int up_i32
         uint64_t offset = (uint64_t)start_index * (i32 ? 4u : 2u);
         uint64_t end = offset + (uint64_t)count * (i32 ? 4u : 2u);
         if (!ib || end > ib->size) return 0;
-        cached = !ib->locks && ib->bounds_count == count && ib->bounds_start == start_index && ib->bounds_format == ib->format;
+        cached = !BUF_RT(ib)->rt_locks && ib->bounds_count == count && ib->bounds_start == start_index && ib->bounds_format == ib->format;
         if (cached) { lo = ib->bounds_lo; hi = ib->bounds_hi; }
-        else indices = (const uint8_t *)GPTR(ib->shadow) + offset;
+        else indices = (const uint8_t *)GPTR(BUF_RT(ib)->rt_shadow) + offset;
     }
     if (!cached && i32) {
         for (uint32_t i = 0; i < count; ++i) {
@@ -864,7 +1016,7 @@ static int draw_vertex_bounds(d3d_buffer *ib, const void *up_indices, int up_i32
             if (v > hi) hi = v;
         }
     }
-    if (!up_indices && !ib->locks && !cached) {
+    if (!up_indices && !BUF_RT(ib)->rt_locks && !cached) {
         ib->bounds_start = start_index; ib->bounds_count = count; ib->bounds_format = ib->format;
         ib->bounds_lo = lo; ib->bounds_hi = hi;
     }
@@ -1109,7 +1261,7 @@ static int draw_sparse_indices(d3d_buffer *ib, uint32_t start_index, uint32_t co
         sparse_indices = work; sparse_capacity = capacity; sparse_vertices = work + capacity;
     }
     if ((uint64_t)last - first < SPARSE_MAX_SPAN)
-        return draw_sparse_map((const uint8_t *)GPTR(ib->shadow) + begin, unit, count, base, first, last, unique_count);
+        return draw_sparse_map((const uint8_t *)GPTR(BUF_RT(ib)->rt_shadow) + begin, unit, count, base, first, last, unique_count);
     uint32_t slots = capacity * 2u;
     if (sparse_hash_capacity < slots) {
         sparse_index_entry *hash = realloc(sparse_hash, (size_t)slots * sizeof *hash);
@@ -1117,7 +1269,7 @@ static int draw_sparse_indices(d3d_buffer *ib, uint32_t start_index, uint32_t co
         sparse_hash = hash; sparse_hash_capacity = slots;
     }
     memset(sparse_hash, 0, (size_t)slots * sizeof *sparse_hash);
-    const uint8_t *source = (const uint8_t *)GPTR(ib->shadow) + begin;
+    const uint8_t *source = (const uint8_t *)GPTR(BUF_RT(ib)->rt_shadow) + begin;
     uint32_t unique = 0;
     for (uint32_t i = 0; i < count; ++i) {
         uint32_t raw;
@@ -1147,7 +1299,7 @@ static int draw_sparse_gather(d3d_buffer *b, uint32_t offset, uint32_t stride, u
 {
     if (!b || !out || !unique || !sparse_vertices || unique > sparse_capacity || !stride || !attr_end || attr_end > stride ||
         (uint64_t)(unique - 1u) * stride + attr_end != out_bytes) return 0;
-    const uint8_t *shadow = (const uint8_t *)GPTR(b->shadow);
+    const uint8_t *shadow = (const uint8_t *)GPTR(BUF_RT(b)->rt_shadow);
     /* Fixed-size pieces inline; a memcpy call per small vertex dominated. */
     uint32_t wide = attr_end & ~15u, words = attr_end & 12u, tail = attr_end & 3u;
     /* One range check for the whole draw (its highest vertex), then copies only; the scattered
@@ -1242,7 +1394,7 @@ static GLenum gl_mode(uint32_t p)
 
 static uint64_t swap_ns;      /* time in eglSwapBuffers: vsync and the GPU catching up */
 
-int d3d_gl_draw(d3d_device *d, uint32_t primitive, uint32_t start_vertex, uint32_t vertex_count,
+static int gl_draw(d3d_device *d, uint32_t primitive, uint32_t start_vertex, uint32_t vertex_count,
     uint32_t prim_count, int indexed, uint32_t base_vertex, uint32_t start_index, uint32_t min_index,
     const void *up_vertices, uint32_t up_stride, const void *up_indices, int up_index32)
 {
@@ -1260,7 +1412,7 @@ int d3d_gl_draw(d3d_device *d, uint32_t primitive, uint32_t start_vertex, uint32
                 break;
             }
     }
-    if (ui_quad_depth) ui_promote(d);
+    if (render_ui) ui_promote(d);
     d3d_gl_bind_targets(d);
     d3d_gl_apply_state(d);
     int attr_count;
@@ -1287,7 +1439,8 @@ int d3d_gl_draw(d3d_device *d, uint32_t primitive, uint32_t start_vertex, uint32
     for (int s = 0; s < 4; ++s) if (vs_samplers & (1u << s)) bind_texture(d, 16 + s, (GLuint)(16 + s));
     if (depth_trace_remaining) depth_trace_draw(d, ps_samplers, vs_samplers, shader_tag(vs), shader_tag(ps));
     /* UP data */
-    uint32_t up_bytes = 0;
+    uint32_t up_bytes = 0, up_ring_at = 0;
+    GLuint up_buffer = 0;
     if (up_vertices) {
         uint32_t vertices = vertex_count;
         if (indexed && up_indices) {
@@ -1299,9 +1452,20 @@ int d3d_gl_draw(d3d_device *d, uint32_t primitive, uint32_t start_vertex, uint32
             vertices = max + 1;
         }
         up_bytes = vertices * up_stride;
-        if (!up_vbo) glGenBuffers(1, &up_vbo);
-        glBindBuffer(GL_ARRAY_BUFFER, up_vbo);
-        glBufferData(GL_ARRAY_BUFFER, up_bytes, up_vertices, GL_STREAM_DRAW);
+        /* UP data through the streaming ring: a glBufferData per draw made the Adreno driver
+         * allocate (and later free) GPU memory with an ioctl each, a third of the frame's CPU
+         * time in kernel calls on sprite- and particle-heavy scenes (UT3, 2026-11-04). */
+        uint8_t *dst = ring_alloc(up_bytes, &up_ring_at);
+        if (dst) {
+            memcpy(dst, up_vertices, up_bytes);
+            up_buffer = ring_buffer;
+        } else {
+            up_ring_at = 0;
+            if (!up_vbo) glGenBuffers(1, &up_vbo);
+            glBindBuffer(GL_ARRAY_BUFFER, up_vbo);
+            glBufferData(GL_ARRAY_BUFFER, up_bytes, up_vertices, GL_STREAM_DRAW);
+            up_buffer = up_vbo;
+        }
     }
     uint32_t instances = (d->st.stream_freq[0] & 0x40000000u) ? (d->st.stream_freq[0] & 0x3FFFFFFFu) : 0;
     uint32_t first_vertex = 0, last_vertex = 0;
@@ -1344,7 +1508,7 @@ int d3d_gl_draw(d3d_device *d, uint32_t primitive, uint32_t start_vertex, uint32
             vb_upload_bytes += sparse_bytes[stream];
             vb_upload_frame_bytes += sparse_bytes[stream];
         } else if (b->dirty_pages) {
-            draw_stream_upload(stream, stream_bytes[stream], (const uint8_t *)GPTR(b->shadow) + stream_lo[stream]);
+            draw_stream_upload(stream, stream_bytes[stream], (const uint8_t *)GPTR(BUF_RT(b)->rt_shadow) + stream_lo[stream]);
             ++vb_upload_calls;
             vb_upload_bytes += stream_bytes[stream];
             vb_upload_frame_bytes += stream_bytes[stream];
@@ -1368,8 +1532,8 @@ int d3d_gl_draw(d3d_device *d, uint32_t primitive, uint32_t start_vertex, uint32
         GLsizei stride;
         GLuint buffer;
         if (up_vertices && e->stream == 0) {
-            buffer = up_vbo;
-            offset = e->offset;
+            buffer = up_buffer;
+            offset = (uintptr_t)up_ring_at + e->offset;
             stride = (GLsizei)up_stride;
         } else {
             d3d_buffer *b = (d3d_buffer *)d->st.streams[e->stream];
@@ -1416,7 +1580,7 @@ int d3d_gl_draw(d3d_device *d, uint32_t primitive, uint32_t start_vertex, uint32
         uint32_t index = start_vertex;
         if (indexed && !up_indices && d->st.indices) {
             d3d_buffer *ib = (d3d_buffer *)d->st.indices;
-            index = ib->format == 102 ? MEM32(ib->shadow + start_index * 4u) : MEM16(ib->shadow + start_index * 2u);
+            index = ib->format == 102 ? MEM32(BUF_RT(ib)->rt_shadow + start_index * 4u) : MEM16(BUF_RT(ib)->rt_shadow + start_index * 2u);
             index += base_vertex;
         }
         float pos[4] = { 0, 0, 0, 0 };
@@ -1426,7 +1590,7 @@ int d3d_gl_draw(d3d_device *d, uint32_t primitive, uint32_t start_vertex, uint32
             if (up_vertices && pe->stream == 0) { vb = (const uint8_t *)up_vertices; stride = up_stride; }
             else if (d->st.streams[pe->stream]) {
                 d3d_buffer *b = (d3d_buffer *)d->st.streams[pe->stream];
-                vb = (const uint8_t *)GPTR(b->shadow + d->st.stream_offset[pe->stream]);
+                vb = (const uint8_t *)GPTR(BUF_RT(b)->rt_shadow + d->st.stream_offset[pe->stream]);
                 stride = d->st.stream_stride[pe->stream];
             }
             if (vb) memcpy(pos, vb + (size_t)index * stride + pe->offset, 4u * (pe->type + 1u));
@@ -1465,7 +1629,7 @@ int d3d_gl_draw(d3d_device *d, uint32_t primitive, uint32_t start_vertex, uint32
             d3d_texture *tt = (d3d_texture *)d->st.textures[0];
             if (tt && tt->rtype == D3DRTYPE_TEXTURE) {
                 ++textures_traced;
-                trace_dump(d, (d3d_surface *)void_com_host(d3d_texture_surface(tt, 0, 0)), "stage 0 texture");
+                if (tt->surfaces && tt->surfaces[0]) trace_dump(d, tt->surfaces[0], "stage 0 texture");
             }
         }
         if (vs || ps) d3d_shader_trace();
@@ -1485,13 +1649,13 @@ int d3d_gl_draw(d3d_device *d, uint32_t primitive, uint32_t start_vertex, uint32
             if (up_vertices) { vb = (const uint8_t *)up_vertices; stride = up_stride; }
             else if (d->st.streams[0]) {
                 d3d_buffer *b = (d3d_buffer *)d->st.streams[0];
-                vb = (const uint8_t *)GPTR(b->shadow + d->st.stream_offset[0]);
+                vb = (const uint8_t *)GPTR(BUF_RT(b)->rt_shadow + d->st.stream_offset[0]);
                 stride = d->st.stream_stride[0];
             }
             static int textures_dumped;
             d3d_texture *t0tex = (d3d_texture *)d->st.textures[0];
             if (t0tex && textures_dumped++ < 2 && t0tex->rtype == D3DRTYPE_TEXTURE)
-                trace_dump(d, (d3d_surface *)void_com_host(d3d_texture_surface(t0tex, 0, 0)), "ff stage 0 texture");
+                if (t0tex->surfaces && t0tex->surfaces[0]) trace_dump(d, t0tex->surfaces[0], "ff stage 0 texture");
             for (uint32_t v = 0; vb && v < 4 && v < vertex_count; ++v) {
                 const uint32_t *w = (const uint32_t *)(vb + (size_t)(start_vertex + v) * stride);
                 float f[8];
@@ -1531,14 +1695,23 @@ int d3d_gl_draw(d3d_device *d, uint32_t primitive, uint32_t start_vertex, uint32
         glGenQueries(1, &trace_query);
         glBeginQuery(GL_ANY_SAMPLES_PASSED, trace_query);
     }
+    gpu_profile_begin(d->frame);
     GLenum mode = gl_mode(primitive);
     if (indexed) {
         if (up_indices) {
-            if (!up_ibo) glGenBuffers(1, &up_ibo);
-            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, up_ibo);
-            elem_buffer = up_ibo;
-            glBufferData(GL_ELEMENT_ARRAY_BUFFER, vertex_count * (up_index32 ? 4u : 2u), up_indices, GL_STREAM_DRAW);
-            glDrawElements(mode, (GLsizei)vertex_count, up_index32 ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT, NULL);
+            uint32_t index_bytes = vertex_count * (up_index32 ? 4u : 2u), index_at = 0;
+            uint8_t *dst = ring_alloc(index_bytes, &index_at);
+            GLuint element = ring_buffer;
+            if (dst) memcpy(dst, up_indices, index_bytes);
+            else {
+                index_at = 0;
+                if (!up_ibo) glGenBuffers(1, &up_ibo);
+                element = up_ibo;
+            }
+            if (elem_buffer != element) { glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, element); elem_buffer = element; }
+            if (!dst) glBufferData(GL_ELEMENT_ARRAY_BUFFER, index_bytes, up_indices, GL_STREAM_DRAW);
+            glDrawElements(mode, (GLsizei)vertex_count, up_index32 ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT,
+                           (const void *)(uintptr_t)index_at);
         } else {
             d3d_buffer *ib = (d3d_buffer *)d->st.indices;
             if (!ib) { void_log("[gl] indexed draw without an index buffer"); return 0; }
@@ -1548,7 +1721,7 @@ int d3d_gl_draw(d3d_device *d, uint32_t primitive, uint32_t start_vertex, uint32
             int compact = sparse_count || (ib->dirty_pages && index_hi <= ib->size);
             uint32_t compact_at = 0;
             if (compact) {
-                const void *data = sparse_count ? (const void *)sparse_indices : (const uint8_t *)GPTR(ib->shadow) + index_lo;
+                const void *data = sparse_count ? (const void *)sparse_indices : (const uint8_t *)GPTR(BUF_RT(ib)->rt_shadow) + index_lo;
                 uint32_t size = sparse_count ? vertex_count * 4u : (uint32_t)(index_hi - index_lo);
                 uint8_t *dst = ring_alloc(size, &compact_at);
                 if (dst) {
@@ -1626,8 +1799,71 @@ int d3d_gl_draw(d3d_device *d, uint32_t primitive, uint32_t start_vertex, uint32
     return 1;
 }
 
+typedef struct {
+    uint32_t primitive, start_vertex, vertex_count, prim_count, base_vertex, start_index, min_index;
+    int indexed, up_index32, up_vertices, up_indices;
+    uint32_t up_stride, up_vertex_bytes;
+    int ui, world_filter, ui_filter;
+    float sharpness;
+} draw_args;
+
+static void run_draw(void *args)
+{
+    const draw_args *a = (const draw_args *)args;
+    render_ui = a->ui;
+    render_filter[0] = a->world_filter; render_filter[1] = a->ui_filter;
+    render_sharpness = a->sharpness;
+    const uint8_t *data = (const uint8_t *)(a + 1);
+    gl_draw(RDEV, a->primitive, a->start_vertex, a->vertex_count, a->prim_count, a->indexed, a->base_vertex,
+        a->start_index, a->min_index, a->up_vertices ? data : NULL, a->up_stride,
+        a->up_indices ? data + ((a->up_vertex_bytes + 15u) & ~15u) : NULL, a->up_index32);
+}
+
+/* The game's thread: the state the draw reads, then the draw with a copy of
+ * its UP data; the buffers it reads are marked (d3d9_resource.c). */
+int d3d_gl_draw(d3d_device *d, uint32_t primitive, uint32_t start_vertex, uint32_t vertex_count,
+    uint32_t prim_count, int indexed, uint32_t base_vertex, uint32_t start_index, uint32_t min_index,
+    const void *up_vertices, uint32_t up_stride, const void *up_indices, int up_index32)
+{
+    if (d3d_rt_executing())
+        return gl_draw(d, primitive, start_vertex, vertex_count, prim_count, indexed, base_vertex, start_index,
+                       min_index, up_vertices, up_stride, up_indices, up_index32);
+    uint32_t vertex_bytes = 0, index_bytes = 0;
+    if (up_vertices) {
+        uint32_t vertices = vertex_count;
+        if (indexed && up_indices) {
+            uint32_t max = 0;
+            for (uint32_t i = 0; i < vertex_count; ++i) {
+                uint32_t v = up_index32 ? ((const uint32_t *)up_indices)[i] : ((const uint16_t *)up_indices)[i];
+                if (v > max) max = v;
+            }
+            vertices = max + 1;
+            index_bytes = vertex_count * (up_index32 ? 4u : 2u);
+        }
+        vertex_bytes = vertices * up_stride;
+    }
+    d3d_rt_sync_state(d);
+    draw_args *a = (draw_args *)d3d_rt_begin(run_draw, (uint32_t)sizeof *a + ((vertex_bytes + 15u) & ~15u) + index_bytes);
+    *a = (draw_args){ primitive, start_vertex, vertex_count, prim_count, base_vertex, start_index, min_index,
+                      indexed, up_index32, up_vertices != NULL, up_indices != NULL && index_bytes, up_stride, vertex_bytes };
+    uint8_t *data = (uint8_t *)(a + 1);
+    if (vertex_bytes) memcpy(data, up_vertices, vertex_bytes);
+    if (index_bytes) memcpy(data + ((vertex_bytes + 15u) & ~15u), up_indices, index_bytes);
+    a->ui = ui_quad_depth != 0;
+    a->world_filter = void_port_filter(0); a->ui_filter = void_port_filter(1);
+    a->sharpness = void_port_sharpness();
+    d3d_rt_commit();
+    uint64_t at = d3d_rt_position();
+    if (at) {
+        for (int i = 0; i < 16; ++i) if (d->st.streams[i]) d3d_buffer_read_by((d3d_buffer *)d->st.streams[i], at);
+        if (d->st.indices) d3d_buffer_read_by((d3d_buffer *)d->st.indices, at);
+    }
+    return 1;
+}
+
 /* ---------------------------------------------------------------- clear */
-void d3d_gl_clear(d3d_device *d, uint32_t count, uint32_t rects, uint32_t flags, uint32_t color, float z, uint32_t stencil)
+void d3d_gl_clear_rects(d3d_device *d, uint32_t count, const int32_t *rects, uint32_t flags, uint32_t color, float z,
+    uint32_t stencil)
 {
     raster_state_valid = 0;
     d3d_gl_bind_targets(d);
@@ -1661,8 +1897,8 @@ void d3d_gl_clear(d3d_device *d, uint32_t count, uint32_t rects, uint32_t flags,
         }
     } else {
         for (uint32_t i = 0; i < count; ++i) {
-            int x1 = (int)MEM32(rects + 16 * i), y1 = (int)MEM32(rects + 16 * i + 4);
-            int x2 = (int)MEM32(rects + 16 * i + 8), y2 = (int)MEM32(rects + 16 * i + 12);
+            int x1 = rects[4 * i], y1 = rects[4 * i + 1];
+            int x2 = rects[4 * i + 2], y2 = rects[4 * i + 3];
             if (x1 < vx) x1 = vx;
             if (y1 < vy) y1 = vy;
             if (x2 > vx2) x2 = vx2;
@@ -1675,17 +1911,37 @@ void d3d_gl_clear(d3d_device *d, uint32_t count, uint32_t rects, uint32_t flags,
     glDisable(GL_SCISSOR_TEST);
 }
 
+typedef struct { uint32_t count, flags, color, stencil; float z; } clear_args;
+
+static void run_clear(void *args)
+{
+    const clear_args *a = (const clear_args *)args;
+    d3d_gl_clear_rects(RDEV, a->count, a->count ? (const int32_t *)(a + 1) : NULL, a->flags, a->color, a->z, a->stencil);
+}
+
+/* The game's thread: rects are guest {x1, y1, x2, y2} quadruples, copied. */
+void d3d_gl_clear(d3d_device *d, uint32_t count, uint32_t rects, uint32_t flags, uint32_t color, float z, uint32_t stencil)
+{
+    uint32_t n = rects ? count : 0;
+    d3d_rt_sync_state(d);
+    clear_args *a = (clear_args *)d3d_rt_begin(run_clear, (uint32_t)sizeof *a + 16u * n);
+    *a = (clear_args){ n, flags, color, stencil, z };
+    int32_t *r = (int32_t *)(a + 1);
+    for (uint32_t i = 0; i < 4 * n; ++i) r[i] = (int32_t)MEM32(rects + 4 * i);
+    d3d_rt_commit();
+}
+
 /* -------------------------------------------------------- blits and reads */
-void d3d_gl_blit(d3d_surface *src, const uint32_t *sr, d3d_surface *dst, const uint32_t *dr, uint32_t filter)
+static void gl_blit(d3d_surface *src, const uint32_t *sr, d3d_surface *dst, const uint32_t *dr, uint32_t filter)
 {
     raster_state_valid = 0;
-    if (g_d3d_device && tracing(g_d3d_device)) {
+    if (RDEV && tracing(RDEV)) {
         GLboolean cm[4];
         glGetBooleanv(GL_COLOR_WRITEMASK, cm);
         void_log("[trace] blit %ux%u fmt %u (%u,%u,%u,%u) -> %ux%u fmt %u (%u,%u,%u,%u) colour mask was %d%d%d%d", src->width,
             src->height, src->format, sr[0], sr[1], sr[2], sr[3], dst->width, dst->height, dst->format, dr[0], dr[1], dr[2], dr[3],
             cm[0], cm[1], cm[2], cm[3]);
-        trace_dump(g_d3d_device, src, "blit source");
+        trace_dump(RDEV, src, "blit source");
     }
     if (!read_fbo) { glGenFramebuffers(1, &read_fbo); glGenFramebuffers(1, &draw_fbo); }
     int depth = src->fmt && src->fmt->depth;
@@ -1694,7 +1950,7 @@ void d3d_gl_blit(d3d_surface *src, const uint32_t *sr, d3d_surface *dst, const u
      * keeps a clear of that framebuffer pending as the load operation of
      * its render pass and resolves it when the pass ends, after - and over -
      * writes made through other framebuffers (Mali-G76 r26p0). */
-    d3d_device *dev = g_d3d_device;
+    d3d_device *dev = RDEV;
     int slot = -1;
     if (dev) {
         if (depth) slot = dev->ds == dst ? 4 : -1;
@@ -1740,24 +1996,24 @@ void d3d_gl_blit(d3d_surface *src, const uint32_t *sr, d3d_surface *dst, const u
     GLenum e = glGetError();
     if (e) void_log("[gl] StretchRect %ux%u fmt %u -> %ux%u fmt %u error %04X", src->width, src->height, src->format,
         dst->width, dst->height, dst->format, e);
-    if (g_d3d_device && tracing(g_d3d_device)) {
+    if (RDEV && tracing(RDEV)) {
         GLenum rs = glCheckFramebufferStatus(GL_READ_FRAMEBUFFER), ds = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
         GLint rb = 0, db = 0;
         glGetIntegerv(GL_READ_BUFFER, &rb);
         glGetIntegerv(GL_DRAW_BUFFER0, &db);
         void_log("[trace]   blit read fb %04X buffer %04X, draw fb %04X buffer %04X", rs, rb, ds, db);
-        trace_dump(g_d3d_device, dst, "blit result");
+        trace_dump(RDEV, dst, "blit result");
     }
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    if (g_d3d_device) g_d3d_device->fbo_dirty = 1;
+    if (RDEV) RDEV->fbo_dirty = 1;
 }
 
 /* Logical RGBA of rect (x0, y0, x1, y1) of a GPU surface: storage rows are
  * D3D rows, so the rect reads unchanged. Returns 0 if GL cannot read it. */
-int d3d_gl_read_rgba(d3d_surface *s, const uint32_t *r, float *out)
+static int gl_read_rgba(d3d_surface *s, const uint32_t *r, float *out)
 {
     if (!s->fmt || s->fmt->depth || !s->fmt->internal) return 0;
-    d3d_surface *shown = g_d3d_device ? ui_surface(g_d3d_device, s) : s;
+    d3d_surface *shown = ui_surface(RDEV, s);
     if (shown != s) ui_copy(shown, s);
     if (!read_fbo) { glGenFramebuffers(1, &read_fbo); glGenFramebuffers(1, &draw_fbo); }
     glBindFramebuffer(GL_READ_FRAMEBUFFER, read_fbo);
@@ -1778,7 +2034,7 @@ int d3d_gl_read_rgba(d3d_surface *s, const uint32_t *r, float *out)
         ok = glGetError() == GL_NO_ERROR;
     }
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    if (g_d3d_device) g_d3d_device->fbo_dirty = 1;
+    if (RDEV) RDEV->fbo_dirty = 1;
     if (!ok) return 0;
     /* Standalone GPU surfaces are stored like render targets (d3d_surface_new). */
     uint32_t usage = s->container ? s->container->usage : (s->usage | D3DUSAGE_RENDERTARGET);
@@ -1788,8 +2044,38 @@ int d3d_gl_read_rgba(d3d_surface *s, const uint32_t *r, float *out)
     return 1;
 }
 
-/* A whole GPU surface into guest memory in its own format (LockRect). */
-void d3d_gl_read_surface(d3d_surface *src, uint32_t dst_mem, uint32_t dst_pitch)
+typedef struct { d3d_surface *src, *dst; uint32_t sr[4], dr[4], filter; } blit_args;
+static void run_blit(void *args)
+{
+    const blit_args *a = (const blit_args *)args;
+    gl_blit(a->src, a->sr, a->dst, a->dr, a->filter);
+}
+
+/* The game's thread: StretchRect, D3DXLoadSurfaceFromSurface. */
+void d3d_gl_blit(d3d_surface *src, const uint32_t *sr, d3d_surface *dst, const uint32_t *dr, uint32_t filter)
+{
+    if (d3d_rt_executing()) { gl_blit(src, sr, dst, dr, filter); return; }
+    if (g_d3d_device) d3d_rt_sync_state(g_d3d_device);
+    blit_args a = { src, dst, { sr[0], sr[1], sr[2], sr[3] }, { dr[0], dr[1], dr[2], dr[3] }, filter };
+    d3d_rt_call(run_blit, &a, sizeof a);
+}
+
+typedef struct { d3d_surface *s; const uint32_t *r; float *out; int ok; } read_args;
+static void run_read_rgba(void *args) { read_args *a = (read_args *)args; a->ok = gl_read_rgba(a->s, a->r, a->out); }
+
+/* Any thread of the bridge: the game's waits for the render thread to read. */
+int d3d_gl_read_rgba(d3d_surface *s, const uint32_t *r, float *out)
+{
+    if (d3d_rt_executing()) return gl_read_rgba(s, r, out);
+    read_args a = { s, r, out, 0 };
+    d3d_rt_sync(run_read_rgba, &a);
+    return a.ok;
+}
+
+/* A whole GPU surface into guest memory in its own format (LockRect,
+ * GetRenderTargetData): the game's thread waits meanwhile, so the render
+ * thread writes its memory. */
+static void gl_read_surface(d3d_surface *src, uint32_t dst_mem, uint32_t dst_pitch)
 {
     uint32_t w = src->width, h = src->height, rect[4] = { 0, 0, w, h };
     float *px = (float *)malloc((size_t)w * h * 16);
@@ -1806,11 +2092,26 @@ void d3d_gl_read_surface(d3d_surface *src, uint32_t dst_mem, uint32_t dst_pitch)
     free(px);
 }
 
-void d3d_gl_fill(d3d_surface *dst, const uint32_t *r, uint32_t color)
+typedef struct { d3d_surface *src; uint32_t mem, pitch; } read_surface_args;
+static void run_read_surface(void *args)
+{
+    const read_surface_args *a = (const read_surface_args *)args;
+    gl_read_surface(a->src, a->mem, a->pitch);
+}
+
+void d3d_gl_read_surface(d3d_surface *src, uint32_t dst_mem, uint32_t dst_pitch)
+{
+    if (d3d_rt_executing()) { gl_read_surface(src, dst_mem, dst_pitch); return; }
+    if (g_d3d_device) d3d_rt_sync_state(g_d3d_device);
+    read_surface_args a = { src, dst_mem, dst_pitch };
+    d3d_rt_sync(run_read_surface, &a);
+}
+
+static void gl_fill(d3d_surface *dst, const uint32_t *r, uint32_t color)
 {
     raster_state_valid = 0;
     uint32_t scaled[4];
-    d3d_surface *target = g_d3d_device ? ui_surface(g_d3d_device, dst) : dst;
+    d3d_surface *target = RDEV ? ui_surface(RDEV, dst) : dst;
     if (target != dst) {
         for (int i = 0; i < 4; ++i) scaled[i] = (uint32_t)lround((double)(int32_t)r[i] *
             (i & 1 ? (double)target->height / dst->height : (double)target->width / dst->width));
@@ -1826,7 +2127,16 @@ void d3d_gl_fill(d3d_surface *dst, const uint32_t *r, uint32_t color)
     glClear(GL_COLOR_BUFFER_BIT);
     glDisable(GL_SCISSOR_TEST);
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    if (g_d3d_device) g_d3d_device->fbo_dirty = 1;
+    if (RDEV) RDEV->fbo_dirty = 1;
+}
+
+typedef struct { d3d_surface *dst; uint32_t r[4], color; } fill_args;
+static void run_fill(void *args) { const fill_args *a = (const fill_args *)args; gl_fill(a->dst, a->r, a->color); }
+
+void d3d_gl_fill(d3d_surface *dst, const uint32_t *r, uint32_t color)
+{
+    fill_args a = { dst, { r[0], r[1], r[2], r[3] }, color };
+    d3d_rt_call(run_fill, &a, sizeof a);
 }
 
 /* --------------------------------------------------------------- present */
@@ -1873,13 +2183,13 @@ static volatile int dump_requested;
 void d3d_request_frame_dump(void) { dump_requested = 1; }
 
 /* The EGL context/window belongs to the activity; device-owned GL state does not. */
-void d3d_gl_device_destroy(void)
+static void gl_device_destroy(void)
 {
-    frame_deadline_ns = 0;
     raster_state_valid = 0;
     ui_active = 0;
     ui_owner = NULL; ui_backbuffer = ui_depth_source = NULL;
     ui_release(&ui_color); ui_release(&ui_depth);
+    d3d_filter_reset();
     glUseProgram(0);
     d3d_shader_reset();
     d3d_ff_reset();
@@ -1935,12 +2245,21 @@ void d3d_gl_device_destroy(void)
     __atomic_store_n(&depth_trace_requested, 0u, __ATOMIC_RELAXED);
 }
 
+static void run_device_destroy(void *unused) { (void)unused; gl_device_destroy(); }
+
+void d3d_gl_device_destroy(void)
+{
+    frame_deadline_ns = 0;
+    d3d_rt_sync(run_device_destroy, NULL);
+}
+
 /* Present commits its GL/frame state first; audio and other guest threads may
  * run during the deadline wait without changing the simulation clock. */
 void d3d_gl_frame_pace(void)
 {
     float fps = void_port_fps_limit();
-    if (!window_mode || egl_surface == EGL_NO_SURFACE || fps <= 0.0f) {
+    if (atomic_exchange(&pace_restart, 0)) frame_deadline_ns = 0;
+    if (!atomic_load(&surface_live) || fps <= 0.0f) {
         frame_deadline_ns = 0;
         return;
     }
@@ -1968,8 +2287,13 @@ void d3d_gl_frame_pace(void)
     frame_deadline_ns = now >= frame_deadline_ns + period ? now + period : frame_deadline_ns + period;
 }
 
-void d3d_gl_present(d3d_device *dev)
+/* What the game's thread did meanwhile, as of its present (frame statistics). */
+static uint64_t present_game_cpu_ns, present_game_wait_ns;
+static d3d_rt_stats_t present_game_stats;
+
+static void gl_present(d3d_device *dev)
 {
+    gpu_profile_end(dev->frame);
     ring_frame_end();
     GLenum error = glGetError();
     if (error) {
@@ -1981,7 +2305,8 @@ void d3d_gl_present(d3d_device *dev)
     if (vb_upload_frame_bytes > vb_upload_peak_bytes) vb_upload_peak_bytes = vb_upload_frame_bytes;
     vb_upload_frame_bytes = 0;
     static struct timespec fps_start, cpu_start;
-    static uint64_t wait_start, draws_start, swap_start_ns;
+    static uint64_t wait_start, draws_start, swap_start_ns, game_cpu_start;
+    static d3d_rt_stats_t rt_start;
     static uint32_t fps_frame;
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
@@ -1989,14 +2314,26 @@ void d3d_gl_present(d3d_device *dev)
     if (dev->frame - fps_frame >= 600 || !fps_start.tv_sec || now.tv_sec - fps_start.tv_sec >= 5) {
         struct timespec cpu;
         clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpu);
-        uint64_t wait = void_lock_wait_ns();
+        uint64_t wait = d3d_rt_threaded() ? present_game_wait_ns : void_lock_wait_ns();
         double dt = (double)(now.tv_sec - fps_start.tv_sec) + (double)(now.tv_nsec - fps_start.tv_nsec) / 1e9;
         double dcpu = (double)(cpu.tv_sec - cpu_start.tv_sec) + (double)(cpu.tv_nsec - cpu_start.tv_nsec) / 1e9;
         uint32_t frames = dev->frame - fps_frame;
+        /* cpu: the game's thread; the render thread's own time follows when it runs apart. */
+        double game_cpu = d3d_rt_threaded() ? (double)(present_game_cpu_ns - game_cpu_start) / 1e9 : dcpu;
+        const d3d_rt_stats_t *rt = &present_game_stats;
+        if (fps_start.tv_sec && frames && d3d_rt_threaded())
+            void_log("[rt] frame %u: render thread %.1f ms busy, %.1f ms cpu per frame; game waits per frame %.2f ms "
+                "for frames, %.2f ms for answers (%.1f), %.2f ms for ring/buffers (%.1f); %.0f records, %.0f KiB",
+                dev->frame, (double)(rt->render_busy_ns - rt_start.render_busy_ns) / 1e6 / frames, 1000.0 * dcpu / frames,
+                (double)(rt->frame_wait_ns - rt_start.frame_wait_ns) / 1e6 / frames,
+                (double)(rt->sync_ns - rt_start.sync_ns) / 1e6 / frames, (double)(rt->syncs - rt_start.syncs) / frames,
+                (double)(rt->ring_wait_ns - rt_start.ring_wait_ns) / 1e6 / frames,
+                (double)(rt->ring_waits - rt_start.ring_waits) / frames,
+                (double)(rt->records - rt_start.records) / frames, (double)(rt->bytes - rt_start.bytes) / 1024.0 / frames);
         if (fps_start.tv_sec && frames)
             void_log("[gl] frame %u: %.1f fps; per frame %.1f ms wall, %.1f ms cpu, %.1f ms machine wait, %.0f draws, "
                 "%.1f ms swap; compact VB %.1f KiB/frame, %.1f calls/frame, %.1f KiB peak; sparse %llu draws %.1f MiB/frame saved",
-                dev->frame, frames / dt, 1000.0 * dt / frames, 1000.0 * dcpu / frames,
+                dev->frame, frames / dt, 1000.0 * dt / frames, 1000.0 * game_cpu / frames,
                 (double)(wait - wait_start) / 1e6 / frames, (double)(draw_calls - draws_start) / frames,
                 (double)(swap_ns - swap_start_ns) / 1e6 / frames,
                 (double)vb_upload_bytes / 1024.0 / frames, (double)vb_upload_calls / frames,
@@ -2008,6 +2345,8 @@ void d3d_gl_present(d3d_device *dev)
         swap_start_ns = swap_ns;
         fps_start = now;
         cpu_start = cpu;
+        game_cpu_start = present_game_cpu_ns;
+        rt_start = present_game_stats;
         wait_start = wait;
         fps_frame = dev->frame;
     }
@@ -2069,4 +2408,36 @@ void d3d_gl_present(d3d_device *dev)
     raster_state_valid = 0;
     void_android_frame_presented();
     void_perf_frame_end(dev->frame);
+}
+
+typedef struct { uint32_t frame; uint64_t game_cpu_ns, game_wait_ns; d3d_rt_stats_t stats; } present_args;
+
+static void run_present(void *args)
+{
+    const present_args *a = (const present_args *)args;
+    d3d_rt_mirror_frame(a->frame);
+    present_game_cpu_ns = a->game_cpu_ns;
+    present_game_wait_ns = a->game_wait_ns;
+    present_game_stats = a->stats;
+    gl_present(RDEV);
+    d3d_rt_mirror_frame(a->frame + 1);    /* the game counts on to the next frame */
+    d3d_rt_frame_done();
+}
+
+/* The game's thread: the frame goes to the render thread, which starts on it
+ * at once; the game records the next while that one is drawn, never more. */
+void d3d_query_log(uint32_t frames);
+void d3d_gl_present(d3d_device *dev)
+{
+    static uint32_t logged_frame;
+    if (dev->frame - logged_frame >= 300) { d3d_query_log(dev->frame - logged_frame); logged_frame = dev->frame; }
+    struct timespec cpu;
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpu);
+    present_args a = { dev->frame, (uint64_t)cpu.tv_sec * 1000000000ull + (uint64_t)cpu.tv_nsec, void_lock_wait_ns(), { 0 } };
+    d3d_rt_stats(&a.stats);
+    d3d_rt_sync_state(dev);
+    d3d_rt_frame_queued();
+    d3d_rt_call(run_present, &a, sizeof a);
+    d3d_rt_flush();
+    d3d_rt_frame_wait(1);
 }

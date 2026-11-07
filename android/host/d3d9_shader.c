@@ -10,7 +10,12 @@
  * D3DCOLOR inputs are swizzled by MojoShader itself (MOJOSHADER_swizzle), so a
  * vertex shader is compiled per BGRA-input mask. */
 #include "d3d9_internal.h"
+#include "d3d9_thread.inc"
+#include "d3d9_filter.h"
+#include "touch.h"
 #include <ctype.h>
+#include <dirent.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -70,10 +75,15 @@ uint32_t d3d_shader_bytecode_size(uint32_t va)
 
 static void_com_class shader_class_vs, shader_class_ps;
 static void forget_shader(d3d_shader *shader);
+static void prelink_created(d3d_shader *s);
+static void prelink_forget(d3d_shader *s);
 
-static void shader_destroy(void_com_object *o)
+/* Programs, GL shaders and the prelink tables live on the render thread; a
+ * shader is created by the game's (MojoShader there) and handed over. */
+static void run_shader_destroy(void *args)
 {
-    d3d_shader *s = (d3d_shader *)o;
+    d3d_shader *s = *(d3d_shader **)args;
+    prelink_forget(s);
     forget_shader(s);
     if (s->gl_plain) glDeleteShader(s->gl_plain);
     if (s->parse) MOJOSHADER_freeParseData(s->parse);
@@ -82,6 +92,14 @@ static void shader_destroy(void_com_object *o)
     free(s->source);
     free(s);
 }
+
+static void shader_destroy(void_com_object *o)
+{
+    d3d_shader *s = (d3d_shader *)o;
+    d3d_rt_call(run_shader_destroy, &s, sizeof s);
+}
+
+static void run_shader_created(void *args) { prelink_created(*(d3d_shader **)args); }
 
 /* Insert `text` before the first occurrence of `anchor` (or append). */
 static char *insert_before(const char *src, const char *anchor, const char *text)
@@ -280,6 +298,8 @@ static char *patch_source(const char *original, int pixel)
         free(fixed);
         out = patch_shader(shadow, 1);
         free(shadow);
+        char *filtered = d3d_ui_filter_source(out);
+        if (filtered) { free(out); out = filtered; }
     }
     /* Gather needs 3.10, and linked stages (including fixed-function halves) must agree. */
     if (!strncmp(out, "#version 300 es", 15)) memcpy(out, "#version 310 es", 15);
@@ -433,6 +453,7 @@ d3d_shader *d3d_shader_create(d3d_device *dev, int pixel, uint32_t bytecode)
             }
     s->source = patch_source(s->parse->output, pixel);
     void_perf_add(VOID_PERF_SHADER_COMPILE, void_perf_now_ns() - start, 0);
+    d3d_rt_call(run_shader_created, &s, sizeof s);
     return s;
 }
 
@@ -480,13 +501,13 @@ typedef struct { int type, index, count; } umap_t;
 
 typedef struct program {
     d3d_shader *vs, *ps;          /* either may be NULL: a generated fixed-function half stands in */
-    uint32_t bgra_mask;
+    uint32_t bgra_mask;           /* low 16: BGRA attributes; high 16: SM1 sampler types */
     uint32_t ff_id;               /* the generated half (d3d9_ff.c), 0 for none */
     int alpha_mode;
     GLuint gl, vs_gl, ps_gl;
     int owns_vs, owns_ps;
     GLint loc_vs_f, loc_vs_i, loc_vs_b, loc_ps_f, loc_ps_i, loc_ps_b;
-    GLint loc_flip, loc_half, loc_alpha_func, loc_alpha_ref;
+    GLint loc_flip, loc_half, loc_alpha_func, loc_alpha_ref, loc_ui_filter;
     umap_t vs_map[256], ps_map[256];
     int vs_map_count, ps_map_count;
     int vs_f_count, vs_i_count, vs_b_count, ps_f_count, ps_i_count, ps_b_count;
@@ -553,11 +574,11 @@ static GLuint compile(GLenum type, const char *source)
     uint64_t start = void_perf_now_ns();
     GLuint sh = glCreateShader(type);
     glShaderSource(sh, 1, &source, NULL);
-    void_blocking_begin();
+    d3d_rt_wait_begin();
     glCompileShader(sh);
     GLint ok = 0;
     glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
-    void_blocking_end();
+    d3d_rt_wait_end();
     void_perf_add(VOID_PERF_SHADER_COMPILE, void_perf_now_ns() - start, 0);
     if (!ok) {
         char log[2048];
@@ -591,6 +612,7 @@ static void build_map(const MOJOSHADER_parseData *pd, umap_t *map, int *map_coun
 /* Patched GLSL of the vertex shader variant for a BGRA-input mask. */
 static char *vertex_source(d3d_shader *vs, uint32_t mask)
 {
+    mask &= 0xFFFFu;
     if (!mask) return strdup(vs->source);
     MOJOSHADER_swizzle swiz[16];
     unsigned n = 0;
@@ -612,6 +634,7 @@ static char *vertex_source(d3d_shader *vs, uint32_t mask)
 
 static GLuint vertex_variant(d3d_shader *vs, uint32_t mask)
 {
+    mask &= 0xFFFFu;
     if (!mask) {
         if (!vs->gl_plain) vs->gl_plain = compile(GL_VERTEX_SHADER, vs->source);
         return vs->gl_plain;
@@ -620,6 +643,38 @@ static GLuint vertex_variant(d3d_shader *vs, uint32_t mask)
     GLuint sh = src ? compile(GL_VERTEX_SHADER, src) : 0;
     free(src);
     return sh;
+}
+
+/* SM1 has no sampler declarations: the bound texture determines its dimensionality. */
+static uint32_t legacy_sampler_types(d3d_device *dev, d3d_shader *ps)
+{
+    if (!ps || ps->parse->major_ver != 1) return 0;
+    uint32_t types = 0;
+    for (int i = 0; i < ps->parse->sampler_count; ++i) {
+        unsigned slot = (unsigned)ps->parse->samplers[i].index;
+        if (slot >= 8) continue;
+        d3d_texture *t = (d3d_texture *)dev->st.textures[slot];
+        unsigned type = t && t->rtype == D3DRTYPE_CUBETEXTURE ? MOJOSHADER_SAMPLER_CUBE :
+                        t && t->rtype == D3DRTYPE_VOLUMETEXTURE ? MOJOSHADER_SAMPLER_VOLUME : MOJOSHADER_SAMPLER_2D;
+        types |= type << (slot * 2);
+    }
+    return types;
+}
+
+static char *pixel_source(d3d_shader *ps, uint32_t types)
+{
+    MOJOSHADER_samplerMap map[8];
+    for (unsigned i = 0; i < 8; ++i) {
+        map[i].index = (int)i;
+        map[i].type = (MOJOSHADER_samplerType)((types >> (2 * i)) & 3u);
+    }
+    const MOJOSHADER_parseData *pd = MOJOSHADER_parse(MOJOSHADER_PROFILE_GLSLES3, "main",
+        ps->parse_code ? ps->parse_code : ps->bytecode, ps->parse_code ? ps->parse_size : ps->size,
+        NULL, 0, map, 8, NULL, NULL, NULL);
+    char *src = NULL;
+    if (pd && !pd->error_count) src = patch_source(pd->output, 1);
+    if (pd) MOJOSHADER_freeParseData(pd);
+    return src;
 }
 
 /* D3D links a pixel input to a vertex output by semantic even when the
@@ -675,8 +730,18 @@ void d3d_ff_uniforms(d3d_device *d, GLuint program, int vertex, int pixel);
 /* A program is named by its final GLSL, its attribute bindings and the GL
  * driver; GL_OES_get_program_binary turns the next run's first use of a
  * screen's materials from compile+link into one glProgramBinary call. The
- * files live in the app's private cache (void_cache_dir), one per program. */
+ * files live in programs/ under void_cache_dir() (the folder the app passed
+ * to void_files_set_cache at start), one per program.
+ *
+ * A driver update changes every key, and nothing used to remove the old
+ * driver's files: the folder only grew. programs/driver now names the driver
+ * the files belong to; when it differs, the first use of the cache removes
+ * them all. Above PROGRAM_CACHE_LIMIT the oldest files of the current driver
+ * go too, down to PROGRAM_CACHE_KEEP. Only regular files with the names
+ * binary_path gives (or their .part) are ever removed. */
 #define PROGRAM_CACHE_MAGIC 0x42503548u    /* "H5PB" */
+#define PROGRAM_CACHE_LIMIT (512ull << 20)
+#define PROGRAM_CACHE_KEEP (384ull << 20)
 static int binary_state = -1;              /* -1 unknown, 0 unsupported, 1 usable */
 static uint64_t driver_hash;
 
@@ -685,6 +750,77 @@ static uint64_t fnv(uint64_t h, const void *data, size_t n)
     const uint8_t *b = (const uint8_t *)data;
     for (size_t i = 0; i < n; ++i) h = (h ^ b[i]) * 1099511628211ull;
     return h;
+}
+
+/* binary_path's names: 32 lowercase hex digits, then ".bin" or ".bin.part". */
+static int binary_file_name(const char *name)
+{
+    for (int i = 0; i < 32; ++i)
+        if (!((name[i] >= '0' && name[i] <= '9') || (name[i] >= 'a' && name[i] <= 'f'))) return 0;
+    return !strcmp(name + 32, ".bin") || !strcmp(name + 32, ".bin.part");
+}
+
+typedef struct { char name[48]; uint64_t size; int64_t mtime; } binary_file;
+
+static int binary_file_older(const void *a, const void *b)
+{
+    int64_t x = ((const binary_file *)a)->mtime, y = ((const binary_file *)b)->mtime;
+    return (x > y) - (x < y);
+}
+
+/* Once per run, before the first load or store (see the block comment). */
+static void binary_housekeeping(const char *programs)
+{
+    char marker[1200], partial[1210], seen[40] = "", want[40];
+    snprintf(marker, sizeof marker, "%s/driver", programs);
+    snprintf(want, sizeof want, "%016llx\n", (unsigned long long)driver_hash);
+    FILE *f = fopen(marker, "rb");
+    int known = f != NULL;
+    if (f) { seen[fread(seen, 1, sizeof seen - 1, f)] = 0; fclose(f); }
+    int wipe = known && strcmp(seen, want) != 0;
+    DIR *d = opendir(programs);
+    if (!d) return;
+    binary_file *files = NULL;
+    size_t count = 0, capacity = 0, removed = 0;
+    uint64_t kept = 0, freed = 0;
+    for (struct dirent *e; (e = readdir(d)) != NULL;) {
+        struct stat st;
+        if (!binary_file_name(e->d_name) || fstatat(dirfd(d), e->d_name, &st, AT_SYMLINK_NOFOLLOW) ||
+            !S_ISREG(st.st_mode))
+            continue;
+        if (wipe || strlen(e->d_name) != 36) {     /* the old driver's, or a store cut short */
+            if (!unlinkat(dirfd(d), e->d_name, 0)) { ++removed; freed += (uint64_t)st.st_size; }
+            continue;
+        }
+        if (count == capacity) {
+            size_t grown = capacity ? capacity * 2 : 256;
+            binary_file *more = (binary_file *)realloc(files, grown * sizeof *files);
+            if (!more) break;
+            files = more;
+            capacity = grown;
+        }
+        snprintf(files[count].name, sizeof files[count].name, "%s", e->d_name);
+        files[count].size = (uint64_t)st.st_size;
+        files[count].mtime = (int64_t)st.st_mtime;
+        kept += files[count++].size;
+    }
+    if (kept > PROGRAM_CACHE_LIMIT) {
+        qsort(files, count, sizeof *files, binary_file_older);
+        for (size_t i = 0; i < count && kept > PROGRAM_CACHE_KEEP; ++i)
+            if (!unlinkat(dirfd(d), files[i].name, 0)) { kept -= files[i].size; freed += files[i].size; ++removed; }
+    }
+    closedir(d);
+    free(files);
+    if (!known || wipe) {
+        snprintf(partial, sizeof partial, "%s.part", marker);
+        f = fopen(partial, "wb");
+        int ok = f && fputs(want, f) >= 0;
+        if (f && fclose(f)) ok = 0;
+        if (!ok || rename(partial, marker)) unlink(partial);
+    }
+    if (removed)
+        void_log("[d3d9] program cache: removed %u file(s), %.1f MiB (%s); %.1f MiB kept", (unsigned)removed,
+                 freed / 1048576.0, wipe ? "driver changed" : "over the limit or unfinished", kept / 1048576.0);
 }
 
 static int binary_usable(void)
@@ -701,6 +837,7 @@ static int binary_usable(void)
         char path[1100];
         snprintf(path, sizeof path, "%s/programs", dir);
         mkdir(path, 0775);
+        binary_housekeeping(path);
     }
     void_log("[d3d9] program binaries: %d format(s), cache %s", (int)formats, binary_state ? "on" : "off");
     return binary_state;
@@ -795,25 +932,31 @@ static program_t *link_program(d3d_shader *vs, d3d_shader *ps, uint32_t bgra_mas
         d3d_ff_attributes(&p->attr_count, p->attr_usage, p->attr_index);   /* fixed layout locations */
     }
     /* The final GLSL of both stages: owned where a variant or a fix applies. */
+    uint32_t sampler_types = bgra_mask >> 16;
+    char *ps_text = ps && sampler_types ? pixel_source(ps, sampler_types) : NULL;
+    if (sampler_types && !ps_text) { destroy_program(p); return NULL; }
+    const char *ps_base = ps_text ? ps_text : ps ? ps->source : NULL;
     char *vs_fixed = NULL, *ps_fixed = NULL, *vs_text = NULL, *ff_text = NULL;
-    if (vs && ps) reconcile_varyings(vs->source, ps->source, &vs_fixed, &ps_fixed);
+    if (vs && ps) reconcile_varyings(vs->source, ps_base, &vs_fixed, &ps_fixed);
     int vs_ok = 1;
     if (vs_fixed) {
         /* The same fix applied to the BGRA variant's source. */
         char *variant = vertex_source(vs, bgra_mask), *ignored = NULL;
-        if (variant) reconcile_varyings(variant, ps->source, &vs_text, &ignored);
+        if (variant) reconcile_varyings(variant, ps_base, &vs_text, &ignored);
         free(variant); free(ignored); free(vs_fixed);
         vs_ok = vs_text != NULL;
-    } else if (vs && bgra_mask) {
+    } else if (vs && (bgra_mask & 0xFFFFu)) {
         vs_text = vertex_source(vs, bgra_mask);
         vs_ok = vs_text != NULL;
     }
-    if (!vs_ok) { free(ps_fixed); destroy_program(p); return NULL; }
+    if (!vs_ok) { free(ps_fixed); free(ps_text); destroy_program(p); return NULL; }
     if (ps && alpha_mode != 9) {
-        char *variant = alpha_test_source(ps_fixed ? ps_fixed : ps->source, alpha_mode);
+        char *variant = alpha_test_source(ps_fixed ? ps_fixed : ps_base, alpha_mode);
         free(ps_fixed);
         ps_fixed = variant;
     }
+    if (!ps_fixed && ps_text) { ps_fixed = ps_text; ps_text = NULL; }
+    free(ps_text);
     if (!vs || !ps) {
         GLint length = 0;
         glGetShaderiv(ff_gl, GL_SHADER_SOURCE_LENGTH, &length);
@@ -854,11 +997,11 @@ static program_t *link_program(d3d_shader *vs, d3d_shader *ps, uint32_t bgra_mas
                 glBindAttribLocation(p->gl, (GLuint)i, vs->parse->attributes[i].name);
         }
         if (binary_state > 0) glProgramParameteri(p->gl, GL_PROGRAM_BINARY_RETRIEVABLE_HINT, GL_TRUE);
-        void_blocking_begin();
+        d3d_rt_wait_begin();
         glLinkProgram(p->gl);
         GLint ok = 0;
         glGetProgramiv(p->gl, GL_LINK_STATUS, &ok);
-        void_blocking_end();
+        d3d_rt_wait_end();
         void_perf_add(VOID_PERF_PROGRAM_LINK, void_perf_now_ns() - start, 0);
         if (!ok) {
             char log[2048];
@@ -881,6 +1024,7 @@ static program_t *link_program(d3d_shader *vs, d3d_shader *ps, uint32_t bgra_mas
     p->loc_half = glGetUniformLocation(p->gl, "vpHalfPixel");
     p->loc_alpha_func = glGetUniformLocation(p->gl, "vpAlphaFunc");
     p->loc_alpha_ref = glGetUniformLocation(p->gl, "vpAlphaRef");
+    p->loc_ui_filter = glGetUniformLocation(p->gl, "vpUiFilter");
     if (p->loc_flip >= 0) glUniform1f(p->loc_flip, -1.0f);
     p->last_alpha_func = -1;
     if (vs) build_map(vs->parse, p->vs_map, &p->vs_map_count, &p->vs_f_count, &p->vs_i_count, &p->vs_b_count);
@@ -903,7 +1047,7 @@ static program_t *link_program(d3d_shader *vs, d3d_shader *ps, uint32_t bgra_mas
         if (loc >= 0 && sm->index < 16) {
             glUniform1i(loc, sm->index);
             p->ps_sampler_mask |= 1u << sm->index;
-            p->ps_sampler_type[sm->index] = sm->type;
+            p->ps_sampler_type[sm->index] = sampler_types ? (int)((sampler_types >> (2 * sm->index)) & 3u) : sm->type;
         }
     }
     for (int i = 0; vs && i < vs->parse->sampler_count; ++i) {
@@ -966,6 +1110,7 @@ void d3d_shader_upload(d3d_device *dev, float half_x, float half_y, int alpha_fu
 {
     program_t *p = current_program;
     if (!p) return;
+    if (p->loc_ui_filter >= 0) glUniform1i(p->loc_ui_filter, d3d_gl_ui_drawing() ? d3d_gl_ui_filter() : -1);
     if (p->uploaded_generation != d3d_constant_generation) {
         /* D3D9 limits: 256 vertex and 224 pixel float registers, 16 int and 16 bool each. */
         static float vs_f[256 * 4 + 4], ps_f[256 * 4 + 4];
@@ -1000,6 +1145,145 @@ void d3d_shader_upload(d3d_device *dev, float half_x, float half_y, int alpha_fu
     }
 }
 
+/* --------------------------------------------------- program prelinking */
+/* A program is linked the first time a draw uses its pair of shaders, and on Adreno that link is
+ * tens of milliseconds: the first rocket, explosion or vehicle of a match stalled its frame. The
+ * pairs seen so far (userdata/ShaderCache/pairs.txt, plus the ones shipped in shader_pairs.c) are
+ * kept as hashes of the two bytecodes and the variant; once the game has created both shaders of a
+ * known pair -- while a map loads -- the program is linked right there (or loaded from the binary
+ * cache) and the first draw finds it ready. A pair is never linked without both live shaders. */
+#include <EGL/egl.h>
+
+#define PAIR_BUCKETS 4096u
+typedef struct { uint64_t vs, ps; uint32_t bgra; int alpha; uint32_t next_vs, next_ps; } pair_t;
+typedef struct live_shader { uint64_t hash; d3d_shader *s; struct live_shader *next; } live_shader;
+static pair_t *pairs;
+static uint32_t pair_count, pair_cap, pair_vs_head[PAIR_BUCKETS], pair_ps_head[PAIR_BUCKETS];
+static live_shader *live[PAIR_BUCKETS];
+static int pairs_loaded;
+static uint32_t prelinked, prelink_reported;
+static uint64_t prelink_ns;
+
+static uint64_t bytecode_hash(const d3d_shader *s)
+{
+    uint64_t h = 1469598103934665603ull;
+    for (uint32_t i = 0; i < s->size; ++i) h = (h ^ s->bytecode[i]) * 1099511628211ull;
+    return h;
+}
+
+static int pair_find(uint64_t vs, uint64_t ps, uint32_t bgra, int alpha)
+{
+    for (uint32_t i = pair_vs_head[vs % PAIR_BUCKETS]; i != UINT32_MAX; i = pairs[i].next_vs)
+        if (pairs[i].vs == vs && pairs[i].ps == ps && pairs[i].bgra == bgra && pairs[i].alpha == alpha) return 1;
+    return 0;
+}
+
+static int pair_add(uint64_t vs, uint64_t ps, uint32_t bgra, int alpha)
+{
+    if (pair_find(vs, ps, bgra, alpha)) return 0;
+    if (pair_count == pair_cap) {
+        uint32_t cap = pair_cap ? pair_cap * 2 : 1024;
+        pair_t *grown = (pair_t *)realloc(pairs, (size_t)cap * sizeof *grown);
+        if (!grown) return 0;
+        pairs = grown; pair_cap = cap;
+    }
+    pair_t *e = &pairs[pair_count];
+    e->vs = vs; e->ps = ps; e->bgra = bgra; e->alpha = alpha;
+    e->next_vs = pair_vs_head[vs % PAIR_BUCKETS]; pair_vs_head[vs % PAIR_BUCKETS] = pair_count;
+    e->next_ps = pair_ps_head[ps % PAIR_BUCKETS]; pair_ps_head[ps % PAIR_BUCKETS] = pair_count;
+    ++pair_count;
+    return 1;
+}
+
+static void pairs_load(void)
+{
+    if (pairs_loaded) return;
+    pairs_loaded = 1;
+    memset(pair_vs_head, 0xFF, sizeof pair_vs_head);
+    memset(pair_ps_head, 0xFF, sizeof pair_ps_head);
+    const char *dir = void_cache_dir();
+    if (dir) {
+        char path[1100];
+        snprintf(path, sizeof path, "%s/pairs.txt", dir);
+        FILE *f = fopen(path, "r");
+        unsigned long long vs, ps;
+        unsigned bgra;
+        int alpha;
+        while (f && fscanf(f, "%llx %llx %x %d", &vs, &ps, &bgra, &alpha) == 4)
+            pair_add(vs, ps, bgra, alpha);
+        if (f) fclose(f);
+    }
+    void_log("[d3d9] program prelinking: %u recorded shader pairs", pair_count);
+}
+
+static void prelink_record(d3d_shader *vs, d3d_shader *ps, uint32_t bgra, int alpha)
+{
+    pairs_load();
+    uint64_t hv = bytecode_hash(vs), hp = bytecode_hash(ps);
+    const char *dir = void_cache_dir();
+    if (!pair_add(hv, hp, bgra, alpha) || !dir) return;
+    char path[1100];
+    snprintf(path, sizeof path, "%s/pairs.txt", dir);
+    FILE *f = fopen(path, "a");
+    if (f) {
+        fprintf(f, "%016llx %016llx %x %d\n", (unsigned long long)hv, (unsigned long long)hp, bgra, alpha);
+        fclose(f);
+    }
+}
+
+static d3d_shader *live_find(uint64_t hash, int pixel)
+{
+    for (live_shader *l = live[hash % PAIR_BUCKETS]; l; l = l->next)
+        if (l->hash == hash && l->s->pixel == pixel) return l->s;
+    return NULL;
+}
+
+static void prelink_forget(d3d_shader *s)
+{
+    if (!s->bytecode) return;
+    uint64_t h = bytecode_hash(s);
+    for (live_shader **l = &live[h % PAIR_BUCKETS]; *l; l = &(*l)->next)
+        if ((*l)->s == s) { live_shader *dead = *l; *l = dead->next; free(dead); return; }
+}
+
+static void prelink_created(d3d_shader *s)
+{
+    pairs_load();
+    uint64_t h = bytecode_hash(s);
+    live_shader *l = (live_shader *)malloc(sizeof *l);
+    if (!l) return;
+    l->hash = h; l->s = s; l->next = live[h % PAIR_BUCKETS]; live[h % PAIR_BUCKETS] = l;
+    if (eglGetCurrentContext() == EGL_NO_CONTEXT) return;   /* the render thread's: it runs this */
+    uint64_t start = void_perf_now_ns();
+    uint32_t linked = 0;
+    uint32_t i = s->pixel ? pair_ps_head[h % PAIR_BUCKETS] : pair_vs_head[h % PAIR_BUCKETS];
+    for (; i != UINT32_MAX; i = s->pixel ? pairs[i].next_ps : pairs[i].next_vs) {
+        const pair_t *e = &pairs[i];
+        if ((s->pixel ? e->ps : e->vs) != h) continue;
+        d3d_shader *vs = s->pixel ? live_find(e->vs, 0) : s, *ps = s->pixel ? s : live_find(e->ps, 1);
+        if (!vs || !ps || !vs->parse || !ps->parse) continue;
+        uintptr_t slot = ((uintptr_t)vs * 31u + (uintptr_t)ps * 17u + e->bgra + (uint32_t)e->alpha * 13u) % 1024u;
+        program_t *p = programs[slot];
+        while (p && !(p->vs == vs && p->ps == ps && p->bgra_mask == e->bgra && p->ff_id == 0 && p->alpha_mode == e->alpha))
+            p = p->next;
+        if (p) continue;
+        p = link_program(vs, ps, e->bgra, 0, 0, 0, e->alpha);
+        if (!p) continue;
+        p->next = programs[slot];
+        programs[slot] = p;
+        ++linked;
+    }
+    if (!linked) return;
+    /* link_program leaves its program bound; the draw path tracks what is. */
+    glUseProgram(current_program ? current_program->gl : 0);
+    prelinked += linked;
+    prelink_ns += void_perf_now_ns() - start;
+    if (prelinked - prelink_reported >= 50) {
+        prelink_reported = prelinked;
+        void_log("[d3d9] prelinked %u programs while loading (%.0f ms)", prelinked, (double)prelink_ns / 1e6);
+    }
+}
+
 /* Bind the program for (vs, ps, D3DCOLOR inputs). bgra_of(usage, index) says
  * whether that input is fed by a D3DCOLOR element. */
 int d3d_shader_bind2(d3d_device *dev, d3d_shader *vs, d3d_shader *ps, int (*bgra_of)(d3d_device *, int, int),
@@ -1011,6 +1295,7 @@ int d3d_shader_bind2(d3d_device *dev, d3d_shader *vs, d3d_shader *ps, int (*bgra
     GLuint ff_gl = 0;
     for (int i = 0; vs && i < vs->parse->attribute_count && i < 16; ++i)
         if (bgra_of(dev, vs->parse->attributes[i].usage, vs->parse->attributes[i].index)) mask |= 1u << i;
+    mask |= legacy_sampler_types(dev, ps) << 16;
     /* A missing shader is replaced by the fixed-function half for the current state. */
     if (!vs) ff_gl = d3d_ff_vertex_stage(dev, ps->source, &ff_id);
     else if (!ps) ff_gl = d3d_ff_pixel_stage(dev, vs->source, &ff_id, &ff_samplers);
@@ -1024,6 +1309,7 @@ int d3d_shader_bind2(d3d_device *dev, d3d_shader *vs, d3d_shader *ps, int (*bgra
         if (!p) return 0;
         p->next = programs[h];
         programs[h] = p;
+        if (vs && ps && !ff_id) prelink_record(vs, ps, mask, alpha_mode);
     }
     if (current_program != p) glUseProgram(p->gl);
     current_program = p;
@@ -1054,13 +1340,13 @@ void d3d_shader_trace(void)
 {
     program_t *p = current_program;
     if (!p) return;
-    d3d_device *dev = g_d3d_device;
+    d3d_device *dev = d3d_rt_device();
     for (unsigned slot = 0; dev && slot < 16; ++slot) if (p->ps_sampler_mask & (1u << slot)) {
         d3d_texture *t = (d3d_texture *)dev->st.textures[slot];
         const uint32_t *ss = dev->st.ss[slot];
         void_log("[trace]   sampler p%u texture=%u target=%X format=%u depth=%u levels=%u lod=%u mag=%u min=%u mip=%u maxMip=%u",
             slot, t ? t->gl : 0, t ? t->target : 0, t && t->fmt ? t->fmt->d3d : 0,
-            t && t->fmt ? t->fmt->depth : 0, t ? t->levels : 0, t ? t->lod : 0,
+            t && t->fmt ? t->fmt->depth : 0, t ? t->levels : 0, t ? TEX_RT(t)->rt_lod : 0,
             ss[5], ss[6], ss[7], ss[9]);
     }
     static program_t *shown[256];
