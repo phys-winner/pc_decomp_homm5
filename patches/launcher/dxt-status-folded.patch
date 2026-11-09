@@ -1,0 +1,65 @@
+diff --git a/android/src/port/launcher/LauncherActivity.java b/android/src/port/launcher/LauncherActivity.java
+--- a/android/src/port/launcher/LauncherActivity.java
++++ b/android/src/port/launcher/LauncherActivity.java
+@@ -353,7 +353,7 @@
+             String support = title != Texts.TEXTURES ? null : Texts.t(this,
+                 dxt == null ? Texts.TEX_DXT_UNKNOWN : dxt ? Texts.TEX_DXT_YES : Texts.TEX_DXT_NO);
+             card.addView(ui.foldHeading(Texts.t(this, title), support,
+-                dxt == null ? ui.muted : dxt ? ui.good : Ui.WARNING, expanded, on -> {
++                dxt == null ? ui.muted : dxt ? ui.good : ui.error, expanded, on -> {
+                     if (title == Texts.GAME_FILES) filesExpanded = on;
+                     else texturesExpanded = on;
+                     refresh();
+diff --git a/android/src/port/launcher/Ui.java b/android/src/port/launcher/Ui.java
+--- a/android/src/port/launcher/Ui.java
++++ b/android/src/port/launcher/Ui.java
+@@ -192,6 +192,7 @@
+         row.addView(heading((expanded ? "▾ " : "▸ ") + title));
+         if (summary != null && !summary.isEmpty()) {
+             TextView status = label(summary, 13, colour);
++            status.setTypeface(bold, Typeface.BOLD);
+             status.setGravity(Gravity.END);
+             status.setPadding(dp(8), 0, 0, 0);
+             row.addView(status, new LinearLayout.LayoutParams(0, -2, 1));
+diff --git a/android/src/port/launcher/Texts.java b/android/src/port/launcher/Texts.java
+--- a/android/src/port/launcher/Texts.java
++++ b/android/src/port/launcher/Texts.java
+@@ -332,8 +332,8 @@
+          "Ein Turnip-Treiberpaket für adrenotools (ein ZIP mit meta.json) oder seine .so-Bibliothek. Die Treiberprüfung läuft dafür erneut.",
+          "Pakiet sterownika Turnip dla adrenotools (ZIP z meta.json) albo jego biblioteka .so. Sprawdzenie sterownika odbędzie się dla niego ponownie."},
+         {"This is no Turnip driver: %s", "Это не драйвер Turnip: %s", "Das ist kein Turnip-Treiber: %s", "To nie jest sterownik Turnip: %s"},
+-        {"Full support", "Полная поддержка", "Volle Unterstützung", "Pełna obsługa"},
+-        {"Conversion recommended", "Рекомендуется конвертация", "Konvertierung empfohlen", "Zalecana konwersja"},
++        {"DXT is supported", "DXT поддерживается", "DXT wird unterstützt", "DXT jest obsługiwany"},
++        {"DXT is not supported", "DXT не поддерживается", "DXT wird nicht unterstützt", "DXT nie jest obsługiwany"},
+         {"DXT support could not be checked.", "Не удалось проверить поддержку DXT.",
+          "Die DXT-Unterstützung konnte nicht geprüft werden.", "Nie udało się sprawdzić obsługi DXT."},
+     };
+diff --git a/tests/test_group_ui.py b/tests/test_group_ui.py
+--- a/tests/test_group_ui.py
++++ b/tests/test_group_ui.py
+@@ -15,6 +15,11 @@
+ 
+ def check(root, folder):
+     source = (root / "android/src/port/launcher/LauncherActivity.java").read_text(encoding="utf-8")
++    ui = (root / "android/src/port/launcher/Ui.java").read_text(encoding="utf-8")
++    assert "status.setTypeface(bold, Typeface.BOLD);" in method(ui, "View foldHeading(")
++    texts = (root / "android/src/port/launcher/Texts.java").read_text(encoding="utf-8")
++    assert '"DXT is supported", "DXT поддерживается"' in texts
++    assert '"DXT is not supported", "DXT не поддерживается"' in texts
+     methods = "\n".join(method(source, name) for name in (
+         "private TextView message(", "private static void attach(", "private LinearLayout section(",
+         "private Boolean dxtSupport(", "private void note(int section,", "private boolean needsGpu(",
+@@ -123,10 +128,10 @@
+         assert c.redraw(c.files,Texts.GAME_FILES).visibility==View.GONE;
+         c.busy=null;assert c.redraw(c.files,Texts.GAME_FILES).visibility==View.VISIBLE;
+         c.badge("gles",true,null,Texts.TEX_DXT_YES,c.ui.good);
+-        c.badge("gles",false,null,Texts.TEX_DXT_NO,Ui.WARNING);
++        c.badge("gles",false,null,Texts.TEX_DXT_NO,c.ui.error);
+         c.gpu.probed=false;c.badge("gles",true,null,Texts.TEX_DXT_UNKNOWN,c.ui.muted);c.gpu.probed=true;
+         c.badge("vulkan",false,"111",Texts.TEX_DXT_YES,c.ui.good);
+-        c.badge("vulkan",true,"101",Texts.TEX_DXT_NO,Ui.WARNING);
++        c.badge("vulkan",true,"101",Texts.TEX_DXT_NO,c.ui.error);
+         c.badge("turnip",false,"111",Texts.TEX_DXT_YES,c.ui.good);
+         c.badge("turnip",true,null,Texts.TEX_DXT_UNKNOWN,c.ui.muted);
+         GroupUiCheck startup=new GroupUiCheck();startup.gpu=null;startup.initializing=true;

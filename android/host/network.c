@@ -53,6 +53,13 @@
 static __thread uint32_t socket_error;
 static __thread uint32_t address_text, host_entry;
 
+void void_network_thread_cleanup(void)
+{
+    void_gfree(address_text);
+    void_gfree(host_entry);
+    address_text = host_entry = 0;
+}
+
 /* ------------------------------------------------------------- sockets */
 
 #define NET_SOCKETS 256

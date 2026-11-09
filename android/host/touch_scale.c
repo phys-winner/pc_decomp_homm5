@@ -18,6 +18,7 @@ static struct {
 /* The scale the current screen is shown at: the requested one, or less when an
    element of it would not fit on the screen otherwise. */
 static struct { uint32_t screen; int requested, percent; } fit;
+static struct { uint32_t screen, root; float width, height; } loading_layout;
 
 static uint32_t scale_read32(uint32_t address)
 {
@@ -45,18 +46,23 @@ static uint32_t scale_current_screen(void)
     return void_vm_readable(screen, 0x150) ? screen : 0;
 }
 
-static uint32_t scale_screen_root(uint32_t screen)
+static uint32_t scale_root(uint32_t screen, int require_idle)
 {
     uint32_t root = scale_read32(screen + 0xA0), table = scale_read32(root);
     uint32_t head = scale_read32(screen + 0x14C);
     /* This is the original CWindowScreen parent-rectangle ABI, not an arbitrary window. */
-    return root >= 0xF8 && head && scale_read32(head) == head &&
+    return root >= 0xF8 && (!require_idle || (head && scale_read32(head) == head)) &&
            void_vm_readable(root - 0xF8, 0x200) &&
            scale_read32(table + 0x48) == 0x00487990u
 #ifndef HOMM5_LEGACY_UI
            && scale_read32(table + 0x4C) == 0x00488330u
 #endif
            ? root : 0;
+}
+
+static uint32_t scale_screen_root(uint32_t screen)
+{
+    return scale_root(screen, 1);
 }
 
 #ifdef HOMM5_LEGACY_UI
@@ -429,7 +435,8 @@ static void scale_anchor(uint32_t parent, unsigned depth, scale_pass *pass)
         }
         scale_place(placement, rect, frame, pass->view_w, pass->view_h, position, size, shift);
         if (scale_read32(viewport.screen) == 0x00E1DA84u && MEM32(placement + 0x94) == 2) {
-            if (scale_named(placement, "ATBBar") && MEM32(placement + 0x9C) == 0)
+            if ((scale_named(placement, "ATBBar") || scale_named(placement, "PlacementBar")) &&
+                MEM32(placement + 0x9C) == 0)
                 pass->combat_left = fmaxf(pass->combat_left, MEMF(placement + 0x88) + size[0]);
             if (scale_named(placement, "Jogdial") && MEM32(placement + 0x9C) == 2)
                 pass->combat_right = fmaxf(pass->combat_right, size[0] - MEMF(placement + 0x88));
@@ -439,7 +446,9 @@ static void scale_anchor(uint32_t parent, unsigned depth, scale_pass *pass)
             pass->map_bottom = fminf(pass->map_bottom, position[1] + shift[1]);
         if (size[0] > pass->view_w * .5f && position[1] + shift[1] < 10 && size[1] < pass->view_h * .2f)
             pass->map_top = fmaxf(pass->map_top, position[1] + shift[1] + size[1]);
-        if (size[0] > pass->view_w * .45f && size[1] > 40 && MEM32(placement + 0x94) == 2)
+        /* Deployment's PlacementBar includes the hero portrait and is narrower than the ATB bar. */
+        if ((size[0] > pass->view_w * .45f || scale_named(placement, "PlacementBar")) &&
+            size[1] > 40 && MEM32(placement + 0x94) == 2)
             pass->hud_top = fminf(pass->hud_top, position[1] + shift[1]);
         float x = MEMF(child + 0x64), y = MEMF(child + 0x68);
         int native = scale_near(x, position[0]) && scale_near(y, position[1]);
@@ -643,8 +652,9 @@ void void_touch_set_scale(float scale)
     pthread_mutex_unlock(&scale_lock);
 }
 
-void void_touch_scale_pump(void)
+static int scale_pump(uint32_t screen)
 {
+    int explicit_screen = screen != 0;
     /* Readiness also prevents applying initial PE defaults before D3D resizes UI. */
     if (void_module_exe_base() != 0x00400000u ||
         !void_vm_writable(0x00F74BE0u, 8) ||
@@ -653,8 +663,8 @@ void void_touch_scale_pump(void)
 #ifndef HOMM5_LEGACY_UI
         !void_dispatch_find(0x0066A4D0u) ||
 #endif
-        !void_dispatch_find(0x008385A0u)) return;
-    if (MEMF(0x00F74BE8u) != 1024.0f || MEMF(0x00F74BECu) != 768.0f) return;
+        !void_dispatch_find(0x008385A0u)) return 0;
+    if (MEMF(0x00F74BE8u) != 1024.0f || MEMF(0x00F74BECu) != 768.0f) return 0;
     static int layout_hooked;
     if (!original_list_layout) {
         original_list_layout = void_dispatch_find(0x008885D0u);
@@ -669,11 +679,11 @@ void void_touch_scale_pump(void)
     if (!isfinite(physical_w) || !isfinite(physical_h) ||
         !isfinite(current_w) || !isfinite(current_h) ||
         physical_w < 1 || physical_h < 1 || physical_w > 16384 || physical_h > 16384 ||
-        current_w <= 0 || current_h <= 0 || current_w > 16384 || current_h > 16384) return;
+        current_w <= 0 || current_h <= 0 || current_w > 16384 || current_h > 16384) return 0;
     int buffer_w, buffer_h;
     void_input_screen_size(&buffer_w, &buffer_h);
     if (buffer_w <= 0 || buffer_h <= 0 ||
-        physical_w != (float)buffer_w || physical_h != (float)buffer_h) return;
+        physical_w != (float)buffer_w || physical_h != (float)buffer_h) return 0;
 
     pthread_mutex_lock(&scale_lock);
     int requested = scale_percent;
@@ -693,7 +703,11 @@ void void_touch_scale_pump(void)
 
     /* Above 100% the scale is the screen's: a new screen, or a new request, starts
        from the request and anchoring lowers it while an element does not fit. */
-    uint32_t screen = scale_current_screen();
+    if (!screen) screen = scale_current_screen();
+    if (!explicit_screen && scale_read32(screen) != 0x00E34674u) loading_layout.root = 0;
+    /* Cinematic viewports and loading artwork keep the native frame instead of cropping at the saved UI scale. */
+    if (scale_read32(screen) == 0x00E3261Cu || scale_read32(screen) == 0x00E3DD4Cu ||
+        scale_read32(screen) == 0x00E3D1ECu || scale_read32(screen) == 0x00E34674u) requested = 100;
     if (scale_read32(screen) != 0x00E1DA84u && scale_read32(screen) != 0x00E230E4u)
         void_touch_combat_frame(0, 0, 0, 0, 0, 0);
     if (requested <= 100 || fit.screen != screen || fit.requested != requested) {
@@ -705,13 +719,13 @@ void void_touch_scale_pump(void)
         double factor = 100.0 / (double)percent;
         float wanted_w = (float)((double)base_w * factor);
         float wanted_h = (float)((double)base_h * factor);
-        if (wanted_w < 1 || wanted_h < 1 || wanted_w > 16384 || wanted_h > 16384) return;
+        if (wanted_w < 1 || wanted_h < 1 || wanted_w > 16384 || wanted_h > 16384) return 0;
         /* The original resize path may reset virtual coordinates: compare every pump,
            but relayout only when their actual values differ from the requested pair. */
         if (current_w != wanted_w || current_h != wanted_h) {
             uint32_t screens = MEM32(0x00FE719Cu);
             if (!screens || !void_vm_readable(screens, 12) ||
-                !void_call_guest(0x008385A0u, 0, NULL, 1)) return;
+                (!explicit_screen && !void_call_guest(0x008385A0u, 0, NULL, 1))) return 0;
             const void_touch_event abort = {.kind = TOUCH_ABORT, .scale = 1};
             void_touch_engine_event(&abort);
             viewport.root = 0;
@@ -731,7 +745,7 @@ void void_touch_scale_pump(void)
         /* Arm the battle lens before labels or deployment widgets are visible, at every UI scale. */
         if (scale_read32(screen) == 0x00E1DA84u)
             void_touch_combat_frame(screen, wanted_w, wanted_h, wanted_h, 0, 0);
-        if (requested <= 100) return;
+        if (requested <= 100) return 1;
         int fits;
         if (percent > 100) {
             uint32_t root = scale_viewport_ready(wanted_w, wanted_h) ? viewport.root : 0;
@@ -740,18 +754,73 @@ void void_touch_scale_pump(void)
                    keeps its original frame; its elements are still brought onto the view. */
                 if (!viewport_scratch) viewport_scratch = void_galloc(16);
                 root = screen ? scale_read32(screen + 0xA0) : 0;
-                if (root < 0xF8 || !scale_is_root(root - 0xF8)) return;
+                if (root < 0xF8 || !scale_is_root(root - 0xF8)) return 0;
             }
             fits = scale_fits(root - 0xF8, 1, wanted_w, wanted_h, base_w, base_h, requested);
         } else {
             /* Shown at 100% because an element needs it: the original layout, measured
                to see whether it still does. */
             uint32_t root = screen ? scale_screen_root(screen) : 0;
-            if (!root) return;
+            if (!root) return 0;
             fits = scale_fits(root - 0xF8, 0, wanted_w, wanted_h, base_w, base_h, requested);
         }
-        if (!fits || fits == fit.percent) return;
+        if (!fits || fits == fit.percent) return 1;
         VLOG("[touch] ui-fit screen=%08X %d%% -> %d%%", screen, fit.percent, fits);
         fit.percent = fits;
     }
+    return 1;
+}
+
+void void_touch_scale_pump(void)
+{
+    (void)scale_pump(0);
+}
+
+static int loading_same(uint32_t screen, uint32_t root, uint32_t hwnd, float width, float height)
+{
+    int buffer_w, buffer_h;
+    void_input_screen_size(&buffer_w, &buffer_h);
+    return scale_read32(screen) == 0x00E34674u && scale_root(screen, 0) == root &&
+           MEMF(0x00F74BE0u) == width && MEMF(0x00F74BE4u) == height &&
+           MEMF(0x00F74BF0u) == (float)buffer_w && MEMF(0x00F74BF4u) == (float)buffer_h &&
+           void_window_main() == hwnd && void_window_thread(hwnd) == void_thread_id();
+}
+
+/* Progress draws present before the usual frame pump; normalize their own root before creating the draw context. */
+void void_touch_loading_frame(uint32_t screen)
+{
+    static int active;
+    uint32_t hwnd = void_window_main(), root;
+    if (!hwnd || void_window_thread(hwnd) != void_thread_id() || active ||
+        scale_read32(screen) != 0x00E34674u || !(root = scale_root(screen, 0))) return;
+    void_regs saved;
+    void_regs_save(&saved);
+    active = 1;
+    g_fp_top = 0;
+    if (!scale_pump(screen)) goto done;
+    float width = MEMF(0x00F74BE0u), height = MEMF(0x00F74BE4u);
+    if (!loading_same(screen, root, hwnd, width, height) ||
+        (loading_layout.screen == screen && loading_layout.root == root &&
+         loading_layout.width == width && loading_layout.height == height)) goto done;
+    if (!void_dispatch_find(0x00487990u) || !void_dispatch_find(0x00A504B0u) ||
+        !void_dispatch_find(0x00488220u)) goto done;
+    if (!viewport_scratch) viewport_scratch = void_galloc(16);
+    if (!viewport_scratch || !void_vm_writable(viewport_scratch, 16)) goto done;
+    const float rect[4] = {0, 0, width, height};
+    memcpy(GPTR(viewport_scratch), rect, sizeof rect);
+    void_call_guest_this(0x00487990u, root, 1, &viewport_scratch);
+    if (!loading_same(screen, root, hwnd, width, height)) goto done;
+    void_call_guest_this(0x00A504B0u, root + 0x14, 0, NULL);
+    if (!loading_same(screen, root, hwnd, width, height)) goto done;
+    void_call_guest_this(0x00488220u, root - 0xF8, 0, NULL);
+    if (!loading_same(screen, root, hwnd, width, height)) goto done;
+    unsigned remaining = 4096;
+    scale_refresh_window(root - 0xF8, 0, &remaining);
+    if (!loading_same(screen, root, hwnd, width, height)) goto done;
+    loading_layout.screen = screen; loading_layout.root = root;
+    loading_layout.width = width; loading_layout.height = height;
+    VLOG("[touch] loading-layout screen=%08X root=%08X virtual=%.2fx%.2f", screen, root, width, height);
+done:
+    active = 0;
+    void_regs_load(&saved);
 }

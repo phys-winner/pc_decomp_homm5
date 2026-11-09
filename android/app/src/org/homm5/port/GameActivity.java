@@ -46,6 +46,7 @@ import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 import java.io.File;
+import java.io.IOException;
 import java.lang.ref.WeakReference;
 import java.util.HashMap;
 import java.util.Locale;
@@ -105,6 +106,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private android.app.AlertDialog gamepadHelp;
     private android.app.AlertDialog gameSwitchDialog;
     private android.app.AlertDialog cheatDialog;
+    private android.app.AlertDialog startupDialog;
     /* The switch dialog's choice, opened when the engine has saved its profile and exits
        (onGameExit): another edition, or null for the launcher itself. */
     private volatile boolean switchRequested;
@@ -144,6 +146,10 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     /* DXVK keeps one surface for the activity's life and hands it back on onStart (surfaceHidden). */
     private String renderer = GLES;
     private boolean surfaceHidden;
+    private long launchStarted;
+    private long launchDimStarted;
+    private boolean launchDimming;
+    private View launchCurtain;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -151,6 +157,8 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
            and options (PORT_* in the environment too) and its record. */
         launch = attachLauncher();
         language = launch != null ? launch.language() : null;
+        launchStarted = SystemClock.uptimeMillis();
+        launchTiming("create");
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         /* Target SDK 36+: on Android 16+ the system's back is no onBackPressed() and no KEYCODE_BACK. */
         if (Build.VERSION.SDK_INT >= 33) {
@@ -158,29 +166,51 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             backCallback = back;
             getOnBackInvokedDispatcher().registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, back);
         }
+        beginLaunchDimming();
         game = new FrameLayout(this);
         createLoading();
         loadingBar.setIndeterminate(true);
         loadingText.setText(text(T_PREPARING));
+        coverLaunchDimming();
         setContentView(game);
+        startLibrary(false);
+    }
+
+    private void startLibrary(boolean allowUnsupported) {
+        if (isFinishing() || isDestroyed()) return;
         new Thread(() -> {
             try {
+                launchTiming("library-begin");
                 File originals = gameFolder();
-                if (Games.installed(originals, gameEdition())) Assets.verifyOriginals(this, originals, gameEdition());
+                Assets.verifyOriginals(this, originals, gameEdition(), allowUnsupported);
                 NativeLibrary.load(this, Games.library(gameEdition()));
+                launchTiming("library-ready");
                 runOnUiThread(() -> {
                     if (isFinishing() || isDestroyed()) return;
                     nativeReady = true;
                     chooseRenderer();
                     startGame();
                 });
+            } catch (Assets.UnsupportedOriginalException e) {
+                android.util.Log.w("HeroesV", e.getMessage());
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    finishLaunchDimming("warning");
+                    startupDialog = new android.app.AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                        .setMessage(String.format(text(T_UNSUPPORTED_ORIGINAL), e.path,
+                            Games.title(gameEdition()), Games.version(gameEdition())))
+                        .setPositiveButton(text(T_LAUNCH_ANYWAY), (dialog, which) -> startLibrary(true))
+                        .setNegativeButton(text(T_CANCEL), (dialog, which) -> toLauncher())
+                        .setOnCancelListener(dialog -> toLauncher()).show();
+                });
             } catch (java.io.IOException | UnsatisfiedLinkError e) {
                 android.util.Log.e("HeroesV", "native library: " + e);
                 runOnUiThread(() -> {
                     if (isFinishing() || isDestroyed()) return;
+                    finishLaunchDimming("failure");
                     String reason = String.valueOf(e.getMessage() != null ? e.getMessage() : e);
                     if (launch != null) launch.failed(reason);
-                    new android.app.AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                    startupDialog = new android.app.AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
                         .setMessage(reason).setPositiveButton(android.R.string.ok, (dialog, which) -> toLauncher())
                         .setOnCancelListener(dialog -> toLauncher()).show();
                 });
@@ -212,6 +242,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
 
     /** Leaves for the launcher, which shows this edition (and why it did not start, when it did not). */
     private void toLauncher() {
+        finishLaunchDimming("launcher");
         Launch.openLauncher(this, gameEdition());
         finish();
     }
@@ -268,6 +299,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         ((InputManager)getSystemService(Context.INPUT_SERVICE)).registerInputDeviceListener(hardware, handler);
         createTextPreview();
         createLoading();
+        coverLaunchDimming();
         setContentView(game);
 
         preferences = getSharedPreferences(Games.preferences(gameEdition()), MODE_PRIVATE);
@@ -285,6 +317,8 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         }
         File data = new File(base, Games.userdata(gameEdition()));
         data.mkdirs();
+        try { Games.selectSingleProfile(data, gameEdition()); }
+        catch (IOException e) { android.util.Log.w("HeroesV", "profile selection: " + e); }
         File gameDir = gameFolder();
         String conflict = new LauncherHooks().installationProblem(this, gameEdition(), PART_GAME, gameDir);
         if (conflict != null) { refuse(conflict); return; }
@@ -324,9 +358,11 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         /* Every edition keeps its previous sessions' logs and how they ended, in its own userdata
            folder (the engine appends to this one: <userdata>/homm5.log). */
         SessionLog.begin(this, data);
+        launchTiming("native-start");
         nativeStart(gameDir.getAbsolutePath(), data.getAbsolutePath(), images.getAbsolutePath(),
                 overlay != null ? overlay.getAbsolutePath() : null, cache.getAbsolutePath(), 0, 0,
                 new File(base, "verbose").exists());
+        launchTiming("native-start-return");
         nativePause(!resumed);
         if (resumed && lanLock != null && !lanLock.isHeld()) lanLock.acquire();
         startLoading();
@@ -516,6 +552,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     /** "Back" is the game's own Escape: its menu and its dialogs' cancel. Before the engine runs it
      *  leads back to the launcher. */
     private void back() {
+        finishLaunchDimming("back");
         if (!nativeReady) { toLauncher(); return; }
         releaseAll();
         pulseKey(ESC);
@@ -559,6 +596,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     @Override protected void onPause() {
+        finishLaunchDimming("pause");
         resumed = false;
         if (cheatDialog != null) cheatDialog.dismiss();
         releaseAll();
@@ -576,11 +614,13 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     @Override protected void onDestroy() {
+        finishLaunchDimming("destroy");
         releaseAll();
         if (hardware != null) ((InputManager)getSystemService(Context.INPUT_SERVICE)).unregisterInputDeviceListener(hardware);
         if (gamepadHelp != null) gamepadHelp.dismiss();
         if (gameSwitchDialog != null) gameSwitchDialog.dismiss();
         if (cheatDialog != null) cheatDialog.dismiss();
+        if (startupDialog != null) startupDialog.dismiss();
         if (Build.VERSION.SDK_INT >= 33 && backCallback != null)
             getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback((android.window.OnBackInvokedCallback) backCallback);
         handler.removeCallbacksAndMessages(null);
@@ -588,6 +628,67 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         if (lanLock != null && lanLock.isHeld()) lanLock.release();
         if (currentActivity.get() == this) currentActivity.clear();
         super.onDestroy();
+    }
+
+    /* The original black ScreenFadeWnd applies alpha 0,9,...,252 at 10 ms intervals. The
+       compositor dims the actual launcher/home behind this window while the library worker and
+       engine start independently. API 26 cannot combine translucency with sensorLandscape; its
+       orientation-safe theme uses a window-enter animation over the same black curtain. */
+    private void beginLaunchDimming() {
+        launchDimming = true;
+        launchDimStarted = SystemClock.uptimeMillis();
+        if (Build.VERSION.SDK_INT >= 27) {
+            WindowManager.LayoutParams params = getWindow().getAttributes();
+            params.alpha = 0.01f;
+            params.dimAmount = 0f;
+            params.flags |= WindowManager.LayoutParams.FLAG_DIM_BEHIND;
+            getWindow().setAttributes(params);
+        }
+        launchTiming("dim-begin");
+        handler.post(launchDimTick);
+    }
+
+    private void coverLaunchDimming() {
+        if (!launchDimming) return;
+        launchCurtain = new View(this);
+        launchCurtain.setBackgroundColor(Color.BLACK);
+        launchCurtain.setClickable(true);
+        game.addView(launchCurtain, new FrameLayout.LayoutParams(-1, -1));
+    }
+
+    private void finishLaunchDimming(String reason) {
+        if (!launchDimming) return;
+        launchDimming = false;
+        handler.removeCallbacks(launchDimTick);
+        WindowManager.LayoutParams params = getWindow().getAttributes();
+        params.alpha = 1f;
+        params.dimAmount = 0f;
+        params.flags &= ~WindowManager.LayoutParams.FLAG_DIM_BEHIND;
+        getWindow().setAttributes(params);
+        if (launchCurtain != null) game.removeView(launchCurtain);
+        launchCurtain = null;
+        if (Build.VERSION.SDK_INT >= 30) setTranslucent(false);
+        launchTiming("dim-end-" + reason);
+    }
+
+    private final Runnable launchDimTick = new Runnable() {
+        @Override public void run() {
+            if (!launchDimming) return;
+            long elapsed = Math.max(0, SystemClock.uptimeMillis() - launchDimStarted);
+            if (elapsed >= 290) { finishLaunchDimming("complete"); return; }
+            if (Build.VERSION.SDK_INT >= 27) {
+                WindowManager.LayoutParams params = getWindow().getAttributes();
+                params.dimAmount = Math.min(28, elapsed / 10) * 9 / 255f;
+                getWindow().setAttributes(params);
+            }
+            handler.postAtTime(this, launchDimStarted + (elapsed / 10 + 1) * 10);
+        }
+    };
+
+    private void launchTiming(String event) {
+        long now = SystemClock.uptimeMillis();
+        android.util.Log.i("HeroesV", "launch timing " + gameEdition() + " " + event
+                + " uptime_ms=" + now + " elapsed_ms=" + (now - launchStarted));
     }
 
     /* ------------------------------------------------------------ loading */
@@ -663,7 +764,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     };
 
     private static final int T_LOADING = 0, T_SWITCH_GAME = 1, T_OPEN_LAUNCHER = 2, T_CANCEL = 3, T_CURRENT_GAME = 4,
-        T_PREPARING = 5, T_FILES_MISSING = 6, T_RUNTIME_MISSING = 7;
+        T_PREPARING = 5, T_FILES_MISSING = 6, T_RUNTIME_MISSING = 7, T_UNSUPPORTED_ORIGINAL = 8, T_LAUNCH_ANYWAY = 9;
     /** This activity's words in the launcher's language (Russian or English; the system's before it). */
     private static String text(int id) {
         String lang = language != null ? language : Locale.getDefault().getLanguage();
@@ -678,6 +779,9 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         case T_FILES_MISSING: return ru ? "%1$s: в папке %2$s нет файлов игры — выберите папку или архив игры в лаунчере."
                                         : "%1$s: the game's files are not in %2$s; choose the game's folder or archive in the launcher.";
         case T_RUNTIME_MISSING: return ru ? "Эта игра недоступна в установленной сборке." : "This game is not available in the installed build.";
+        case T_UNSUPPORTED_ORIGINAL: return ru ? "Файл %1$s не соответствует поддерживаемой версии %2$s %3$s. Можно попробовать запустить игру, но стабильность не гарантируется."
+            : "File %1$s does not match the supported %2$s %3$s version. You can try launching the game, but stability is not guaranteed.";
+        case T_LAUNCH_ANYWAY: return ru ? "Всё равно запустить" : "Launch anyway";
         default: return "";
         }
     }

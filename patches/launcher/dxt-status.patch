@@ -1,0 +1,67 @@
+diff --git a/android/src/port/launcher/LauncherActivity.java b/android/src/port/launcher/LauncherActivity.java
+--- a/android/src/port/launcher/LauncherActivity.java
++++ b/android/src/port/launcher/LauncherActivity.java
+@@ -1106,6 +1106,14 @@
+     private void refreshTextures(boolean idle) {
+         texturesBox.removeAllViews();
+-        if (spec.textureBackend.isEmpty() || gpu == null || !Install.ready(this, spec, selected)) return;
++        if (spec.textureBackend.isEmpty() || gpu == null) return;
++        LinearLayout card = ui.card(texturesBox);
++        card.addView(ui.heading(Texts.t(this, Texts.TEXTURES)));
++        TextView support = ui.label(Texts.t(this, !gpu.probed ? Texts.TEX_DXT_UNKNOWN
++            : gpu.s3tc ? Texts.TEX_DXT_YES : Texts.TEX_DXT_NO), 14,
++            !gpu.probed ? ui.muted : gpu.s3tc ? ui.good : ui.error);
++        support.setTypeface(null, Typeface.BOLD);
++        card.addView(support);
++        if (!gpu.probed || !Install.ready(this, spec, selected)) return;
+         if (textures == null) {
+             try {
+                 textures = (TextureBackend) Class.forName(spec.textureBackend).getDeclaredConstructor().newInstance();
+@@ -1125,10 +1133,6 @@
+         }
+         TextureBackend.Scan s = textureScan;
+         boolean converted = s.converted != 0;
+-        /* An unreadable game folder is told where conversion matters (no DXT in the GPU). */
+-        if (s.failure != null ? gpu.s3tc : (gpu.s3tc && !converted) || (s.textures == 0 && !converted)) return;
+-        LinearLayout card = ui.card(texturesBox);
+-        card.addView(ui.heading(Texts.t(this, Texts.TEXTURES)));
+         if (s.failure != null) { card.addView(ui.label(s.failure, 13, ui.error)); return; }
+         if (converted) {
+             card.addView(ui.label(Texts.fmt(this, Texts.TEX_DONE, s.converted == TextureBackend.ASTC ? "ASTC" : "ETC2",
+@@ -1145,6 +1149,8 @@
+             if (!buttons.isEmpty()) card.addView(ui.buttons(buttons.toArray(new TextView[0])));
+             return;
+         }
++        if (gpu.s3tc) return;
++        if (s.textures == 0) { card.addView(ui.label(Texts.t(this, Texts.TEX_NOTHING), 13, ui.muted)); return; }
+         card.addView(ui.label(Texts.t(this, Texts.TEX_WHY), 13, ui.muted));
+         card.addView(ui.label(Texts.fmt(this, Texts.TEX_FOUND, s.textures, Texts.size(this, s.bytes)), 14, ui.text));
+         List<TextView> buttons = new ArrayList<>();
+diff --git a/android/src/port/launcher/Texts.java b/android/src/port/launcher/Texts.java
+--- a/android/src/port/launcher/Texts.java
++++ b/android/src/port/launcher/Texts.java
+@@ -37,8 +37,9 @@
+         R_CHECKING = 141, R_CRASH = 142, R_ERROR = 143, R_BC = 144, R_ROBUSTNESS = 145, R_PRESENT = 146, R_FEATURES = 147,
+         R_NOT_TURNIP = 148, R_VULKAN13 = 149, R_UNFIT = 150, N_UNCHECKED = 151, TEX_REMOVE = 152, TEX_REMOVE_ASK = 153,
+         TEX_GONE = 154, TURNIP_DRIVER = 155, TURNIP_BUILTIN = 156, TURNIP_CHOOSE = 157, TURNIP_RESET = 158,
+-        TURNIP_COPYING = 159, TURNIP_HINT = 160, E_TURNIP = 161;
++        TURNIP_COPYING = 159, TURNIP_HINT = 160, E_TURNIP = 161,
++        TEX_DXT_YES = 162, TEX_DXT_NO = 163, TEX_DXT_UNKNOWN = 164;
+     /** The last id: the table has one row per id (the selfcheck verifies it). */
+-    static final int LAST = E_TURNIP;
++    static final int LAST = TEX_DXT_UNKNOWN;
+ 
+     private static final String[][] TEXTS = {
+@@ -331,6 +332,12 @@
+          "Ein Turnip-Treiberpaket für adrenotools (ein ZIP mit meta.json) oder seine .so-Bibliothek. Die Treiberprüfung läuft dafür erneut.",
+          "Pakiet sterownika Turnip dla adrenotools (ZIP z meta.json) albo jego biblioteka .so. Sprawdzenie sterownika odbędzie się dla niego ponownie."},
+         {"This is no Turnip driver: %s", "Это не драйвер Turnip: %s", "Das ist kein Turnip-Treiber: %s", "To nie jest sterownik Turnip: %s"},
++        {"This device supports DXT textures.", "Устройство поддерживает формат DXT.",
++         "Dieses Gerät unterstützt DXT-Texturen.", "To urządzenie obsługuje tekstury DXT."},
++        {"This device does not support DXT textures.", "Устройство не поддерживает формат DXT.",
++         "Dieses Gerät unterstützt keine DXT-Texturen.", "To urządzenie nie obsługuje tekstur DXT."},
++        {"DXT support could not be checked.", "Не удалось проверить поддержку DXT.",
++         "Die DXT-Unterstützung konnte nicht geprüft werden.", "Nie udało się sprawdzić obsługi DXT."},
+     };
+ 
+     private static int column = -1;

@@ -105,6 +105,9 @@ CC_L = {'e', 'ne', 'z', 'nz', 's', 'ns', 'o', 'no', 'p', 'np', 'pe', 'po', 'l', 
 FULL_KILL = {'add', 'sub', 'cmp', 'and', 'or', 'xor', 'test', 'neg', 'adc', 'sbb', 'cmpxchg', 'xadd',
              'imul', 'mul', 'div', 'idiv', 'bsf', 'bsr', 'popf', 'popfd', 'popfw', 'comisd', 'ucomisd',
              'comiss', 'ucomiss', 'fcomi', 'fcomip', 'fucomi', 'fucomip', 'ptest', 'lzcnt', 'tzcnt',
+             # capstone spells the popping x87 compares fcompi/fucompi; without them every
+             # `fcompi; jcc` after a call looked like a caller reading the callee's flags.
+             'fcompi', 'fucompi',
              'popcnt', 'andn', 'blsi', 'blsr', 'blsmsk', 'bextr'}
 L_KILL = {'inc', 'dec'}
 C_KILL = {'bt', 'bts', 'btr', 'btc', 'clc', 'stc', 'cmc', 'sahf'}
@@ -240,7 +243,7 @@ class Image:
 def load_decoded(module, addresses, cache_dir):
     image_path = GENERATED / 'input' / module['file']
     digest = hashlib.sha256(image_path.read_bytes()).hexdigest()[:16]
-    cache = cache_dir / f"decode6-{module['name']}-{digest}.pickle"
+    cache = cache_dir / f"decode7-{module['name']}-{digest}.pickle"   # decode7: flag table with fcompi/fucompi
     decoded = {}
     if cache.exists():
         for address, row in pickle.loads(cache.read_bytes()).items():

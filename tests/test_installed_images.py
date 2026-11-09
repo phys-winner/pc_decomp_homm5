@@ -21,9 +21,12 @@ public class InstalledImagesCheck {
         File file=new File(root,path); file.getParentFile().mkdirs(); Files.write(file.toPath(),bytes);
     }
     static void write(File root,String path,String text) throws Exception {write(root,path,text.getBytes(StandardCharsets.UTF_8));}
-    static void reject(Context c,File game,String id,String reason) throws Exception {
-        try {Assets.verifyOriginals(c,game,id);throw new AssertionError("accepted "+reason);}
-        catch(IOException expected) {assert expected.getMessage().contains(reason):expected;}
+    static IOException reject(Context c,File game,String id,String reason) throws Exception {
+        return reject(c,game,id,false,reason);
+    }
+    static IOException reject(Context c,File game,String id,boolean allow,String reason) throws Exception {
+        try {Assets.verifyOriginals(c,game,id,allow);throw new AssertionError("accepted "+reason);}
+        catch(IOException expected) {assert expected.getMessage().contains(reason):expected;return expected;}
     }
     public static void main(String[] args) throws Exception {
         File root=new File(args[0]);
@@ -39,14 +42,41 @@ public class InstalledImagesCheck {
             String second=bin+"granny2.dll "+granny.length+" "+NativeLibrary.sha256(dllFile)+"\n";
             write(assets,images+"/originals.txt",first+second);
             Assets.verifyOriginals(c,game,id);
-            write(game,bin.toUpperCase()+"h5_GAME.EXE","altered EXE!"); reject(c,game,id,"Unsupported original file");
-            Files.write(exeFile.toPath(),new byte[1]); reject(c,game,id,"Unsupported original file");
+            write(game,bin.toUpperCase()+"h5_GAME.EXE","altered EXE!");
+            try {Assets.verifyOriginals(c,game,id);throw new AssertionError("strict default accepted another build");}
+            catch(Assets.UnsupportedOriginalException expected) {assert expected.path.equals(bin+"H5_Game.exe");}
+            Files.write(exeFile.toPath(),new byte[1]);
+            IOException mismatch=reject(c,game,id,"Unsupported original file");
+            assert mismatch instanceof Assets.UnsupportedOriginalException;
+            assert ((Assets.UnsupportedOriginalException)mismatch).path.equals(bin+"H5_Game.exe");
+            String diagnosis=mismatch.getMessage();
+            assert diagnosis.contains(Games.title(id)+" "+Games.version(id)):diagnosis;
+            assert diagnosis.contains("Expected: "+exe.length+" bytes, SHA-256 "+first.trim().split(" ")[2]):diagnosis;
+            assert diagnosis.contains("Found: 1 bytes, SHA-256 "+NativeLibrary.sha256(exeFile)):diagnosis;
+            assert diagnosis.contains(exeFile.getAbsolutePath()):diagnosis;
+            Assets.verifyOriginals(c,game,id,true);
+            Files.write(dllFile.toPath(),"another DLL".getBytes(StandardCharsets.UTF_8));
+            Assets.verifyOriginals(c,game,id,true); // The choice covers the installed build, not just its first file.
+            assert dllFile.delete();
+            assert !(reject(c,game,id,false,"missing") instanceof Assets.UnsupportedOriginalException);
+            assert !(reject(c,game,id,true,"missing") instanceof Assets.UnsupportedOriginalException);
+            Files.write(dllFile.toPath(),granny);
+            Files.write(exeFile.toPath(),new byte[0]);
+            for(boolean allow:new boolean[]{false,true}) {
+                assert !(reject(c,game,id,allow,"empty") instanceof Assets.UnsupportedOriginalException);
+            }
             Files.write(exeFile.toPath(),exe); assert dllFile.delete(); reject(c,game,id,"missing");
             Files.write(dllFile.toPath(),granny);
-            write(assets,images+"/originals.txt",first); reject(c,game,id,"Incomplete");
-            write(assets,images+"/originals.txt",first+first); reject(c,game,id,"Invalid");
-            write(assets,images+"/originals.txt",first.replace(bin,"../")+second); reject(c,game,id,"Invalid");
-            write(assets,images+"/originals.txt",first.replace(" "+exe.length+" "," invalid ")+second); reject(c,game,id,"Invalid");
+            for(boolean allow:new boolean[]{false,true}) {
+                for(String invalid:new String[]{first,first+first,first.replace(bin,"../")+second,
+                        first.replace(" "+exe.length+" "," invalid ")+second,
+                        first.replace(" "+exe.length+" "," 0 ")+second,
+                        first.replace(first.trim().split(" ")[2],"bad-hash")+second}) {
+                    write(assets,images+"/originals.txt",invalid);
+                    IOException problem=reject(c,game,id,allow,invalid.equals(first)?"Incomplete":"Invalid");
+                    assert !(problem instanceof Assets.UnsupportedOriginalException);
+                }
+            }
             write(assets,images+"/originals.txt",first+second);
             write(assets,images+"/index.txt","fmod.dll 8 unused\noriginals.txt 1 unused\n");
             write(assets,images+"/fmod.dll","prepared");

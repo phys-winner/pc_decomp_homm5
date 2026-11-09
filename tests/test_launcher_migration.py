@@ -88,10 +88,18 @@ class LauncherMigrationTest(unittest.TestCase):
         source = out / "src/org/homm5/port/launcher/MigrationCheck.java"
         source.parent.mkdir(parents=True, exist_ok=True)
         source.write_text(CHECK, encoding="utf-8")
+        assets = out / "src/org/homm5/port/Assets.java"
+        assets.write_text('''package org.homm5.port;
+public final class Assets {
+    public static void verifyOriginals(android.content.Context context, java.io.File folder, String edition, boolean allowUnsupported) {
+        throw new AssertionError("Choice migration must not verify game binaries");
+    }
+}
+''', encoding="utf-8")
         classes = out / "classes"
         if classes.exists():
             shutil.rmtree(classes)
-        javac(classes, [*map(Path, prepared["sources"]), APP / "LauncherHooks.java", APP / "Games.java", source])
+        javac(classes, [*map(Path, prepared["sources"]), APP / "LauncherHooks.java", APP / "Games.java", assets, source])
         state = out / "state"
         if state.exists():
             shutil.rmtree(state)
@@ -108,11 +116,26 @@ class LauncherMigrationTest(unittest.TestCase):
         for kept in ("userdata", "port_settings", "Games.preferences", "Games.userdata"):
             self.assertNotIn(kept, code)   # player data in /sdcard/HeroesV and the games' own preferences stay put
         self.assertEqual(LauncherHooks_OLD_PREFERENCES(hooks), "launcher")
-        # The base runs PortHooks.migrate once per process before the launcher or the game reads choices.
+        # An asynchronous migration may show a preview; it must finish before applying/launching it.
         base = LAUNCHER / "android/src/port/launcher"
         activity = (base / "LauncherActivity.java").read_text(encoding="utf-8")
         create = function(activity, "    @Override protected void onCreate(Bundle state)")
-        self.assertLess(create.index("Launch.migrate(this, hooks);"), create.index('State.get(this, State.CHOICES, "last", "")'))
+        initialize = function(activity, "    private void initialize(boolean useMigratedSelection)")
+        self.assertIn("initialize(requested == null);", create)
+        self.assertLess(initialize.index("initializing = true;"), initialize.index("background(() ->"))
+        migrated = initialize.index("Launch.migrate(this, hooks);")
+        selection = 'State.get(this, State.CHOICES, "last", "")'
+        completed = initialize.index("}, interrupted -> {")
+        self.assertLess(migrated, completed)
+        self.assertLess(completed, initialize.index("initializing = false;"))
+        self.assertLess(completed, initialize.index(selection))
+        self.assertIn("if (selected == initial && useMigratedSelection)", initialize)
+        self.assertLess(initialize.index(selection), initialize.index("launchWhenReady()"))
+        self.assertIn("if (initializing ||", function(activity, "    private boolean launchWhenReady()"))
+        self.assertIn("!initializing", function(activity, "    private boolean idle()"))
+        worker = function(activity, "    private <T> void background(Callable<T> work, Done<T> done, Done<Throwable> failed)")
+        self.assertLess(worker.index("result = work.call();"), worker.index("handler.post("))
+        self.assertIn("if (problem == null) done.accept(value);", worker)
         launch = (base / "Launch.java").read_text(encoding="utf-8")
         attach = function(launch, "    public static Launch attach(Activity activity)")
         self.assertLess(attach.index("migrate(activity, PortHooks.of(activity));"), attach.index("launch.environment();"))

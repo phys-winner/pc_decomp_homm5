@@ -2,12 +2,18 @@ package org.homm5.port;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /** Edition identities and installation checks shared by import and launch. */
 final class Games {
@@ -35,6 +41,43 @@ final class Games {
     static String marker(String edition) { return "game-started" + suffix(edition); }
     static String process(String packageName, String edition) { return packageName + ("toe".equals(edition) ? "" : ":" + edition); }
     static String intro(String edition) { return "vanilla".equals(edition) ? "intro.xml" : "intro_a1.xml"; }
+
+    /** Seed the engine's own selection before it reads global*.cfg. */
+    static void selectSingleProfile(File data, String edition) throws IOException {
+        suffix(edition);
+        String suffix = "toe".equals(edition) ? "_a2" : "hof".equals(edition) ? "_a1" : "";
+        File profiles = child(data, "Documents/My Games/" + ("toe".equals(edition)
+            ? "Heroes of Might and Magic V \u2014 Tribes of the East/Profiles"
+            : "Heroes of Might and Magic V/" + ("hof".equals(edition) ? "Hammers of Fate/" : "") + "Profiles"));
+        File[] folders = profiles == null ? null : profiles.listFiles(File::isDirectory);
+        if (folders == null) return;
+        File single = null;
+        for (File folder : folders) {
+            File user = child(folder, "user" + suffix + ".cfg");
+            if (Files.isSymbolicLink(folder.toPath()) || user == null || !user.isFile()) continue;
+            if (single != null) return;
+            single = folder;
+        }
+        if (single == null) return;
+        String name = single.getName();
+        Charset ansi = Charset.forName("windows-1251");
+        if (name.indexOf('\r') >= 0 || name.indexOf('\n') >= 0 || !ansi.newEncoder().canEncode(name)) return;
+        File global = child(profiles, "global" + suffix + ".cfg");
+        if (global == null) global = new File(profiles, "global" + suffix + ".cfg");
+        if (global.length() > 1024 * 1024) throw new IOException("Profile selection file is too large");
+        String before = global.isFile() ? new String(Files.readAllBytes(global.toPath()), StandardCharsets.ISO_8859_1) : "";
+        String line = "setvar profile_name = " + new String(name.getBytes(ansi), StandardCharsets.ISO_8859_1);
+        Matcher selection = Pattern.compile("(?m)^[ \\t]*setvar[ \\t]+profile_name[ \\t]*=[^\\r\\n]*").matcher(before);
+        String newline = before.contains("\r\n") ? "\r\n" : "\n";
+        String after = selection.find() ? selection.replaceAll(Matcher.quoteReplacement(line))
+            : before + (before.isEmpty() || before.endsWith("\n") ? "" : newline) + line + newline;
+        if (after.equals(before)) return;
+        File part = File.createTempFile("profile-", ".cfg", profiles);
+        try {
+            Files.write(part.toPath(), after.getBytes(StandardCharsets.ISO_8859_1));
+            Files.move(part.toPath(), global.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } finally { part.delete(); }
+    }
 
     static String[] required(String edition) {
         suffix(edition);

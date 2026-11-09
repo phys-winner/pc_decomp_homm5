@@ -112,6 +112,18 @@ The complete AMD MIT notice is in `licenses/fidelityfx-fsr.txt` and is packaged
 with the APK. The spatial RCAS kernel is also used by the FSR 3 SDK; this port
 does not include its temporal reconstruction or frame generation.
 
+## GOG offline installer reader
+
+The APK includes a standalone ARM64 build of innoextract 1.9 by Daniel Scharrer,
+revision `81fd9b95b76ee5115ce116bfdbc3bc6b887b809d`, to read offline setup
+EXE/BIN files as data. The Windows installer is never executed. The original
+innoextract sources are unmodified; `android/gog` provides the Android build
+and bounded metadata adapter, adapted from the Stronghold Crusader port.
+The reader statically links Boost 1.84.0, bzip2 1.0.8 and liblzma 5.4.7.
+Their exact upstream inputs are recorded in `dependencies.json`; complete
+license notices are packaged as `licenses/innoextract.txt`, `licenses/boost.txt`,
+`licenses/bzip2.txt` and `licenses/liblzma.txt`.
+
 ## Separately installed development tools
 
 Python packages are installed from `requirements.txt`, rather than vendored:

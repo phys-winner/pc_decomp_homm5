@@ -147,20 +147,28 @@ class ThinLTOBuilderTest(unittest.TestCase):
             self.assertTrue((out / "objects.json").is_file())
             self.assertTrue((out / "libhomm5.so").is_file())
 
-    def test_combined_pgo_global_volatile_and_thinlto_directory_and_flags(self):
+    def test_combined_pgo_volatile_and_thinlto_directory_and_flags(self):
         with self.fixture() as (root, records, invoke):
-            out = invoke(["--shared", "--global-regs", "--volatile-memory", "--pgo-generate", "--thinlto", "--thinlto-jobs", "2"])
-            self.assertEqual(out, root / "build/arm64-globalregs-volatilemem-pgogen-thinlto")
+            out = invoke(["--shared", "--volatile-memory", "--pgo-generate", "--thinlto", "--thinlto-jobs", "2"])
+            self.assertEqual(out, root / "build/arm64-volatilemem-pgogen-thinlto")
             for command in records["compiles"]:
                 self.assertIn("-flto=thin", command)
-                self.assertNotIn("-DRECOMP_LOCAL_REGS", command)
                 self.assertNotIn("-DRECOMP_PLAIN_MEMORY", command)
                 generated = "generated" in command[command.index("-c") + 1]
                 self.assertEqual("-fprofile-instr-generate" in command, generated)
+                self.assertEqual("-DRECOMP_LOCAL_REGS" in command, generated)
                 if generated:
                     self.assertIn("-w", command)
             self.assertIn("-fprofile-instr-generate", records["links"][0])
             self.assertIn("-Wl,--thinlto-jobs=2", records["links"][0])
+
+    def test_global_register_mode_rejected_before_compiling_native_kernels(self):
+        with self.fixture() as (root, records, invoke):
+            with self.assertRaises(SystemExit) as error:
+                invoke(["--shared", "--global-regs", "--thinlto"])
+            self.assertEqual(error.exception.code, 2)
+            self.assertFalse(records["compiles"])
+            self.assertFalse(records["links"])
 
     def test_real_object_cache_reuses_flags_and_backend_jobs_but_rejects_changed_profile(self):
         with self.fixture() as (root, records, invoke):

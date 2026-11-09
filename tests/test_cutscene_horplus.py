@@ -64,19 +64,50 @@ int main(void) {
  const float fovs[]={35,54.43f,90};
  for(unsigned i=0;i<4;++i)for(unsigned j=0;j<3;++j){
   MEMF(0x4000)=widths[i];MEMF(0x4004)=heights[i];
+  MEMF(0x3014)=fovs[j];
   uint32_t fov=bits(fovs[j]),r=void_cutscene_fov(0x3000,0x4000,fov,0x10000);
   double expected=2*atan(tan(fovs[j]*3.141592653589793/360)*.75*widths[i]/heights[i])*180/3.141592653589793;
   assert(fabs(value(r)-expected)<1e-4&&memcmp(&before,&machine,sizeof before)==0);
-  assert(MEM32(0x3014)==0);
+  assert(MEMF(0x3014)==fovs[j]);
  }
  assert(adjustments==9);
- MEM32(0x2000)=0x00E3DD4C;assert(void_cutscene_fov(0x3000,0x4000,bits(35),0x10000)==bits(35));
+ MEM32(0x2000)=0x00E3DD4C;
+#ifdef HOMM5_LEGACY_UI
+ /* Original constructors store the Dialog camera at +9C in both legacy editions. */
+ MEM32(0x209C)=0;MEM32(0x20A4)=0x3000;
+ assert(void_cutscene_fov(0x3000,0x4000,bits(35),0x10000)==bits(35));
+ MEM32(0x20A4)=0;MEM32(0x209C)=0x3000;
+#else
+ /* ToE's controller already expands the FOV, even when this is the actual owned camera. */
+ MEM32(0x20A4)=0x3000;
+#endif
+ for(unsigned i=0;i<4;++i)for(unsigned j=0;j<3;++j){
+  MEMF(0x4000)=widths[i];MEMF(0x4004)=heights[i];MEMF(0x3080)=fovs[j];
+  unsigned char camera[0x200];memcpy(camera,GPTR(0x3000),sizeof camera);
+  uint32_t r=void_cutscene_fov(0x3000,0x4000,bits(fovs[j]),0x10000);
+#ifdef HOMM5_LEGACY_UI
+  double expected=2*atan(tan(fovs[j]*3.141592653589793/360)*.75*widths[i]/heights[i])*180/3.141592653589793;
+  assert(fabs(value(r)-expected)<1e-4);
+#else
+  assert(r==bits(fovs[j]));
+#endif
+  assert(!memcmp(camera,GPTR(0x3000),sizeof camera)&&!memcmp(&before,&machine,sizeof before));
+ }
+ assert(void_cutscene_fov(0x3004,0x4000,bits(35),0x10000)==bits(35));
+ const uint32_t others[]={0x00E1DA84,0x00E3D1EC,0};
+ for(unsigned i=0;i<3;++i){
+  MEM32(0x2000)=others[i];
+  assert(void_cutscene_fov(0x3000,0x4000,bits(35),0x10000)==bits(35));
+ }
  MEM32(0x2000)=0x00E3261C;assert(void_cutscene_fov(0x3004,0x4000,bits(35),0x10000)==bits(35));
  missing=1;assert(void_cutscene_fov(0x3000,0x4000,bits(35),0x10000)==bits(35));missing=0;
  MEMF(0x4004)=0;assert(void_cutscene_fov(0x3000,0x4000,bits(35),0x10000)==bits(35));
  MEMF(0x4004)=NAN;assert(void_cutscene_fov(0x3000,0x4000,bits(35),0x10000)==bits(35));
+ MEMF(0x4004)=1080;MEMF(0x4000)=INFINITY;
+ assert(void_cutscene_fov(0x3000,0x4000,bits(35),0x10000)==bits(35));
+ assert(void_cutscene_fov(0x3000,0x10,bits(35),0x10000)==bits(35));
  assert(adjustments==9&&memcmp(&before,&machine,sizeof before)==0);
- puts("PASS legacy Hor+: original helper and current camera gate, 4:3 unchanged, no FOV/state writes, viewport and unavailable guards");
+ puts("PASS cinematic Hor+: animated cameras unchanged; owned legacy Dialog expands, owned ToE Dialog stays raw; wrong camera/screen, 4:3/invalid viewport, unchanged raw FOV and full state");
 }
 '''
 
@@ -141,6 +172,16 @@ class CutsceneHorplus(unittest.TestCase):
         source = (ROOT / "android/host/cutscene.c").read_text(encoding="utf-8")
         source = source.replace('#include "host.h"', '')
         compile_probe("cutscene_horplus", HARNESS, {"cutscene_impl.h": source})
+
+    def test_toe_owned_dialog_rejects_double_horplus(self):
+        source = (ROOT / "android/host/cutscene.c").read_text(encoding="utf-8")
+        gate = ('#ifdef HOMM5_LEGACY_UI\n'
+                '            || (cutscene_read32(screen) == 0x00E3DD4Cu && cutscene_read32(screen + 0xA4) == camera)\n'
+                '#endif')
+        self.assertEqual(source.count(gate), 1)
+        wrong = source.replace(gate, gate.splitlines()[1], 1).replace('#include "host.h"', '')
+        with self.assertRaisesRegex(AssertionError, r'r==bits\(fovs\[j\]\)'):
+            compile_probe("cutscene_toe_double_horplus_negative", HARNESS, {"cutscene_impl.h": wrong})
 
     def test_only_original_legacy_load_is_adapted(self):
         source = (ROOT / "generated/game-x86/game_0310.c").read_bytes()

@@ -17,8 +17,17 @@ import java.nio.charset.StandardCharsets;
 final class Assets {
     private Assets() { }
 
-    /** Hash on the existing startup worker: an installed EXE must match its ARM64 engine. */
+    static final class UnsupportedOriginalException extends IOException {
+        final String path;
+        UnsupportedOriginalException(String path, String diagnosis) { super(diagnosis); this.path = path; }
+    }
+
+    /** Hash on the existing startup worker before the player chooses whether to try another build. */
     static void verifyOriginals(Context c, File game, String edition) throws IOException {
+        verifyOriginals(c, game, edition, false);
+    }
+
+    static void verifyOriginals(Context c, File game, String edition, boolean allowUnsupported) throws IOException {
         String manifest;
         try {
             manifest = new String(read(c, Games.images(edition) + "/originals.txt"), StandardCharsets.UTF_8);
@@ -27,6 +36,7 @@ final class Assets {
             return; // CLI deployments already validate their original inputs.
         }
         int checked = 0;
+        UnsupportedOriginalException unsupported = null;
         String bin = "hof".equals(edition) ? "bina1/" : "bin/";
         for (String line : manifest.split("\n")) {
             if (line.trim().isEmpty()) continue;
@@ -36,18 +46,30 @@ final class Assets {
                 throw new IOException("Invalid original-image manifest: " + edition);
             File file = Games.child(game, row[0]);
             if (file == null || !file.isFile() || !file.canRead())
-                throw new IOException("Required original file is missing: " + row[0]);
+                throw new IOException("Required original file is missing: " + filePath(game, row[0])
+                    + " (expected " + Games.title(edition) + " " + Games.version(edition) + ")");
             try {
-                if (file.length() != Long.parseLong(row[1]) || !row[2].equals(NativeLibrary.sha256(file)))
-                    throw new IOException("Unsupported original file: " + row[0] + " (expected "
-                        + Games.title(edition) + " " + Games.version(edition) + ")");
+                long expectedSize = Long.parseLong(row[1]), foundSize = file.length();
+                if (expectedSize <= 0 || !row[2].matches("[0-9a-f]{64}"))
+                    throw new IOException("Invalid original-image manifest: " + edition);
+                if (foundSize == 0) throw new IOException("Required original file is empty: " + file.getAbsolutePath());
+                String foundHash = NativeLibrary.sha256(file);
+                if ((foundSize != expectedSize || !row[2].equals(foundHash)) && unsupported == null)
+                    unsupported = new UnsupportedOriginalException(row[0], "Unsupported original file: " + row[0] + " (expected "
+                        + Games.title(edition) + " " + Games.version(edition) + ")\n"
+                        + file.getAbsolutePath() + "\nExpected: " + expectedSize + " bytes, SHA-256 " + row[2]
+                        + "\nFound: " + foundSize + " bytes, SHA-256 " + foundHash
+                        + "\nRestore this edition's original file from its installation; do not combine different editions' binaries.");
             } catch (NumberFormatException e) {
                 throw new IOException("Invalid original-image size: " + row[0], e);
             }
             checked |= bit;
         }
         if (checked != 3) throw new IOException("Incomplete original-image manifest: " + edition);
+        if (unsupported != null && !allowUnsupported) throw unsupported;
     }
+
+    private static String filePath(File root, String relative) { return new File(root, relative).getAbsolutePath(); }
 
     /** The folder the game reads its images from (nativeStart's images). */
     static File images(Context c, File base) {

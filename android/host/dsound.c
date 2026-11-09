@@ -389,6 +389,16 @@ static void start_mixer(void)
 /* ------------------------------------------------------------- buffers */
 static void_com_class buffer_class, ds3d_class, notify_class, listener_class;
 
+static void facet_destroy(void_com_object *o) { (void)o; }
+
+static uint32_t facet_wrap(facet_t *facet, dsbuf_t *owner, void_com_class *cls)
+{
+    facet->owner = owner;
+    uint32_t guest = void_com_wrap(&facet->com, cls, 0);
+    facet->com.destroy = facet_destroy;
+    return guest;
+}
+
 static void buffer_destroy(void_com_object *o)
 {
     dsbuf_t *b = (dsbuf_t *)o;
@@ -396,6 +406,8 @@ static void buffer_destroy(void_com_object *o)
     pthread_mutex_lock(&mix_lock);
     for (dsbuf_t **p = &buffers; *p; p = &(*p)->next) if (*p == b) { *p = b->next; break; }
     pthread_mutex_unlock(&mix_lock);
+    if (b->f3d.com.guest) void_com_release(&b->f3d.com);
+    if (b->notify.com.guest) void_com_release(&b->notify.com);
     if (b->data) void_gfree(b->data);
     free(b);
 }
@@ -414,15 +426,15 @@ static uint32_t buffer_query(dsbuf_t *b, uint32_t riid, uint32_t out)
         void_com_addref(&b->com); MEM32(out) = b->com.guest; return 0;
     }
     if (void_guid_equal(riid, IID_IDirectSound3DBuffer) && (b->flags & DSBCAPS_CTRL3D) && !b->primary) {
-        if (!b->f3d.com.guest) { b->f3d.owner = b; void_com_wrap(&b->f3d.com, &ds3d_class, 0); b->f3d.com.refs = 1000000; }
+        if (!b->f3d.com.guest) facet_wrap(&b->f3d, b, &ds3d_class);
         void_com_addref(&b->com); MEM32(out) = b->f3d.com.guest; return 0;
     }
     if (void_guid_equal(riid, IID_IDirectSound3DListener) && b->primary) {
-        if (!b->f3d.com.guest) { b->f3d.owner = b; void_com_wrap(&b->f3d.com, &listener_class, 0); b->f3d.com.refs = 1000000; }
+        if (!b->f3d.com.guest) facet_wrap(&b->f3d, b, &listener_class);
         void_com_addref(&b->com); MEM32(out) = b->f3d.com.guest; return 0;
     }
     if (void_guid_equal(riid, IID_IDirectSoundNotify) && !b->primary) {
-        if (!b->notify.com.guest) { b->notify.owner = b; void_com_wrap(&b->notify.com, &notify_class, 0); b->notify.com.refs = 1000000; }
+        if (!b->notify.com.guest) facet_wrap(&b->notify, b, &notify_class);
         void_com_addref(&b->com); MEM32(out) = b->notify.com.guest; return 0;
     }
     char g[40];

@@ -138,7 +138,7 @@ class LauncherSpecTest(unittest.TestCase):
                                  capture_output=True, text=True)
         self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
 
-    def test_distributions_are_the_three_editions_with_their_old_detection(self):
+    def test_three_editions_use_two_gog_roots_and_original_detection(self):
         data = spec()
         app = data["app"]
         self.assertEqual((app["storage"], app["github"], app["languages"]), ("HeroesV", "phys-winner/pc_decomp_homm5", ["en", "ru"]))
@@ -158,17 +158,23 @@ class LauncherSpecTest(unittest.TestCase):
                 self.assertEqual(part["id"], "game")
                 self.assertEqual(part["required"], required)             # exactly what Games.installed accepts
                 self.assertEqual(part["marker"], required[0])
-                self.assertEqual(part["folder"], "{storage}/" + key)     # tools/deploy.py's copies, the old fallback
+                self.assertEqual(part["folder"], "{storage}/" + ("game" if d["id"] == "toe" else "game-hof"))
+                self.assertEqual(part.get("folderGroup", ""), "" if d["id"] == "toe" else "gold")
                 self.assertFalse(part.get("fixed", False))               # the game is told its folder (nativeStart)
                 self.assertFalse(part.get("mount", False))               # the host has no stored-ZIP layer
                 # The old unpacking's folders (Unpacker.NEEDED), for every edition alike.
                 self.assertEqual(part["needed"], ["bin/", "bina1/", "data/", "dataa1/", "datals/", "music/", "video/", "profiles/",
                                                   "maps/", "usercampaigns/", "usermods/", "hwcursors/", "duelpresets/"])
+        self.assertEqual(len({d["parts"][0]["folder"] for d in data["distributions"]}), 2)
         self.assertEqual([m["id"] for m in data["renderers"]["modes"]], ["gles"])
         options = {o["key"]: o for o in data["options"]}
-        self.assertEqual(set(options), {"new_creature_framework", "lan_peers"})
+        self.assertEqual(set(options), {"new_creature_framework", "lan_peers", "large_address_aware"})
         self.assertEqual((options["new_creature_framework"]["type"], options["new_creature_framework"]["default"]), ("bool", "0"))
         self.assertEqual((options["lan_peers"]["type"], options["lan_peers"]["default"]), ("text", ""))
+        memory = options["large_address_aware"]
+        self.assertEqual((memory["type"], memory["default"], memory["defaultMinRamGiB"]), ("bool", "0", 5))
+        self.assertIs(memory["arm64Only"], True)
+        self.assertNotIn("only", memory)                                      # all three editions use the runtime limit
         self.assertEqual(options["new_creature_framework"]["only"], ["toe"])   # MMH5.5's patch data exists for 3.1 only
         self.assertNotIn("only", options["lan_peers"])                         # every edition's LAN search
         for name in (app["hooks"], data["textures"]["backend"]):

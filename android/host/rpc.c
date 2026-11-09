@@ -2,6 +2,14 @@
 #include "host.h"
 #include <stdlib.h>
 
+/* The original startup collector skips entropy when its only drive is C:. */
+void void_initial_seed_entropy(uint32_t material)
+{
+    if (!void_vm_writable(material, 1024))
+        void_fatal("Invalid initial random seed buffer: %08X", material);
+    arc4random_buf(GPTR(material), 1024);
+}
+
 /* https://learn.microsoft.com/en-us/windows/win32/api/rpcdce/nf-rpcdce-uuidcreate */
 WINAPI_EXPORT("rpcrt4.dll", UuidCreate, 1)
 {

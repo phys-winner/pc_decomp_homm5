@@ -5,6 +5,66 @@ from test_static_tls import compile_probe
 
 ROOT = Path(__file__).resolve().parents[1]
 
+RESYNC_MAIN = r'''
+int main(void){
+ /* INITIALIZE */
+ MEMF(0xF74BE8)=1024;MEMF(0xF74BEC)=768;
+ unsigned char config[256];memset(config,0x5A,sizeof config);memcpy(GPTR(0xF490C0),config,sizeof config);
+ void_touch_set_scale(1.25f);
+ const int displays[][3]={{2688,1216,1698},{2399,1081,1705},{2340,1080,1664}};
+ const int percentages[]={25,50,100},stale[][3]={{1920,1080,1366},{1024,768,1024}};
+ for(unsigned display=0;display<3;++display)for(unsigned scale=0;scale<3;++scale)for(unsigned old=0;old<2;++old){
+  fixture_physical_w=displays[display][0];fixture_physical_h=displays[display][1];
+  int percent=percentages[scale];void_touch_set_render_scale(percent*.01f);
+  unsigned width=(unsigned)(fixture_physical_w*percent+50)/100,height=(unsigned)(fixture_physical_h*percent+50)/100;
+  set_size(width,height);
+  MEMF(0xF74BF0)=(float)stale[old][0]*percent/100;MEMF(0xF74BF4)=(float)stale[old][1]*percent/100;
+  MEMF(0xF74BE0)=(float)stale[old][2]/1.25f;MEMF(0xF74BE4)=768/1.25f;
+  gesture_active=1;int old_ui=ui_resizes,old_aborts=aborts,old_layouts=scale_layouts;
+  /* The actual scale pump cannot fix the stale physical geometry by itself. */
+  float stale_w=MEMF(0xF74BE0),stale_h=MEMF(0xF74BE4);void_touch_scale_pump();
+  assert(MEMF(0xF74BE0)==stale_w&&MEMF(0xF74BE4)==stale_h&&scale_layouts==old_layouts&&aborts==old_aborts);
+  /* Loading, pending navigation and an unsafe owner must never initialize the UI early. */
+  MEM32(0x22000)=0xE34674;pump();MEM32(0x22000)=0xE230E4;
+  MEM32(0x40000)=0;pump();MEM32(0x40000)=0x40000;
+  top=0;pump();top=0x22000;surface=0;pump();surface=1;
+  thread=8;pump();thread=7;ui_mapped=0;pump();ui_mapped=1;ui_dispatch=0;pump();ui_dispatch=1;
+  storage.in_scene=1;pump();storage.in_scene=0;storage.recording=&storage;pump();storage.recording=NULL;
+  assert(ui_resizes==old_ui&&aborts==old_aborts&&gesture_active&&!resets&&!scene_ends);
+  /* A remembered failure cannot suppress needed UI-only geometry recovery. */
+  render_attempt.request=render_request;render_attempt.device=storage.com.guest;
+  render_attempt.width=width;render_attempt.height=height;
+  render_attempt.physical_w=fixture_physical_w;render_attempt.physical_h=fixture_physical_h;render_attempt.failed=1;
+  pump();
+  assert(ui_resizes==old_ui+1); /* Current matching-backbuffer early return fails here. */
+  assert(aborts==old_aborts+1&&!gesture_active&&!resets&&!scene_ends&&!render_attempt.failed);
+  assert(MEMF(0xF74BF0)==width&&MEMF(0xF74BF4)==height);
+  assert(fixture_input_w==(int)width&&fixture_input_h==(int)height&&!memcmp(expected,GPTR(0x1002930),sizeof expected));
+  void_touch_scale_pump();
+  assert(scale_percent==125&&scale_layouts==old_layouts+1);
+  assert(fabsf(MEMF(0xF74BE0)-(float)displays[display][2]/1.25f)<.0002f&&fabsf(MEMF(0xF74BE4)-614.4f)<.0002f);
+  /* Pixel-to-UI uses the repaired physical dimensions, including off-centre cursor positions. */
+  assert(fabsf((width*.73f)*MEMF(0xF74BE0)/MEMF(0xF74BF0)-MEMF(0xF74BE0)*.73f)<.0002f);
+  assert(fabsf((height*.31f)*MEMF(0xF74BE4)/MEMF(0xF74BF4)-MEMF(0xF74BE4)*.31f)<.0002f);
+  old_aborts=aborts;gesture_active=1;
+  for(unsigned idle=0;idle<20;++idle){pump();void_touch_scale_pump();}
+  assert(aborts==old_aborts&&gesture_active&&ui_resizes==old_ui+1&&scale_layouts==old_layouts+1&&!resets);
+ }
+ /* Even UI-only recovery rechecks callbacks before touching a changed owner/geometry. */
+ for(int changed=1;changed<=5;++changed){
+  fixture_physical_w=2688;fixture_physical_h=1216;void_touch_set_render_scale(.5f);set_size(1344,608);
+  MEMF(0xF74BF0)=960;MEMF(0xF74BF4)=540;
+  int old_ui=ui_resizes,old_aborts=aborts;gesture_active=1;abort_change=changed;
+  pump();assert(ui_resizes==old_ui&&aborts==old_aborts+1&&!resets);
+  abort_change=0;top=0x22000;surface=1;
+  if(changed==3)MEM32(0x1002938)^=1;
+ }
+ assert(!memcmp(config,GPTR(0xF490C0),sizeof config));
+ puts("PASS actual matching-BB render/UI resync: display2688x1216 and surface changes at25/50/100, stale16:9/4:3, actual125% scale restore/cursor basis, no D3DReset, abort-before-resize, safe-screen/callback guards and idempotence");
+ return 0;
+}
+'''
+
 HARNESS = r'''
 #include <assert.h>
 #include <math.h>
@@ -221,6 +281,146 @@ class TouchRenderTest(unittest.TestCase):
         source = '\n'.join(line for line in source.splitlines()
                            if not line.startswith("extern int void_android_"))
         compile_probe("touch_render", HARNESS, {"touch_render_impl.h": source})
+
+    def matching_ui_fixture(self):
+        from test_d3d_lifecycle import function
+        source = (ROOT / "android/host/touch_render.c").read_text(encoding="utf-8")
+        for name in ("d3d9_internal.h", "input.h", "touch.h"):
+            source = source.replace(f'#include "{name}"\n', '')
+        source = '\n'.join(line for line in source.splitlines()
+                           if not line.startswith("extern int void_android_"))
+        fixture = HARNESS[:HARNESS.index('int main(void){')]
+        fixture = fixture.replace('static int aborts,resets,', 'static int gesture_active,scale_layouts;\nstatic int aborts,resets,', 1)
+        fixture = fixture.replace('++aborts;', '++aborts;gesture_active=0;', 1)
+        fixture = fixture.replace(')&&resets);', '));assert(!gesture_active);', 1)
+        dispatch = function(fixture, 'static void_fn void_dispatch_find(')
+        fixture = fixture.replace(dispatch, dispatch.replace('void_dispatch_find(', 'render_dispatch_find(', 1) + r'''
+static void_fn void_dispatch_find(uint32_t a){
+ if(a==0x8885D0||a==0xA50560)return NULL;
+ if(a==0x66A4D0)return dispatch?dummy:NULL;
+ return render_dispatch_find(a);
+}
+''')
+        calls = function(fixture, 'static uint32_t void_call_guest(')
+        fixture = fixture.replace(calls, calls.replace('void_call_guest(', 'render_guest_fixture(', 1) + r'''
+static uint32_t void_call_guest(uint32_t va,int n,const uint32_t *args,int pops){
+ if(va==0x66A4D0){
+  assert(!locked&&n==1&&args&&!args[0]&&pops&&!gesture_active);
+  assert(MEMF(0xF74BF0)==fixture_input_w&&MEMF(0xF74BF4)==fixture_input_h);
+  ++scale_layouts;return 0;
+ }
+ return render_guest_fixture(va,n,args,pops);
+}
+''')
+        scale = (ROOT / 'android/host/touch_scale.c').read_text(encoding='utf-8')
+        scale = (function(scale, 'void void_touch_set_scale(') +
+                 function(scale, 'static int scale_pump(') + function(scale, 'void void_touch_scale_pump('))
+        fixture += r'''
+#define VLOG(...) ((void)0)
+static pthread_mutex_t scale_lock;
+static int scale_percent=100;
+static uint32_t viewport_scratch;
+static struct {uint32_t root;} viewport;
+static struct {uint32_t screen;int requested,percent;} fit;
+static struct {uint32_t screen,root;float width,height;} loading_layout;
+static void_fn original_list_layout;
+static void sub_00A50560(void){}
+static void scale_list_layout(void){}
+static void scale_layout_override(void){}
+static void void_dispatch_add(uint32_t a,void_fn f){(void)a;(void)f;assert(0);}
+static uint32_t scale_read32(uint32_t a){return void_vm_readable(a,4)?MEM32(a):0;}
+static uint32_t scale_current_screen(void){return top;}
+static void scale_refresh_text(void){}
+static void void_touch_combat_frame(uint32_t s,float w,float h,float hud,float a,float b){
+ (void)s;(void)w;(void)h;(void)hud;(void)a;(void)b;
+}
+static uint32_t void_galloc(uint32_t n){assert(n==16);return 0x80000;}
+static int scale_viewport_ready(float w,float h){(void)w;(void)h;viewport.root=0x24000;return 1;}
+static uint32_t scale_screen_root(uint32_t s){(void)s;return 0x24000;}
+static int scale_is_root(uint32_t r){(void)r;return 1;}
+static int scale_fits(uint32_t r,int a,float w,float h,float bw,float bh,int requested){
+ (void)r;(void)a;(void)w;(void)h;(void)bw;(void)bh;return requested;
+}
+#include "touch_scale_impl.h"
+'''
+        initialization = HARNESS[HARNESS.index(' for(int i=0;i<14;i++)'):HARNESS.index(' unsigned char ui_and_config')]
+        fixture += RESYNC_MAIN.replace(' /* INITIALIZE */', initialization)
+        return fixture, {'touch_render_impl.h': source, 'touch_scale_impl.h': scale}
+
+    def test_matching_backbuffer_resynchronizes_stale_ui_geometry(self):
+        fixture, headers = self.matching_ui_fixture()
+        compile_probe('touch_render_matching_ui', fixture, headers)
+
+    def test_actual_legacy_matching_backbuffer_ui_resync(self):
+        import re
+        import sys
+        from test_d3d_lifecycle import function
+        sys.path.insert(0, str(ROOT / 'tools'))
+        import port_patches
+        # Original legacy data globals and parent-rectangle relayout ABI, independently pinned.
+        originals = {
+            'vanilla': ('00FC50C8', '00F07D54', '00F07D4C', '00AF8620', '00A77250', '00AF8E10', '00401040'),
+            'hof': ('00F3D2F0', '00F24180', '00F24178', '00A35EE0', '00BE1C30', '00A366D0', '00884EF0'),
+        }
+        for edition, expected in originals.items():
+            with self.subTest(edition=edition):
+                fixture, _ = self.matching_ui_fixture()
+                addresses = dict(port_patches.load_contract(edition)['addresses'])
+                for key, value in zip(('01002930', '00F74BF0', '00F74BE0', '00487990', '00A504B0', '00488220', '008384D0'), expected):
+                    self.assertEqual(addresses[key], value)
+                addresses.update({'01002938': f"{int(addresses['01002930'],16)+8:08X}",
+                                  '0002214C': '00022144', '0002314C': '00023144'})
+                fixture = fixture.replace('ui_dispatch=0;pump();ui_dispatch=1;', '')
+                fixture = fixture.replace('#include "touch_render_impl.h"',
+                    'void void_touch_legacy_resize(uint32_t width,uint32_t height);\n#include "touch_render_impl.h"', 1)
+                # The real legacy relayout visits one root through layout/invalidate/children/next.
+                callbacks = r'''
+static int legacy_resize_active,legacy_layout_phase;
+static uint32_t void_call_guest_this(uint32_t va,uint32_t self,int n,const uint32_t *args){
+ unsigned phase=(unsigned)legacy_layout_phase++%4;
+ assert(!gesture_active);
+ if(phase==0){
+  assert(va==0x487990&&self==0x24000&&n==1&&args&&args[0]==viewport_scratch);
+  float *rect=(float *)GPTR(args[0]);
+  assert(rect[0]==0&&rect[1]==0&&rect[2]==MEMF(0xF74BE0)&&rect[3]==MEMF(0xF74BE4));
+  if(legacy_resize_active)++ui_resizes;else ++scale_layouts;
+ }else if(phase==1)assert(va==0xA504B0&&self==0x24014&&!n&&!args);
+ else if(phase==2)assert(va==0x488220&&self==0x24000-0xF8&&!n&&!args);
+ else {assert(va==0x8384D0&&self==0x20000&&!n&&!args);return 0;}
+ return 0;
+}
+'''
+                fixture = fixture.replace('#include "touch_scale_impl.h"', callbacks + '#include "touch_scale_impl.h"' + r'''
+void void_touch_legacy_resize(uint32_t width,uint32_t height){
+ assert(!gesture_active&&(MEMF(0xF74BF0)!=width||MEMF(0xF74BF4)!=height));
+ legacy_resize_active=1;legacy_resize_actual(width,height);legacy_resize_active=0;
+}
+''')
+                fixture = fixture.replace(' MEMF(0xF74BE8)=1024;',
+                    ' MEM32(0x22098)=0x24000;MEM32(0x24000)=0x70000;MEM32(0x70048)=0x487990;\n MEMF(0xF74BE8)=1024;', 1)
+                fixture = re.sub(r'(0x|sub_)([0-9A-Fa-f]+)',
+                    lambda m: m[1] + addresses.get(f'{int(m[2],16):08X}', m[2]), fixture)
+                render, _ = port_patches.adapt_host_source(ROOT / 'android/host/touch_render.c',
+                    ROOT / 'build/tests' / ('matching-render-' + edition), edition)
+                source = render.read_text(encoding='utf-8')
+                for name in ('d3d9_internal.h', 'input.h', 'touch.h'):
+                    source = source.replace(f'#include "{name}"\n', '')
+                source = '\n'.join(line for line in source.splitlines() if not line.startswith('extern int void_android_'))
+                path, _ = port_patches.adapt_host_source(ROOT / 'android/host/touch_scale.c',
+                    ROOT / 'build/tests' / ('matching-render-' + edition), edition)
+                scale = path.read_text(encoding='utf-8')
+                # Replace the two fixture root helpers with the actual mapped implementations.
+                for signature in ('static uint32_t scale_screen_root(',):
+                    fixture = fixture.replace(function(fixture, signature),
+                        function(scale, 'static uint32_t scale_root(') + function(scale, signature))
+                body = (function(scale, 'static uint32_t scale_virtual_base(') +
+                        function(scale, 'void void_touch_legacy_root_rect(') +
+                        function(scale, 'void void_touch_legacy_relayout(') +
+                        function(scale, 'void void_touch_legacy_resize(').replace('void_touch_legacy_resize(', 'legacy_resize_actual(', 1) +
+                        function(scale, 'void void_touch_set_scale(') + function(scale, 'static int scale_pump(') +
+                        function(scale, 'void void_touch_scale_pump('))
+                compile_probe('touch_render_matching_ui_' + edition, fixture,
+                    {'touch_render_impl.h': source, 'touch_scale_impl.h': body})
 
 
 if __name__ == "__main__":

@@ -130,8 +130,12 @@ void void_touch_render_pump(void)
     uint32_t wanted_w = (uint32_t)(((uint64_t)(unsigned)physical_w * (unsigned)percent + 50) / 100);
     uint32_t wanted_h = (uint32_t)(((uint64_t)(unsigned)physical_h * (unsigned)percent + 50) / 100);
     if (!wanted_w || !wanted_h || wanted_w > limit || wanted_h > limit) return;
-    if (width == wanted_w && height == wanted_h) { render_attempt.failed = 0; return; }
-    if (render_attempt.failed && render_attempt.request == request && render_attempt.device == device &&
+    int same_size = width == wanted_w && height == wanted_h;
+    if (same_size && MEMF(0x00F74BF0u) == (float)width && MEMF(0x00F74BF4u) == (float)height) {
+        render_attempt.failed = 0;
+        return;
+    }
+    if (!same_size && render_attempt.failed && render_attempt.request == request && render_attempt.device == device &&
         render_attempt.width == width && render_attempt.height == height &&
         render_attempt.physical_w == physical_w && render_attempt.physical_h == physical_h) return;
     uint32_t screen = render_current_screen();
@@ -151,6 +155,12 @@ void void_touch_render_pump(void)
         input_w <= 0 || input_h <= 0 || (uint32_t)input_w != width || (uint32_t)input_h != height ||
         g_d3d_device->pp[0] != width || g_d3d_device->pp[1] != height ||
         memcmp(previous, GPTR(0x01002930u), sizeof previous)) return;
+    /* A native Reset can resize the buffer before its next draw updates the UI. */
+    if (same_size) {
+        render_attempt.failed = 0;
+        render_resize_ui(width, height);
+        return;
+    }
     render_attempt.request = request; render_attempt.device = device;
     render_attempt.width = width; render_attempt.height = height;
     render_attempt.physical_w = physical_w; render_attempt.physical_h = physical_h;

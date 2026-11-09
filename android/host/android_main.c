@@ -764,10 +764,8 @@ uint32_t void_audio_output(const int16_t *frames, uint32_t count)
     if (stream && written == count && void_audio_pause_state() == pause) {
         int64_t queued = AAudioStream_getFramesWritten(stream) - AAudioStream_getFramesRead(stream);
         int32_t size = AAudioStream_getBufferSizeInFrames(stream);
-#ifndef HOMM5_LEGACY_UI
         /* Bluetooth can expose >400 ms: mixing that far ahead overtakes FMOD's 186 ms ring. */
         if (audio_normal_output && size > 1920) size = 1920;
-#endif
         if (queued >= 0 && size > 0 && queued < size) wanted = (uint32_t)(size - queued);
     }
     pthread_mutex_unlock(&audio_lock);

@@ -36,7 +36,8 @@ OPTIONS = (
     ("port_ui_scale", "port_ui_scale", "port_render_scale",
      "Масштаб интерфейса",
        "Размер текста, кнопок и панелей. 100% — исходный размер. Большие окна автоматически "
-       "уменьшаются до размера экрана.",
+       "уменьшаются до размера экрана. Катсцены, ролики и загрузочные экраны используют исходный масштаб; после них "
+       "настройка восстанавливается.",
      "50%", "200%", (0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0), 2),
     ("port_fps_limit", "port_fps_limit", "port_ui_scale",
      "Частота кадров",
@@ -442,8 +443,8 @@ def gamepad_button(game_dir, edition="toe"):
     else:
         shared.find("Background").set("href", "PortMenu.(BackgroundSimpleScallingTexture).xdb#xpointer(/BackgroundSimpleScallingTexture)")
         members["UI/MainMenu2/PortMenu.(BackgroundSimpleScallingTexture).xdb"] = b'''<BackgroundSimpleScallingTexture>
-          <ClassTypeID>285694784</ClassTypeID><Texture href="/UI/MainMenu2/Menu.(Texture).xdb#xpointer(/Texture)"/>
-          <Color>-1</Color><Size><x>327</x><y>327</y></Size></BackgroundSimpleScallingTexture>'''
+          <ClassTypeID>285694784</ClassTypeID><Texture href="/UI/MainMenu2/SelectCampaign/MenuPanel.(Texture).xdb#xpointer(/Texture)"/>
+          <Color>-1</Color><Size><x>328</x><y>506</y></Size></BackgroundSimpleScallingTexture>'''
     members[parent] = ET.tostring(shared, encoding="utf-8", xml_declaration=True)
     menu_path = "UI/MainMenu2/Menu.(WindowSimple).xdb"
     original, _ = source_resource(game_dir, menu_path, edition)

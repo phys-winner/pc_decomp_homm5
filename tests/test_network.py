@@ -62,6 +62,7 @@ static void void_blocking_begin(void) {}
 static void void_blocking_end(void) {}
 static uint32_t next_allocation = 0x18000;
 static uint32_t void_galloc(uint32_t size) { uint32_t at = next_allocation; next_allocation += (size + 15u) & ~15u; return at; }
+static void void_gfree(uint32_t va) { if (va) assert(va >= 0x18000 && va < next_allocation); }
 #include "network.h"
 
 static unsigned checks;

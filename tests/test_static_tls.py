@@ -16,7 +16,7 @@ HARNESS = r'''
 static unsigned char memory[0x40000];
 #define GPTR(va) (memory + (uint32_t)(va))
 #define MEM32(va) (*(uint32_t *)GPTR(va))
-typedef struct void_thread { uint32_t tib, static_tls; struct void_thread *next_thread; } void_thread;
+typedef struct void_thread { uint32_t tib, static_tls; uint32_t static_tls_alloc[STATIC_TLS_MODULES]; struct void_thread *next_thread; } void_thread;
 static void_thread *all_threads;
 static int threads_lock, lock_depth;
 static int pthread_mutex_lock(int *unused) { (void)unused; assert(!lock_depth++); return 0; }
@@ -50,21 +50,26 @@ int main(void) {
     memcpy(GPTR(raw), "ABC", 3);
     assert(void_tls_register(0x400000, directory));
     assert(MEM32(index) == 0 && static_tls_count == 1);
-    void_thread first = {0x1000, 0, NULL};
+    void_thread first = {0}; first.tib = 0x1000;
     tls_thread_init(&first); all_threads = &first;
     assert(MEM32(first.tib + 0x2C) == first.static_tls);
     assert(first.static_tls != first.tib + 0xE10);
     uint32_t block = MEM32(first.static_tls);
+    assert(first.static_tls_alloc[0] && first.static_tls_alloc[0] <= block &&
+        block - first.static_tls_alloc[0] < 32);
     assert(!(block & 31) && !memcmp(GPTR(block), "ABC\0\0\0\0\0", 8));
     MEM32(first.tib + 0xE10) = 0x12345678;
     memory[block] = 'Z';
-    void_thread second = {0x2000, 0, &first};
+    void_thread second = {0}; second.tib = 0x2000; second.next_thread = &first;
     tls_thread_init(&second); all_threads = &second;
+    assert(second.static_tls_alloc[0] != MEM32(second.static_tls) &&
+        MEM32(second.static_tls) - second.static_tls_alloc[0] < 32);
     assert(MEM32(second.static_tls) != block && memory[MEM32(second.static_tls)] == 'A');
     assert(memory[block] == 'Z' && MEM32(first.tib + 0xE10) == 0x12345678);
     MEM32(directory + 8) = index + 4;
     assert(void_tls_register(0x500000, directory) && MEM32(index + 4) == 1);
     assert(MEM32(first.static_tls + 4) && MEM32(second.static_tls + 4));
+    assert(first.static_tls_alloc[1] && second.static_tls_alloc[1]);
     assert(MEM32(first.static_tls + 4) != MEM32(second.static_tls + 4));
     MEM32(index + 4) = 99;
     assert(void_tls_register(0x500000, directory) && MEM32(index + 4) == 1 && static_tls_count == 2);

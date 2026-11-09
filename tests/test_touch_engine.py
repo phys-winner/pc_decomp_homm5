@@ -1108,6 +1108,13 @@ int main(void) {
     assert(placement_begins==1 && placement_ends==1 && releases==2 && !commands);
     reset(2); MEM32(0x42E0)=0x1000; event(TOUCH_BEGIN,900,400); event(TOUCH_TWO_FINGER_BEGIN,900,400); event(TOUCH_END,900,400);
     assert(placement_begins==1 && placement_cancels==1 && !placement_ends && !commands);
+    reset(2); MEM32(0x42E0)=0x1000; event(TOUCH_BEGIN,900,400);
+    event(TOUCH_TWO_FINGER_BEGIN,900,400); event(TOUCH_TRANSFORM,920,410); event(TOUCH_END,920,410);
+    assert(cameras==1 && last_camera_kind==1 && placement_cancels==1 && !placement_ends && !commands);
+    /* Java reports the resting second contact before it recognizes a moving pair. */
+    reset(2); MEM32(0x42E0)=0x1000; event(TOUCH_BEGIN,900,400); event(TOUCH_SECOND_BEGIN,900,400);
+    event(TOUCH_TWO_FINGER_BEGIN,900,400); event(TOUCH_TRANSFORM,920,410); event(TOUCH_TILT,920,410); event(TOUCH_END,920,410);
+    assert(cameras==1 && tilts==1 && placement_cancels==1 && !placement_ends && !commands);
     reset(2); MEM32(0x42E0)=0x1000; event(TOUCH_BEGIN,900,400); event(TOUCH_ABORT,900,400);
     assert(placement_cancels==1 && !placement_ends && !commands);
     reset(2); busy=1; event(TOUCH_BEGIN,900,400); event(TOUCH_TAP,900,400); assert(!commands && !evaluations);

@@ -73,6 +73,16 @@ static __thread uint8_t *inline_payload[INLINE_DEPTH];
 static __thread size_t inline_cap[INLINE_DEPTH];
 static __thread int inline_depth;
 static __thread d3d_rt_fn inline_fn[INLINE_DEPTH];
+
+void d3d_rt_thread_cleanup(void)
+{
+    for (int i = 0; i < INLINE_DEPTH; ++i) {
+        free(inline_payload[i]);
+        inline_payload[i] = NULL;
+        inline_cap[i] = 0;
+    }
+    inline_depth = 0;
+}
 static d3d_rt_stats_t stats;            /* the game's fields */
 static _Atomic uint64_t render_busy_ns;
 

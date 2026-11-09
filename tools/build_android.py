@@ -492,7 +492,7 @@ def override_source(source, local_xmm):
     text = round_x87_precision(guard_fpu_memory(original))
     if EDITION == "toe":
         text = new_creature_framework(cutscene_projection(text))
-    elif source.name != "recomp_dispatch.c":
+    if source.name != "recomp_dispatch.c":
         from port_patches import adapt_generated_source
         text = adapt_generated_source(text, source.parent.name[:-len("-x86")], EDITION)
     names = ACTIVE_NATIVE_OVERRIDES
@@ -522,6 +522,11 @@ def override_source(source, local_xmm):
             text = mark_frame_begin_scene(text)
             if PGO_USE:
                 text = skip_stale_profile(text)
+    # Keep canonical trained bodies for original fallback/PGO. Change only late
+    # generated call targets and the merged dispatch row; host calls stay direct.
+    from native_routes import apply_native_routes, NATIVE_GROUPS
+    text, _, _ = apply_native_routes(text, EDITION, module=source.parent.name[:-len("-x86")],
+                                     dispatch=source.name == "recomp_dispatch.c", groups=NATIVE_GROUPS)
     if text == original:
         return source, []
     patched = OUT / "patched" / source.parent.name / source.name
@@ -640,6 +645,8 @@ def main():
     parser.add_argument("--edition", choices=EDITION_IDS, default="toe")
     parser.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 4) - 4))
     parser.add_argument("--host-only", action="store_true", help="Recompile host sources and relink only")
+    parser.add_argument("--function-coverage", action="store_true",
+                        help="Separate diagnostic body-entry census; explicit fcstart/fcstop, no PGO")
     parser.add_argument("--rt-check", action="store_true", help="Check GLES calls execute on the render thread")
     parser.add_argument("--shared", action="store_true", help="Link libhomm5.so for the APK instead of the executable")
     parser.add_argument("--global-regs", action="store_true",
@@ -661,7 +668,13 @@ def main():
                         help="Validation build (build/arm64-check): full state at every transfer, callee-saved "
                              "and x87 window checks logged as [protocol] / [x87]")
     args = parser.parse_args()
+    if args.function_coverage:
+        if args.pgo_generate or args.pgo_use:
+            parser.error("Function coverage uses a separate no-PGO diagnostic build")
+        args.no_pgo = True
     configure_edition(args.edition)
+    if args.global_regs:
+        parser.error("Hand-written native kernels require the tested local-register ABI")
     if args.thinlto_jobs is not None and (not args.thinlto or args.thinlto_jobs < 1):
         parser.error("--thinlto-jobs must be positive and requires --thinlto")
     if not CLANG.is_file():
@@ -691,7 +704,7 @@ def main():
                        ([] if args.volatile_memory else ["-DRECOMP_PLAIN_MEMORY"]))
     upstream = [name for name, on in (("globalregs", args.global_regs), ("volatilemem", args.volatile_memory),
                                       ("pgogen", args.pgo_generate), ("thinlto", args.thinlto),
-                                      ("check", args.protocol_check)) if on]
+                                      ("check", args.protocol_check), ("function-coverage", args.function_coverage)) if on]
     if args.protocol_check:
         GENERATED_FLAGS = GENERATED_FLAGS + ["-DRECOMP_PROTOCOL_CHECK"]
     OUT = build_root(EDITION, upstream, root=ROOT)
@@ -728,13 +741,39 @@ def main():
     host_digest = header_digest(runtime_headers + sorted((ROOT / "android/host").glob("*.h")) +
                                 [descriptor, include] +
                                 [ROOT / "reference/dlmalloc/malloc.c"])
+    # Inventory the exact post-adaptation sources, then instrument only diagnostic
+    # build copies. Normal source/object locations and receipts are untouched.
+    prepared_generated = [(source, *override_source(source, local_xmm=not args.global_regs))
+                          for source in generated_sources()]
+    prepared_host = [(source, *adapt_host_source(source, OUT, EDITION)) for source in host_sources()]
+    coverage = None
+    coverage_flags = []
+    if args.function_coverage:
+        from function_coverage import CoveragePlan
+        from native_routes import algorithm_entries
+        coverage = CoveragePlan.create(GENERATED, [p for _, p, _ in prepared_generated],
+            [p for _, p, _ in prepared_host], ACTIVE_NATIVE_OVERRIDES, OUT / "function_coverage",
+            specs=MANIFEST, edition=EDITION, manual_entries=algorithm_entries(EDITION), build_identity={"compiler_sha256":compiler_sha,
+                "generated_flags":GENERATED_FLAGS, "host_flags":HOST_FLAGS,
+                "shared":args.shared, "rt_check":args.rt_check, "pgo":False,
+                "edition_descriptor_sha256":sha_file(descriptor), "builder_sha256":sha_file(Path(__file__))})
+        coverage_flags = ["-DVOID_FUNCTION_COVERAGE", "-I" + str(coverage.output), "-I" + str(ROOT / "tools")]
+        coverage_digest = header_digest([coverage.header, ROOT / "tools/function_coverage_runtime.h"])
+        host_digest = hashlib.sha256((host_digest + coverage_digest).encode()).hexdigest()
+        gen_digest = hashlib.sha256((gen_digest + coverage_digest).encode()).hexdigest()
+        module_digest = {name:hashlib.sha256((value + coverage_digest).encode()).hexdigest()
+                         for name,value in module_digest.items()}
     jobs, generated_objects = [], []
-    for source in generated_sources():
-        module = source.parent.name
-        obj = OUT / "obj" / module / (source.stem + ".o")
-        digest = gen_digest if source.name == "recomp_dispatch.c" else module_digest[module[:-len("-x86")]]
-        source, extra = override_source(source, local_xmm=not args.global_regs)
-        flags = GENERATED_FLAGS + module_compile_flags(module) + extra
+    for original, source, extra in prepared_generated:
+        module = original.parent.name
+        obj = OUT / "obj" / module / (original.stem + ".o")
+        digest = gen_digest if original.name == "recomp_dispatch.c" else module_digest[module[:-len("-x86")]]
+        if coverage:
+            text, count = coverage.instrument_generated(source.read_text(encoding="utf8"), module)
+            if count:
+                source = coverage.write_copy(text, "generated", module, original.name)
+                extra = extra + ["-I" + str(original.parent)]
+        flags = GENERATED_FLAGS + module_compile_flags(module) + extra + coverage_flags
         fp = hashlib.sha256(json.dumps([sha_file(source), digest, compiler_sha, flags]).encode()).hexdigest()
         if args.host_only:
             entry = cache.get(source.relative_to(ROOT).as_posix())
@@ -753,14 +792,28 @@ def main():
         jobs.append((source, obj, mojo_flags, fp))
     host_flags = HOST_FLAGS + ["-include", str(descriptor)] + lto_compile_flags + (["-DVOID_ANDROID_APP"] if args.shared else [])
     host_dir = "obj/host-app" if args.shared else "obj/host"
-    for source in host_sources():
-        obj = OUT / host_dir / (source.stem + ".o")
-        include_digest = included_digest(source)
-        source, extra = adapt_host_source(source, OUT, EDITION)
-        flags = host_flags + extra
+    for original, source, extra in prepared_host:
+        obj = OUT / host_dir / (original.stem + ".o")
+        include_digest = included_digest(original)
+        if coverage:
+            text = source.read_text(encoding="utf8")
+            rewritten, count = coverage.instrument_host(text, original.name)
+            if rewritten != text:
+                source = coverage.write_copy(rewritten, "host", "host", original.name)
+                extra = extra + ["-I" + str(original.parent)]
+        flags = host_flags + extra + coverage_flags
+        from native_routes import NATIVE_SOURCES, native_diagnostic_flags
+        if original.name in NATIVE_SOURCES:
+            flags = native_diagnostic_flags(flags, GENERATED_FLAGS)
         if args.rt_check and source.name.startswith("d3d9_"):
             flags += ["-DVOID_RT_CHECK"]
         fp = hashlib.sha256(json.dumps([sha_file(source), host_digest, include_digest, compiler_sha, flags]).encode()).hexdigest()
+        jobs.append((source, obj, flags, fp))
+    if coverage:
+        source = ROOT / "tools/function_coverage_runtime.c"
+        obj = OUT / host_dir / "function_coverage_runtime.o"
+        flags = host_flags + coverage_flags
+        fp = hashlib.sha256(json.dumps([sha_file(source), host_digest, compiler_sha, flags]).encode()).hexdigest()
         jobs.append((source, obj, flags, fp))
     # Largest first keeps the pool busy at the end.
     jobs.sort(key=lambda j: -j[0].stat().st_size)
@@ -811,6 +864,17 @@ def main():
         print(result.stderr[-6000:])
         sys.exit(1)
     finalize_native_receipt(EDITION, output)
+    if coverage:
+        output.with_suffix(".coverage.json").write_text(json.dumps({
+            "diagnostic_only": True, "edition": EDITION, "library_sha256": sha_file(output),
+            "manifest": str(coverage.manifest_path), "identity_sha256": coverage.manifest["identity_sha256"],
+            "entries": len(coverage.manifest["entries"]), "compiler_sha256": compiler_sha,
+            "tool_sha256": sha_file(ROOT / "tools/function_coverage.py"),
+            "runtime_sha256": sha_file(ROOT / "tools/function_coverage_runtime.c"),
+            "header_sha256": sha_file(ROOT / "tools/function_coverage_runtime.h"),
+            "builder_sha256": sha_file(Path(__file__)), "pgo": False,
+            "commands": ["fcstart", "fcstop"], "output": "<edition userdata>/function-coverage.bin"
+        }, indent=2) + "\n", encoding="utf8")
     print(f"linked {output} ({output.stat().st_size / 1e6:.1f} MB) in {time.time() - start:.0f}s")
 
 

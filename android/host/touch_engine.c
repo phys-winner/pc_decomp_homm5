@@ -3354,6 +3354,14 @@ void void_touch_engine_event(const void_touch_event *event)
     }
     /* The resting finger moved: a camera gesture, with no information under it. */
     if (kind == TOUCH_TWO_FINGER_BEGIN) combat_card_end();
+    if (kind == TOUCH_TWO_FINGER_BEGIN && gesture.placement && same_screen()) {
+        /* End the troop drag before the moving pair takes the camera; lifting cannot place it. */
+        if (!gesture.cancelled) combat_cancel();
+        gesture.placement = gesture.aiming = gesture.second_troop = gesture.cancelled = 0;
+        gesture.panning = gesture.committed = 1;
+        publish_point(-1, -1);
+        return;
+    }
     if (kind == TOUCH_TWO_FINGER_BEGIN && !gesture.ui && gesture.combat_aim && !gesture.aiming) {
         /* Two fingers on the battlefield move the camera: no order at release. */
         gesture.combat_aim = 0;

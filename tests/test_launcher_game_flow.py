@@ -68,6 +68,7 @@ public class GameActivity {
  private boolean isFinishing(){return false;}private boolean isDestroyed(){return false;}
  private void releaseAll(){releases++;}private void hideSystemUi(){}private void finish(){finished=true;}
  private void pulseKey(int code){assert code==ESC;escapes++;}
+ private void finishLaunchDimming(String reason){}
  private static class Touch {void requestFocus(){}}private Touch touch=new Touch();
  private void runOnUiThread(Runnable r){uiPosts++;r.run();}
  /* ACTUAL */
@@ -129,12 +130,14 @@ class LauncherGameFlowTest(unittest.TestCase):
 
     def test_launch_is_attached_first_and_told_how_the_start_went(self):
         create = function(self.activity, "    @Override protected void onCreate(Bundle state)")
+        worker = function(self.activity, "    private void startLibrary(boolean allowUnsupported)")
         body = re.sub(r"/\*.*?\*/", "", create[create.index("super.onCreate(state);") + len("super.onCreate(state);"):], flags=re.S)
         first = next(line.strip() for line in body.splitlines() if line.strip())
         self.assertEqual(first, "launch = attachLauncher();")       # before the native library and its thread
-        self.assertLess(create.index("attachLauncher()"), create.index("NativeLibrary.load("))
+        self.assertLess(create.index("attachLauncher()"), create.index("startLibrary(false);"))
+        self.assertLess(worker.index("Assets.verifyOriginals("), worker.index("NativeLibrary.load("))
         self.assertIn("getOnBackInvokedDispatcher().registerOnBackInvokedCallback(", create)   # target SDK 36+
-        self.assertIn("launch.failed(reason)", create)               # the engine could not be loaded
+        self.assertIn("launch.failed(reason)", worker)               # the engine could not be loaded
         self.assertIn("Launch.attach(this)", function(self.activity, "    private Launch attachLauncher()"))
         start = function(self.activity, "    private void startGame()")
         for refusal in ("refuse(String.format(", "refuse(text(T_RUNTIME_MISSING))"):

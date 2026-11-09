@@ -779,6 +779,7 @@ void d3d_gl_apply_state(d3d_device *d)
 typedef struct { uint32_t key[9]; GLuint sampler; } sampler_entry;
 static sampler_entry sampler_cache[512];
 static int sampler_count;
+static uint32_t sampler_next;
 
 static GLenum address(uint32_t a)
 {
@@ -819,10 +820,21 @@ static GLuint sampler_for(const uint32_t *ss, int no_filter, uint32_t levels, ui
         glSamplerParameterf(s, GL_TEXTURE_MAX_ANISOTROPY_EXT, aniso);
     }
     glSamplerParameterf(s, GL_TEXTURE_MIN_LOD, (float)key[8]);
-    if (sampler_count < 512) {
-        memcpy(sampler_cache[sampler_count].key, key, sizeof key);
-        sampler_cache[sampler_count++].sampler = s;
+    int entry = sampler_count;
+    if (entry < 512) ++sampler_count;
+    else {
+        /* A sampler bound on another unit may still be needed by this draw. */
+        for (;;) {
+            entry = (int)(sampler_next++ % 512u);
+            int bound = 0;
+            for (unsigned unit = 0; unit < 32; ++unit)
+                if (unit_sampler[unit] == sampler_cache[entry].sampler) { bound = 1; break; }
+            if (!bound) break;
+        }
+        glDeleteSamplers(1, &sampler_cache[entry].sampler);
     }
+    memcpy(sampler_cache[entry].key, key, sizeof key);
+    sampler_cache[entry].sampler = s;
     return s;
 }
 
@@ -2213,6 +2225,7 @@ static void gl_device_destroy(void)
     }
     for (int i = 0; i < sampler_count; ++i) glDeleteSamplers(1, &sampler_cache[i].sampler);
     memset(sampler_cache, 0, sizeof sampler_cache);
+    sampler_next = 0;
     sampler_count = 0;
     memset(unit_tex, 0, sizeof unit_tex);
     memset(unit_sampler, 0, sizeof unit_sampler);

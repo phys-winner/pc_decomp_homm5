@@ -15,6 +15,7 @@ CHECK = r'''
 package org.homm5.port;
 import java.io.*;
 import java.nio.file.*;
+import java.nio.charset.*;
 import java.util.*;
 import java.util.zip.*;
 
@@ -80,6 +81,36 @@ public class EditionCheck {
             assert userdata.size()==3 && prefs.size()==3 && libs.size()==3 && markers.size()==3;
             boolean rejected=false; try { Games.library("unknown"); } catch(IllegalArgumentException expected) { rejected=true; }
             assert rejected;
+            for (String id : Games.IDS) {
+                File data = root.resolve("profiles-" + id).toFile();
+                String suffix = id.equals("toe") ? "_a2" : id.equals("hof") ? "_a1" : "";
+                Path profiles = data.toPath().resolve("Documents/My Games/" + (id.equals("toe")
+                    ? "Heroes of Might and Magic V \u2014 Tribes of the East/Profiles"
+                    : "Heroes of Might and Magic V/" + (id.equals("hof") ? "Hammers of Fate/" : "") + "Profiles"));
+                Files.createDirectories(profiles);
+                Path global = profiles.resolve("global" + suffix + ".cfg");
+                byte[] original = "// keep this\r\nsetvar net_game_port = 8888\r\nsetvar profile_name = absent\r\n".getBytes("windows-1251");
+                Files.write(global, original);
+                Games.selectSingleProfile(data, id);
+                assert Arrays.equals(Files.readAllBytes(global), original) : "No profile: leave the creation flow";
+                String name = "\u0418\u0433\u0440\u043e\u043a 1";
+                file(profiles, name + "/user" + suffix + ".cfg");
+                file(profiles, "unfinished/notes.txt");
+                Games.selectSingleProfile(data, id);
+                String selected = new String(Files.readAllBytes(global), "windows-1251");
+                assert selected.equals(new String(original, "windows-1251").replace("absent", name));
+                byte[] once = Files.readAllBytes(global);
+                Games.selectSingleProfile(data, id);
+                assert Arrays.equals(Files.readAllBytes(global), once);
+                file(profiles, "Second/user" + suffix + ".cfg");
+                Games.selectSingleProfile(data, id);
+                assert Arrays.equals(Files.readAllBytes(global), once) : "Several profiles: keep the player's choice";
+                delete(profiles.resolve("Second").toFile());
+                Files.delete(global);
+                Games.selectSingleProfile(data, id);
+                assert new String(Files.readAllBytes(global), "windows-1251").equals("setvar profile_name = " + name + "\n");
+                assert Files.readAllBytes(profiles.resolve(name + "/user" + suffix + ".cfg"))[0] == 1;
+            }
             try {
                 Path boundary=Files.createDirectory(root.resolve("links"));
                 Files.createSymbolicLink(boundary.resolve("outside"),hof.toPath());

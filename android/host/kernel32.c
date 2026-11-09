@@ -3,6 +3,8 @@
  * 1251, system and user locale ru-RU (1049). */
 #define _GNU_SOURCE
 #include "host.h"
+extern uint32_t void_vm_user_top(void);
+extern uint32_t void_vm_available(void);
 #include <ctype.h>
 #include <errno.h>
 #include <strings.h>
@@ -244,8 +246,8 @@ WINAPI_EXPORT(K32, GlobalMemoryStatus, 1)
     MEM32(out + 12) = 0x60000000u;        /* dwAvailPhys */
     MEM32(out + 16) = 0x7FFFFFFFu;
     MEM32(out + 20) = 0x60000000u;
-    MEM32(out + 24) = 0x7FFE0000u;        /* dwTotalVirtual */
-    MEM32(out + 28) = 0x50000000u;
+    MEM32(out + 24) = void_vm_user_top() - 0x10000u; /* dwTotalVirtual */
+    MEM32(out + 28) = void_vm_available();
     return 0;
 }
 
@@ -1018,7 +1020,7 @@ WINAPI_EXPORT(K32, GetSystemInfo, 1)
     MEM16(out + 0) = 0;                       /* PROCESSOR_ARCHITECTURE_INTEL */
     MEM32(out + 4) = 0x1000;                  /* dwPageSize */
     MEM32(out + 8) = 0x10000;                 /* lpMinimumApplicationAddress */
-    MEM32(out + 12) = 0x7FFEFFFF;             /* lpMaximumApplicationAddress */
+    MEM32(out + 12) = void_vm_user_top() - 1;  /* lpMaximumApplicationAddress */
     MEM32(out + 16) = (uint32_t)((1ull << cpus) - 1);
     MEM32(out + 20) = (uint32_t)cpus;
     MEM32(out + 24) = 586;                    /* PROCESSOR_INTEL_PENTIUM */

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Android 8.0 rejects translucent activities with sensorLandscape. Keep its window opaque
+         and let the window compositor fade the black launch curtain over the previous activity. -->
+    <style name="GameLaunch" parent="@android:style/Theme.Black.NoTitleBar.Fullscreen">
+        <item name="android:windowDisablePreview">true</item>
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:windowAnimationStyle">@style/GameLaunchAnimation</item>
+    </style>
+    <style name="GameLaunchAnimation" parent="@android:style/Animation.Activity">
+        <item name="android:activityOpenEnterAnimation">@anim/game_launch_dim</item>
+        <item name="android:activityOpenExitAnimation">@anim/game_launch_hold</item>
+    </style>
+</resources>

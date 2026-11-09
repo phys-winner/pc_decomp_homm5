@@ -7,7 +7,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 from build_android import included_digest
-from profile_cpu import validate_target, PACKAGE
+from profile_cpu import validate_target, process_name, PACKAGE
 
 
 class RenderThreadBuildTest(unittest.TestCase):
@@ -34,6 +34,21 @@ class RenderThreadBuildTest(unittest.TestCase):
                              (PACKAGE.encode() + b"\0", "Uid:\t1234\t5678\t1234\t1234\n")):
             with self.assertRaises(ValueError):
                 validate_target(command, ids, 1234)
+
+    def test_profiler_requires_exact_edition_process(self):
+        status = "Uid:\t1234\t1234\t1234\t1234\n"
+        for edition in ("toe", "vanilla", "hof"):
+            expected = PACKAGE + (":" + edition if edition != "toe" else "")
+            self.assertEqual(process_name(edition), expected)
+            validate_target(expected.encode() + b"\0", status, 1234, edition)
+            for other in ("toe", "vanilla", "hof"):
+                if other != edition:
+                    with self.assertRaises(ValueError):
+                        validate_target(process_name(other).encode() + b"\0", status, 1234, edition)
+            with self.assertRaises(ValueError):
+                validate_target(expected.encode() + b":unexpected\0", status, 1234, edition)
+        with self.assertRaises(ValueError):
+            process_name("unknown")
 
 
 if __name__ == "__main__":

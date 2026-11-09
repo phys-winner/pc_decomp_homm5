@@ -62,6 +62,10 @@ LICENSE_FILES = {
     "etcpak.txt": "reference/etcpak/LICENSE.txt",
     "xz-embedded.txt": "reference/xz-embedded/COPYING",
     "fidelityfx-fsr.txt": "licenses/fidelityfx-fsr.txt",
+    "innoextract.txt": "licenses/innoextract.txt",
+    "boost.txt": "licenses/boost.txt",
+    "bzip2.txt": "licenses/bzip2.txt",
+    "liblzma.txt": "licenses/liblzma.txt",
 }
 
 CHUNK = 128 << 20
@@ -252,6 +256,11 @@ def main():
     if base is None:
         parser.error("the launcher base is missing: set PORT_LAUNCHER, add it as android/launcher or check it out beside the project")
     port_launcher = launcher_tool(base)
+    gog_enabled = bool(json.loads((ROOT / "android/port.json").read_text(encoding="utf-8")).get("app", {}).get("gogInstaller"))
+    installer = None
+    if gog_enabled:
+        subprocess.run([sys.executable, str(ROOT / "tools/build_innoextract.py"), "--jobs", "2"], check=True)
+        installer = ROOT / "build/gog-android/libinnoextract.so"
     try:
         port_launcher.validate(json.loads((ROOT / "android/port.json").read_text(encoding="utf-8")))
     except (OSError, ValueError) as failure:
@@ -353,6 +362,8 @@ def main():
         apk.writestr("assets/native/index.txt", "".join(row for _, row in payloads))
         apk.write(unpacker, "lib/arm64-v8a/libhomm5xz.so")
         apk.write(texconv, "lib/arm64-v8a/libtexconv.so")
+        if installer is not None:
+            apk.write(installer, "lib/arm64-v8a/libinnoextract.so")
         # DXVK, its bridge, libc++_shared and the adrenotools/Turnip set; deflated, like the others.
         for library in dxvk_libraries:
             apk.write(library, "lib/arm64-v8a/" + library.name)

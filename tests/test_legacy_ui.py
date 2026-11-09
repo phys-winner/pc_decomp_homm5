@@ -132,6 +132,132 @@ class LegacyUiTest(unittest.TestCase):
                 harness = '#define HOMM5_LEGACY_UI 1\n' + harness
                 compile_probe('legacy-cutscene-' + edition, harness, {'cutscene_impl.h': text})
 
+    def test_owned_dialog_runs_through_exact_original_projection_seam(self):
+        import pefile
+        from test_combat_projection import PROBE
+        core = (ROOT / 'android/host/core.c').read_text()
+        state = core[core.index('VOID_HIDDEN uint32_t g_eax'):core.index('#define VOID_ENTER_RING')]
+        host = (ROOT / 'android/host/host.h').read_text()
+        registers = host[host.index('typedef struct void_regs {'):host.index('} void_regs;') + len('} void_regs;')]
+        registers += '\nstatic recomp_ehframe_t *g_eh_frames;\nstatic uint32_t g_eh_obj,g_eh_info;\n'
+        registers += function(core, 'void void_regs_save(') + function(core, 'void void_regs_load(')
+        runtime = prepare_windows_runtime.platform_header((ROOT / 'android/runtime/recomp_types.h').read_text())
+        compiler, _, _ = build_windows.compiler_environment()
+        originals = {
+            'vanilla': ('00760E50', '00760E72', '004ABC20', '004ABAC0', '00E1C644'),
+            'hof': ('0075BAE0', '0075BB02', '009F3C00', '009F3AA0', '00DF14B0'),
+        }
+        for edition, (camera, load, perspective, context, dialog) in originals.items():
+            with self.subTest(edition=edition):
+                original = generated_body(edition, int(camera, 16))
+                old = f'    ecx = MEM32(esi + 0x80); /* 0x{load}: mov ecx, dword ptr [esi + 0x80] */'
+                self.assertEqual(original.count(old), 1)
+                adapted = port_patches.adapt_generated_source(original.encode(), 'game', edition).decode()
+                self.assertNotIn(old, adapted)
+                self.assertEqual(adapted.count('ecx = void_cutscene_fov(esi, MEM32(esp + 0x5C), MEM32(esi + 0x80), esp)'), 1)
+                native = (original.replace('void sub_' + camera, 'static void original_projection', 1) +
+                          adapted.replace('void sub_' + camera, 'static void sub_' + camera, 1) +
+                          generated_body(edition, int(perspective, 16)).replace('void sub_', 'static void sub_') +
+                          generated_body(edition, int(context, 16)).replace('void sub_', 'static void sub_'))
+                probe = PROBE[:PROBE.index('static int void_vm_readable(')]
+                begin = probe.index('typedef struct { unsigned unused; } void_regs;')
+                end = probe.index('static float observed_rod;', begin)
+                probe = probe[:begin] + registers + '\nstatic float observed_fov;\n' + probe[end:]
+                probe = probe.replace('if(target==0xCF7D90){sub_00CF7D90();return;}',
+                    'if(target==0xCF7D90){observed_fov=MEMF(g_esp+8);sub_00CF7D90();return;}')
+                # Actual renderer perspective code is executed; only view/context consumers are stubs.
+                callbacks = r'''
+static int void_vm_readable(uint32_t p,uint32_t n){return p>=0x100&&(uint64_t)p+n<=sizeof memory;}
+static void dummy(void){}
+static void_fn void_dispatch_find(uint32_t p){(void)p;return dummy;}
+static uint32_t void_call_guest(uint32_t target,int n,const uint32_t *args,int pops){
+ assert(g_esp==0x70000-0x54&&MEM32(g_esp+0x5C)==0x66000);
+ /* Every field changed by these callbacks must be restored before the native caller resumes. */
+ g_eax=g_ecx=g_edx=g_ebx=g_esi=g_edi=g_ebp=0xCCCCCCCC;
+ g_flag_k=FK_CMP;g_flag_a=0xBAD;g_flag_b=0xACE;g_flag_cf=1;
+ g_fp_top=3;g_st[0]=123.75;g_st_i64[0]=0x12345678;memset(g_xmm,0xCD,sizeof g_xmm);
+ if(target==0x8385A0){assert(!n&&!args&&pops);return 0x18000;}
+ assert(target==0xD119FC&&n==5&&!pops&&args[0]==0x18104&&args[2]==0xF272C0&&args[3]==0xF323A8);
+ return 0x10000;
+}
+static void void_lift_trap(uint32_t p,const char *why){(void)p;fprintf(stderr,"%s",why);abort();}
+/* ACTUAL_HELPER */
+static void capture(float w,float h,float fov,int kind,int patched,float matrix[16],void_regs *result){
+ MEM32(0xFE719C)=0x18000;MEM32(0x18004)=0x19000;MEM32(0x19004)=0x100;
+ MEM32(0x10000)=kind<2?0xE3DD4C:kind==2?0xE1DA84:0xE3D1EC;
+ MEM32(0x1009C)=kind==1?0x20004:0x20000;
+ MEM32(0x20000)=0xE44224;MEM32(0xE44224+0x2C)=0x7CD040;
+ MEMF(0x2005C)=MEMF(0x20060)=0;MEMF(0x20070)=42;
+ MEMF(0x20080)=fov;MEMF(0x20084)=1;MEMF(0x20088)=1000;
+ MEMF(0x66000)=w;MEMF(0x66004)=h;
+ g_esp=0x70000;g_ecx=0x20000;MEM32(g_esp)=RECOMP_RETADDR;
+ MEM32(g_esp+4)=0x30000;MEM32(g_esp+8)=0x66000;
+ g_eax=g_edx=0;g_flag_k=FK_NONE;g_flag_a=g_flag_b=g_flag_cf=0;
+ g_ebx=0x11223344;g_esi=0x22334455;g_edi=0x33445566;g_ebp=0x44556677;
+ fp_set_cw(0x007F);g_fp_sp=128;g_fp_top=0;
+ unsigned char camera[0x200];memcpy(camera,GPTR(0x20000),sizeof camera);
+ if(patched)sub_007CD0C0();else original_projection();
+ assert(g_esp==0x7000C&&g_ebx==0x11223344&&g_esi==0x22334455&&g_edi==0x33445566&&g_ebp==0x44556677);
+ assert(g_fp_top==0&&g_fp_sp==128&&observed_rod==42);
+ assert(!memcmp(camera,GPTR(0x20000),sizeof camera));
+ memcpy(matrix,GPTR(0x30000),64);memset(result,0,sizeof *result);void_regs_save(result);
+}
+int main(void){
+ /* CONSTANTS */
+ const float fovs[]={35,54.43f,90},views[][2]={{1024,768},{1920,1080},{2400,1080}};
+ for(unsigned f=0;f<3;++f){
+  float pc[16];void_regs unused;capture(1024,768,fovs[f],0,0,pc,&unused);
+  for(unsigned v=0;v<3;++v)for(int kind=0;kind<4;++kind){
+   float raw[16],actual[16];void_regs before,after;
+   float w=views[v][0],h=views[v][1];
+   capture(w,h,fovs[f],kind,0,raw,&before);assert(observed_fov==fovs[f]);
+   capture(w,h,fovs[f],kind,1,actual,&after);
+   assert(!memcmp(&before,&after,offsetof(void_regs,st)));
+   if(kind||v==0){assert(observed_fov==fovs[f]&&!memcmp(raw,actual,64));continue;}
+   /* The original PC4:3 projection itself is the oracle for vertical framing. */
+   assert(observed_fov>fovs[f]&&fabsf(actual[5]-pc[5])<.00001f);
+   assert(fabsf(actual[0]*w/h-pc[0]*(4.f/3.f))<.00001f);
+   assert(fabsf(actual[5]-raw[5])>.1f);
+   for(unsigned i=1;i<16;++i)if(i!=5)assert(fabsf(actual[i]-raw[i])<.00001f);
+   /* Independently executed original PE golden, FOV35 at2400x1080. */
+   if(f==0&&v==2){
+    assert(fabsf(observed_fov-55.443671f)<.0001f);
+    assert(fabs(2*atan(1/actual[5])*180/3.141592653589793-26.609127)<.0001);
+   }
+  }
+ }
+ puts("PASS actual legacy Dialog projection: exact original load/viewport seam, original renderer PC4:3 oracle, owned-only Hor+, raw FOV/camera bytes, poisoned callbacks, full RET8/callee state");
+}
+'''
+                addresses = dict(port_patches.load_contract(edition)['addresses'])
+                self.assertEqual(addresses['00E3DD4C'], dialog)
+                addresses.update(zip(('007CD0C0', '00CF7D90', '00CF7C30'), (camera, perspective, context)))
+                addresses.update(zip(('00CF60A0', '00CF7AC0', '00CF7000'),
+                    ('004AA110', '004AB950', '004AAE60') if edition == 'vanilla' else ('009F20F0', '009F3930', '009F2E40')))
+                def mapped(text):
+                    return re.sub(r'(0x|sub_)([0-9A-Fa-f]+)',
+                        lambda m: m[1] + addresses.get(f'{int(m[2],16):08X}', m[2]), text)
+                source, _ = port_patches.adapt_host_source(ROOT / 'android/host/cutscene.c',
+                    ROOT / 'build/tests' / ('dialog-projection-' + edition), edition)
+                helper = source.read_text()
+                helper = function(helper, 'static uint32_t cutscene_read32(') + function(helper, 'uint32_t void_cutscene_fov(')
+                # Map only fixture addresses; actual adapted helper/lifted bodies keep their original VAs.
+                bridge, capture = callbacks.split('static void capture(', 1)
+                fixture = mapped(probe).replace('/* NATIVE */',
+                    mapped(bridge).replace('/* ACTUAL_HELPER */', helper) + native)
+                fixture += mapped('static void capture(' + capture)
+                image = pefile.PE(str(ROOT / 'generated' / edition / 'input/H5_Game.exe'))
+                constants = []
+                for address in sorted(set(int(n,16) for n in re.findall(r'ADDR\(0x([0-9A-F]+)\)', native))):
+                    data = image.get_data(address-image.OPTIONAL_HEADER.ImageBase,8)
+                    self.assertEqual(len(data),8)
+                    constants.append(f'memcpy(GPTR(0x{address:X}),(unsigned char[]){{' + ','.join(map(str,data)) + '},8);')
+                image.close()
+                fixture = fixture.replace('/* STATE */', state).replace('/* CONSTANTS */', '\n'.join(constants))
+                compile_probe('dialog-projection-' + edition, fixture, {'runtime.h': runtime},
+                    extra_flags=['/clang:-Wno-unused-variable', '/clang:-Wno-unused-label', '/clang:-Wno-unused-function'],
+                    compiler_override=compiler)
+
     def test_legacy_spellbook_camera_gets_toe_horplus(self):
         # (camera, viewport getter, projection, FOV push) of the 1.6/2.1 spellbook camera; ToE's is 0x006832D0.
         cameras = {'vanilla': (0x0063CFD0, '00410B60', '004ABC20', '0x0063CFF4'),
@@ -195,7 +321,8 @@ class LegacyUiTest(unittest.TestCase):
                 text = source.read_text()
                 helpers = '\n'.join(function(text, signature) for signature in (
                     'static uint32_t scale_read32(', 'static uint32_t scale_virtual_base(',
-                    'static uint32_t scale_screen_root(', 'static int scale_is_root(', 'void void_touch_legacy_root_rect(',
+                    'static uint32_t scale_root(', 'static uint32_t scale_screen_root(',
+                    'static int scale_is_root(', 'void void_touch_legacy_root_rect(',
                     'void void_touch_legacy_relayout(', 'void void_touch_legacy_resize('))
                 contract = port_patches.load_contract(edition)
                 addresses = contract['addresses']

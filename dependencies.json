@@ -1,4 +1,28 @@
 {
+  "innoextract": {
+    "url": "https://github.com/dscharrer/innoextract.git",
+    "revision": "81fd9b95b76ee5115ce116bfdbc3bc6b887b809d",
+    "directory": "reference/innoextract",
+    "license": "Zlib"
+  },
+  "xz": {
+    "url": "https://github.com/tukaani-project/xz.git",
+    "revision": "061a1e4d2d0b1c3f5c9a637fd94bac035a826340",
+    "directory": "reference/xz",
+    "license": "Public domain (liblzma)"
+  },
+  "boost": {
+    "url": "https://archives.boost.io/release/1.84.0/source/boost_1_84_0.tar.gz",
+    "sha256": "a5800f405508f5df8114558ca9855d2640a2de8f0445f051fa1c7c3383045724",
+    "directory": "reference/boost_1_84_0",
+    "license": "BSL-1.0"
+  },
+  "bzip2": {
+    "url": "https://gitlab.com/bzip2/bzip2.git",
+    "revision": "6a8690fc8d26c815e798c588f796eabe9d684cf0",
+    "directory": "reference/bzip2",
+    "license": "bzip2-1.0.6"
+  },
   "xz-embedded": {
     "url": "https://github.com/tukaani-project/xz-embedded.git",
     "revision": "ae63ae3a36ed01724674e8f3d750dc47bf125410",

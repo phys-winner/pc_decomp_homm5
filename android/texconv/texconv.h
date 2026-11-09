@@ -99,6 +99,9 @@ void texconv_get_progress(texconv_progress *out);
  * *out with texconv_free), 1 kept as it is (a transparent DXT1), -1 error. */
 int texconv_convert_dds(const uint8_t *dds, uint64_t size, int format, uint8_t **out, uint64_t *out_size);
 void texconv_free(void *pointer);
+#if defined(__ANDROID__)
+__attribute__((visibility("default")))
+#endif
 int texconv_decode_dxt(uint32_t fourcc, const uint8_t *blocks, uint32_t width, uint32_t height, uint8_t *rgba);
 #if defined(__ANDROID__)
 __attribute__((visibility("default")))

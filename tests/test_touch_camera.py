@@ -19,6 +19,9 @@ static unsigned char memory[0x1100000];
 static uint32_t g_eax, g_ecx, g_esp=0x70000, g_edx, g_esi, g_edi;
 #define ARG(i) MEM32(g_esp+4+4*(i))
 typedef void (*void_fn)(void);
+typedef struct { unsigned unused; } void_regs;
+static void void_regs_save(void_regs *saved) {(void)saved;abort();}
+static void void_regs_load(const void_regs *saved) {(void)saved;abort();}
 static int touch_mode=1, edge_calls, set_calls, unfollow_calls, convert_calls, ray_calls;
 static int bad_ray, failed_allocation, town_sets, perspective;
 static int town_initializations, town_busy, town_modal, town_init_failure, missing_init;
@@ -465,6 +468,17 @@ int main(void) {
     assert(framing.phase==2&&fabsf(framing.centre-2*(250-384*.015f-360)/384)<.00001f);
     MEMF(0xF74BE4)=768;void_touch_combat_frame(0x10000,1707,768,603,620,700);
     assert(framing.ratio==1&&framing.centre==0);MEM32(0x102E0)=0;
+    /* The actual UI125 PlacementBar/StackInfo bounds now reach calibration. */
+    MEM32(0x102E0)=0x1000;MEMF(0x20078)=-1.5707963f;MEMF(0xF74BE4)=614.4f;
+    for(int i=0;i<3;++i){
+        void_touch_combat_frame(0x10000,1365.6f,614.4f,614.4f,0,0);
+        void_touch_combat_frame(0x10000,1365.6f,614.4f,437,450.3046f,527.2166f);
+    }
+    camera_projection();
+    float deployment125=2*(437-614.4f*.015f-527.2166f)/614.4f;
+    assert(framing.fitted&&framing.ratio==1&&fabsf(projected_centre-deployment125)<.00001f);
+    assert(fabsf(527.2166f+projected_centre*614.4f/2-(437-614.4f*.015f))<.0001f);
+    assert(projected_rod==42&&MEMF(0x20060)==0&&MEMF(0x20070)==42);
 #endif
     MEMF(0x20070)=42;
     MEM32(0x10000)=0xE230E4;MEMF(0xF74BE4)=439;

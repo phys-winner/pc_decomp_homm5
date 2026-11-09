@@ -109,6 +109,11 @@ class LauncherMenuTest(unittest.TestCase):
                 self.assertEqual(len(shared.find('Children')), 7)
                 self.assertIn('PortSwitchGame.', shared.find('Children')[-2].get('href'))
                 self.assertIn('Quit.', shared.find('Children')[-1].get('href'))
+                self.assertTrue(any('Credits.' in item.get('href', '') for item in shared.find('Children')))
+                if edition == 'hof':
+                    background = ET.fromstring(members['UI/MainMenu2/PortMenu.(BackgroundSimpleScallingTexture).xdb'])
+                    self.assertIn('/SelectCampaign/MenuPanel.', background.find('Texture').get('href'))
+                    self.assertEqual(background.findtext('Size/y'), '506')
                 launcher = port_ui.launcher_buttons(game, edition)
                 self.assertFalse(any('PortExitLauncher' in path for path in launcher))
                 self.assertNotIn('UI/ExitGameQuestion.(WindowScreenShared).xdb', launcher)

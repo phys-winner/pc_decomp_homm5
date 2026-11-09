@@ -28,6 +28,7 @@ struct void_thread {
     uint32_t last_error;
     uint32_t tls[TLS_SLOTS];
     uint32_t static_tls;
+    uint32_t static_tls_alloc[STATIC_TLS_MODULES];
     void_object *object;
     uint32_t start, param;
     uint32_t exit_code;
@@ -43,6 +44,20 @@ static struct void_thread *all_threads;
 static pthread_mutex_t threads_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static __thread void_thread *t_self;
+static pthread_key_t thread_key;
+static pthread_once_t thread_key_once = PTHREAD_ONCE_INIT;
+static void thread_native_exit(void *arg);
+static void thread_object_destroy(void_object *o);
+static void thread_key_init(void)
+{
+    if (pthread_key_create(&thread_key, thread_native_exit)) void_fatal("thread cleanup key allocation failed");
+}
+static void thread_bind(void_thread *t)
+{
+    pthread_once(&thread_key_once, thread_key_init);
+    t_self = t;
+    if (pthread_setspecific(thread_key, t)) void_fatal("thread cleanup registration failed");
+}
 static pthread_mutex_t mlock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t mcond = PTHREAD_COND_INITIALIZER;
 static uint64_t ticket_next, ticket_serving;
@@ -58,7 +73,7 @@ typedef struct {
 } static_tls_module;
 static static_tls_module static_tls_modules[STATIC_TLS_MODULES];
 static uint32_t static_tls_count;
-/* shortcut: mapped modules and thread storage stay resident, matching this host; add reclamation with module unloading. */
+/* Module images stay mapped; each thread owns its TLS template copies. */
 
 static void tls_thread_slot(void_thread *t, uint32_t index)
 {
@@ -66,6 +81,7 @@ static void tls_thread_slot(void_thread *t, uint32_t index)
     uint32_t allocation = void_galloc(m->total_size + m->alignment - 1);
     if (!allocation) void_fatal("static TLS allocation failed");
     uint32_t block = (allocation + m->alignment - 1) & ~(m->alignment - 1);
+    t->static_tls_alloc[index] = allocation;
     memset(GPTR(block), 0, m->total_size);
     if (m->raw_size) memcpy(GPTR(block), GPTR(m->raw), m->raw_size);
     MEM32(t->static_tls + 4 * index) = block;
@@ -260,8 +276,10 @@ void_thread *void_thread_self(void)
     if (!t_self) {
         /* A host thread entering the guest for the first time (the launcher
          * thread, a timer or audio callback) becomes a guest thread. */
-        t_self = thread_new(GUEST_STACK_DEFAULT);
+        thread_bind(thread_new(GUEST_STACK_DEFAULT));
         t_self->object = void_object_new(VOID_OBJ_THREAD, 0);
+        t_self->object->data = t_self;
+        t_self->object->destroy = thread_object_destroy;
         t_self->pt = pthread_self();
         pin_guest_thread();
     }
@@ -846,7 +864,40 @@ WINAPI_EXPORT(K32, SleepEx, 2) { sleep_ms(ARG(0)); return 0; }
 WINAPI_EXPORT(K32, SwitchToThread, 0) { sleep_ms(0); return 1; }
 
 /* ---------------------------------------------------------------- threads */
-static void thread_object_destroy(void_object *o) { (void)o; }
+static void thread_object_destroy(void_object *o) { free(o->data); }
+
+void void_network_thread_cleanup(void);
+void d3d_rt_thread_cleanup(void);
+
+static void thread_storage_release(void_thread *t)
+{
+    pthread_mutex_lock(&threads_lock);
+    void_thread **slot = &all_threads;
+    while (*slot && *slot != t) slot = &(*slot)->next_thread;
+    if (*slot) *slot = t->next_thread;
+    for (uint32_t i = 0; i < STATIC_TLS_MODULES; ++i) void_gfree(t->static_tls_alloc[i]);
+    void_gfree(t->static_tls);
+    if (t->stack_lo) void_vm_free(t->stack_lo, 0, 0x8000u);
+    if (t->tib) void_vm_free(t->tib, 0, 0x8000u);
+    t->tib = t->stack_lo = t->stack_hi = t->static_tls = 0;
+    pthread_mutex_unlock(&threads_lock);
+}
+
+static void thread_native_exit(void *arg)
+{
+    void_thread *t = (void_thread *)arg;
+    /* Native exit runs after the guest's detach callbacks and machine leave. */
+    void_network_thread_cleanup();
+    d3d_rt_thread_cleanup();
+    thread_storage_release(t);
+    pthread_mutex_lock(&wait_lock);
+    t->object->signaled = 1;
+    t->object->count = (int)t->exit_code;
+    pthread_cond_broadcast(&wait_cond);
+    pthread_mutex_unlock(&wait_lock);
+    t_self = NULL;
+    void_object_release(t->object);
+}
 
 /* Every guest thread waits while another holds the machine, so a holder on a
  * little core stretches everyone's time: on the Helio G90T the Sound.dll
@@ -906,7 +957,7 @@ static void pin_guest_thread(void)
 static void *thread_main(void *arg)
 {
     void_thread *t = (void_thread *)arg;
-    t_self = t;
+    thread_bind(t);
     pin_guest_thread();
     if (t->suspended) {
         pthread_mutex_lock(&wait_lock);
@@ -928,12 +979,6 @@ static void *thread_main(void *arg)
     tls_thread_callbacks(3);                /* DLL_THREAD_DETACH, including ExitThread */
     VLOG("[void] guest thread %u exits with %u", t->id, t->exit_code);
     void_machine_leave();
-    pthread_mutex_lock(&wait_lock);
-    t->object->signaled = 1;
-    t->object->count = (int)t->exit_code;
-    pthread_cond_broadcast(&wait_cond);
-    pthread_mutex_unlock(&wait_lock);
-    void_object_release(t->object);
     return NULL;
 }
 
@@ -957,6 +1002,8 @@ WINAPI_EXPORT(K32, CreateThread, 6)
     if (pthread_create(&t->pt, &attr, thread_main, t)) {
         pthread_attr_destroy(&attr);
         void_handle_close(handle);
+        thread_storage_release(t);
+        void_object_release(t->object);
         void_set_last_error(ERROR_NOT_ENOUGH_MEMORY_);
         return 0;
     }
@@ -993,7 +1040,10 @@ WINAPI_EXPORT(K32, GetExitCodeThread, 2)
 {
     void_object *o = void_handle_get(ARG(0), VOID_OBJ_THREAD);
     if (!o) { void_set_last_error(ERROR_INVALID_HANDLE_); return 0; }
-    MEM32(ARG(1)) = o->signaled ? (uint32_t)o->count : 259u;   /* STILL_ACTIVE */
+    pthread_mutex_lock(&wait_lock);
+    uint32_t code = o->signaled ? (uint32_t)o->count : 259u;   /* STILL_ACTIVE */
+    pthread_mutex_unlock(&wait_lock);
+    MEM32(ARG(1)) = code;
     return 1;
 }
 

@@ -63,6 +63,8 @@ int void_vm_readable(uint32_t address, uint32_t size);
 int void_vm_find(const uint8_t *pattern, uint32_t length, uint32_t *hits, int max);   /* debugging */
 int void_vm_dump(const char *path);                                                   /* debugging */
 int void_vm_writable(uint32_t address, uint32_t size);
+/* Fresh process seed material; explicit gameplay/network RNG states stay guest-owned. */
+void void_initial_seed_entropy(uint32_t material);
 /* Reserve+commit an exact range (images, fixed regions); 0 on conflict. */
 int void_vm_claim(uint32_t address, uint32_t size, uint32_t protect);
 uint32_t void_vm_map_file(int fd, uint64_t offset, uint32_t size, int writable, int shared);

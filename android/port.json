@@ -9,6 +9,7 @@
     "github": "phys-winner/pc_decomp_homm5",
     "languages": ["en", "ru"],
     "hooks": "org.homm5.port.LauncherHooks",
+    "gogInstaller": "libinnoextract.so",
     "allFilesAccess": true,
     "localNetwork": true,
     "autoLaunch": true,
@@ -22,6 +23,8 @@
     "accent": "#EBCB7F",
     "accentDark": "#A07828",
     "primaryFill": "#402C0E",
+    "playGlow": "#EBCB7F",
+    "playParticles": "#FFF0BC",
     "text": "#FFFFFF",
     "muted": "#A5A5B2",
     "error": "#FF7D6E",
@@ -30,6 +33,13 @@
   "distributions": [
     {
       "id": "toe",
+      "theme": {
+        "primaryFill": "#3C2118",
+        "accentDark": "#B8733E",
+        "playGlow": "#F2AD58",
+        "playParticles": "#FFE0A4",
+        "playParticleStyle": "embers"
+      },
       "title": {"en": "Tribes of the East", "ru": "Повелители Орды"},
       "version": "3.1",
       "activity": "org.homm5.port.GameActivity",
@@ -42,6 +52,8 @@
           "folder": "{storage}/game",
           "marker": "bin/H5_Game.exe",
           "required": ["bin/H5_Game.exe", "data/data.pak", "data/a2p1-data.pak"],
+          "userFolders": {"UserMODs": {"en": "Mods (UserMODs)", "ru": "Моды (UserMODs)"},
+                          "Maps": null, "UserCampaigns": null, "DuelPresets": null},
           "needed": ["bin/", "bina1/", "data/", "dataa1/", "datals/", "music/", "video/", "profiles/", "maps/",
                      "usercampaigns/", "usermods/", "hwcursors/", "duelpresets/"]
         }
@@ -49,6 +61,13 @@
     },
     {
       "id": "hof",
+      "theme": {
+        "primaryFill": "#163044",
+        "accentDark": "#6AADD0",
+        "playGlow": "#A7E2F4",
+        "playParticles": "#F1FCFF",
+        "playParticleStyle": "snow"
+      },
       "title": {"en": "Hammers of Fate", "ru": "Владыки Севера"},
       "version": "2.1",
       "activity": "org.homm5.port.HofGameActivity",
@@ -59,8 +78,11 @@
           "id": "game",
           "title": {"en": "Game files", "ru": "Файлы игры"},
           "folder": "{storage}/game-hof",
+          "folderGroup": "gold",
+          "folderTitle": {"en": "Heroes V + Hammers of Fate (GOG)", "ru": "Герои V + Владыки Севера (GOG)"},
           "marker": "bina1/H5_Game.exe",
           "required": ["bina1/H5_Game.exe", "data/data.pak", "dataa1/a1-data.pak", "dataa1/a1p1-data.pak"],
+          "userFolders": {"UserMODs": {"en": "Mods (UserMODs)", "ru": "Моды (UserMODs)"}, "Maps": null},
           "needed": ["bin/", "bina1/", "data/", "dataa1/", "datals/", "music/", "video/", "profiles/", "maps/",
                      "usercampaigns/", "usermods/", "hwcursors/", "duelpresets/"]
         }
@@ -68,6 +90,13 @@
     },
     {
       "id": "vanilla",
+      "theme": {
+        "primaryFill": "#18382F",
+        "accentDark": "#AF954E",
+        "playGlow": "#E6C677",
+        "playParticles": "#E2F7CC",
+        "playParticleStyle": "magic"
+      },
       "title": "Heroes of Might and Magic V",
       "version": "1.6",
       "activity": "org.homm5.port.VanillaGameActivity",
@@ -77,9 +106,13 @@
         {
           "id": "game",
           "title": {"en": "Game files", "ru": "Файлы игры"},
-          "folder": "{storage}/game-vanilla",
+          "folder": "{storage}/game-hof",
+          "folderGroup": "gold",
+          "folderTitle": {"en": "Heroes V + Hammers of Fate (GOG)", "ru": "Герои V + Владыки Севера (GOG)"},
           "marker": "bin/H5_Game.exe",
           "required": ["bin/H5_Game.exe", "data/data.pak", "data/p3c-data.pak", "DataLS/p6-data.pak"],
+          "userFolders": {"UserMODs": {"en": "Mods (UserMODs)", "ru": "Моды (UserMODs)"},
+                          "Maps": null, "UserCampaigns": null, "DuelPresets": null},
           "needed": ["bin/", "bina1/", "data/", "dataa1/", "datals/", "music/", "video/", "profiles/", "maps/",
                      "usercampaigns/", "usermods/", "hwcursors/", "duelpresets/"]
         }
@@ -95,6 +128,10 @@
     ]
   },
   "options": [
+    {"key": "large_address_aware", "type": "bool", "default": "0", "defaultMinRamGiB": 5, "arm64Only": true,
+     "title": {"en": "4 GB address space", "ru": "Адресное пространство 4 ГБ"},
+     "hint": {"en": "Allows the 32-bit game to use addresses above 2 GB. Enabled by default with at least 5 GB RAM. Does not reserve 4 GB of physical RAM or fix memory leaks. Restart the game after changing this option.",
+              "ru": "Разрешает 32-битной игре использовать адреса выше 2 ГБ. По умолчанию включено при наличии хотя бы 5 ГБ ОЗУ. Не занимает сразу 4 ГБ ОЗУ и не устраняет утечки памяти. После изменения перезапустите игру."}},
     {"key": "new_creature_framework", "type": "bool", "default": "0", "only": ["toe"],
      "title": "Tribes of the East: New Creature Framework",
      "hint": {"en": "MMH5.5 patches: creature limit 999 for mods with new creatures. Only with such a mod installed: without its creature files the game does not start.",
@@ -118,8 +155,8 @@
   },
   "textures": {"backend": "org.homm5.port.TexconvBackend"},
   "hints": {
-    "gameFiles": {"en": "A ZIP of an installed game, or its installation folder — bin and data, and bina1/dataa1 for Hammers of Fate. Vanilla and Hammers of Fate may share a folder. Keep Tribes of the East separate.",
-                  "ru": "ZIP-архив установленной игры или папка установки — bin и data, для Hammers of Fate также bina1/dataa1. Vanilla и Hammers of Fate могут быть в общей папке. Повелителей Орды устанавливайте отдельно."},
+    "gameFiles": {"en": "GOG editions only. There are two game folders: Heroes V 1.6 + Hammers of Fate 2.1 together, and Tribes of the East 3.1 separately. Choose an installed GOG folder, its ZIP, or an offline setup EXE with all adjacent BIN files.",
+                  "ru": "Поддерживаются издания GOG. У игры только две папки: общая для Героев V 1.6 + Владык Севера 2.1 и отдельная для Повелителей Орды 3.1. Выберите установленную папку GOG, её ZIP или EXE офлайн-установщика со всеми соседними BIN."},
     "options": {"en": "Render scale, interface scale and camera sensitivity are in the game: Settings → Additional.",
                 "ru": "Масштаб рендера, интерфейса и чувствительность камеры — в самой игре: Настройки → Дополнительные."}
   }

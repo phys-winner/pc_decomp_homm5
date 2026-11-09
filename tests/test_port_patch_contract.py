@@ -3,6 +3,7 @@ import copy
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import unittest
@@ -80,6 +81,46 @@ class PatchContractTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "pinned implementation"):
             self.validate()
 
+    def test_large_address_feature_and_new_runtime_sources_fail_closed(self):
+        self.assertIn("large_address_aware", patches.REQUIRED_FEATURES)
+        patches.finalize_native_receipt("vanilla", self.library, self.root)
+        required = ["android/host/memory.c", "android/host/kernel32.c", "android/host/pe.c", "android/port.json"]
+        captured = required + ["android/host/script.c"]
+        for relative in captured:
+            path = self.root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"reviewed runtime fixture\n")
+            self.contract["sources"][relative] = patches.source_digest(path)
+        self.contract["features"]["large_address_aware"] = required
+        self.save_contract()
+        self.validate()
+        with self.assertRaisesRegex(ValueError, "receipt is stale"):
+            patches.validate_packaged_native("vanilla", self.library, self.root)
+        reviewed = copy.deepcopy(self.contract)
+        del self.contract["features"]["large_address_aware"]
+        self.save_contract()
+        with self.assertRaisesRegex(ValueError, "coverage"):
+            self.validate()
+        for relative in required:
+            with self.subTest(missing_pin=relative):
+                self.contract = copy.deepcopy(reviewed)
+                del self.contract["sources"][relative]
+                self.save_contract()
+                with self.assertRaisesRegex(ValueError, "pinned implementation"):
+                    self.validate()
+        self.contract = reviewed
+        self.save_contract()
+        for relative in captured:
+            with self.subTest(changed_source=relative):
+                path = self.root / relative
+                original = path.read_bytes()
+                path.write_bytes(original + b"changed\n")
+                with self.assertRaisesRegex(ValueError, "implementation changed"):
+                    self.validate()
+                path.write_bytes(original.replace(b"\n", b"\r\n"))
+                self.validate()
+                path.write_bytes(original)
+
     def test_changed_source_wrong_engine_or_incomplete_mapping_fails(self):
         self.validate()
         raw = self.source.read_bytes()
@@ -111,6 +152,17 @@ class PatchContractTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "receipt is stale"):
             patches.validate_packaged_native("vanilla", self.library, self.root)
 
+    def test_legacy_generated_validation_preserves_source_pin_map(self):
+        expected = self.contract["sources"]
+        returned = self.validate()
+        self.assertIsInstance(returned["sources"], dict)
+        self.assertEqual(returned["sources"], expected)
+        finalized = patches.finalize_native_receipt("vanilla", self.library, self.root)
+        serialized = json.loads(self.library.with_suffix(".patches.json").read_text(encoding="utf-8"))
+        for receipt in (finalized, serialized):
+            self.assertIsInstance(receipt["sources"], dict)
+            self.assertEqual(receipt["sources"], expected)
+
     def test_generated_patch_requires_its_exact_anchor(self):
         original = b"void sub_00405678(void) {\nold\n}\n"
         replacement = b"void sub_00405678(void) {\nnew\n}\n"
@@ -120,6 +172,27 @@ class PatchContractTest(unittest.TestCase):
         self.assertEqual(patches.adapt_generated_source(original + other, "game", "vanilla", self.root), replacement + other)
         with self.assertRaisesRegex(ValueError, "anchor changed"):
             patches.adapt_generated_source(original.replace(b"old", b"changed"), "game", "vanilla", self.root)
+
+    def test_toe_generated_seam_is_applied_and_validated_before_building(self):
+        contract = copy.deepcopy(self.contract)
+        contract.update(edition="toe", addresses={}, reference_addresses={},
+                        generated_patches=contract["generated_patches"][:1])
+        self.save("config/toe.patches.json", contract)
+        self.save("config/modules.json", json.loads((self.root / "config/vanilla.modules.json").read_text()))
+        for directory in ("input", "game-x86"):
+            shutil.copytree(self.root / "generated/vanilla" / directory,
+                            self.root / "generated" / directory)
+        source = self.root / "generated/game-x86/game.c"
+        original = source.read_bytes()
+        self.assertEqual(patches.validate_native_inputs("toe", self.root)["sources"], contract["sources"])
+        self.assertEqual(patches.adapt_generated_source(original, "game", "toe", self.root),
+                         original.replace(b"\nold", b"\nnew", 1))
+        for changed in (original.replace(b"old", b"changed"), original + original,
+                        original.replace(b"sub_00405678", b"sub_00408000")):
+            with self.subTest(changed=changed):
+                source.write_bytes(changed)
+                with self.assertRaisesRegex(ValueError, "generated hook"):
+                    patches.validate_native_inputs("toe", self.root)
 
     def test_each_texture_mount_metadata_and_alias_hook_is_required(self):
         original = copy.deepcopy(self.contract)

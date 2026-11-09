@@ -55,7 +55,7 @@ def override_payload(name, payload, edition):
 @unittest.skipUnless(LAUNCHER is not None, "the launcher base is required")
 class ApkPGORoutingTest(unittest.TestCase):
     @contextmanager
-    def fixture(self):
+    def fixture(self, gog=False):
         spec = importlib.util.spec_from_file_location("apk_pgo_fixture", ROOT / "tools/build_game_apk.py")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
@@ -80,6 +80,10 @@ class ApkPGORoutingTest(unittest.TestCase):
                 **{"build/dxvk/runtime/" + name: data for name, data in DXVK_RUNTIME.items()},
                 **{"build/dxvk/licenses/" + name: data for name, data in DXVK_LICENSES.items()},
             }
+            if not gog:
+                port_spec = json.loads(inputs["android/port.json"])
+                port_spec["app"].pop("gogInstaller", None)
+                inputs["android/port.json"] = json.dumps(port_spec).encode()
             for edition, row in EDITIONS.items():
                 if edition == "toe":
                     continue
@@ -123,6 +127,10 @@ class ApkPGORoutingTest(unittest.TestCase):
                     return subprocess.CompletedProcess(argv, 0, "0123abcd\n", "")
                 self.assertTrue(kwargs.get("check"))
                 native_calls.append([str(a) for a in argv])
+                if Path(argv[1]).name == "build_innoextract.py":
+                    library = root / "build/gog-android/libinnoextract.so"
+                    library.parent.mkdir(parents=True, exist_ok=True)
+                    library.write_bytes(b"gog-installer-reader")
                 if Path(argv[1]).name == "build_texconv.py":
                     library = root / "build/arm64-texconv/libtexconv.so"
                     library.parent.mkdir(parents=True, exist_ok=True)
@@ -287,6 +295,20 @@ class ApkPGORoutingTest(unittest.TestCase):
                 self.assertEqual((len(data), hashlib.sha256(data).hexdigest(), entry.file_size), (int(size), digest, int(packed)))
             return original
 
+    def test_gog_reader_is_built_and_packaged_only_when_enabled(self):
+        for enabled in (False, True):
+            with self.subTest(gog=enabled), self.fixture(gog=enabled) as (module, root, out, native, sdk, removed):
+                self.library(root, "arm64", b"ordinary-library")
+                self.invoke(module, ["--skip-native"])
+                reader_calls = [call for call in native if Path(call[1]).name == "build_innoextract.py"]
+                self.assertEqual(reader_calls, [[sys.executable, str(root / "tools/build_innoextract.py"),
+                                                "--jobs", "2"]] if enabled else [])
+                with zipfile.ZipFile(out / "heroes-v.apk") as apk:
+                    name = "lib/arm64-v8a/libinnoextract.so"
+                    self.assertEqual(name in apk.namelist(), enabled)
+                    if enabled:
+                        self.assertEqual(apk.read(name), b"gog-installer-reader")
+
     def test_resources_are_compiled_linked_and_java_is_utf8(self):
         with self.fixture() as (module, root, out, native, sdk, removed):
             resources = root / "android/app/res/values"
@@ -359,7 +381,7 @@ class ApkPGORoutingTest(unittest.TestCase):
             expected = {"assets/licenses/" + name: (ROOT / relative).read_bytes() for name, relative in module.LICENSE_FILES.items()}
             receipts = json.loads(files.pop("assets/edition-patches.json"))
             # The launcher base's assets: the specification as written and this build's identity.
-            self.assertEqual(json.loads(files.pop("assets/launcher/port.json")), json.loads((ROOT / "android/port.json").read_bytes()))
+            self.assertEqual(json.loads(files.pop("assets/launcher/port.json")), json.loads((root / "android/port.json").read_bytes()))
             build = json.loads(files.pop("assets/launcher/build.json"))
             manifest = (ROOT / "android/app/AndroidManifest.xml").read_text(encoding="utf-8")
             version = lambda name: manifest.split(f'android:{name}="', 1)[1].split('"', 1)[0]

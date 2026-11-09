@@ -28,6 +28,9 @@ static unsigned char memory[0x1100000];
 /* STATE */
 #define ARG(i) MEM32(g_esp+4+4*(i))
 typedef void (*void_fn)(void);
+typedef struct { unsigned unused; } void_regs;
+static void void_regs_save(void_regs *saved) {(void)saved;abort();}
+static void void_regs_load(const void_regs *saved) {(void)saved;abort();}
 static float observed_rod;
 static void sub_007CD0C0(void);
 static void fixture_call(uint32_t target);
@@ -134,6 +137,104 @@ int main(void){
 
 
 class CombatProjectionTest(unittest.TestCase):
+    def test_original_combined_context_with_nonidentity_camera(self):
+        import pefile
+        import port_patches
+        # Independently verified original projection/context/inverse/multiply
+        # methods. ARG0 holds a context, not a returned matrix.
+        original = {
+            'toe': ('007CD0C0','00CF7D90','00CF7C30','00CF7000','008EBF00','00B71E70','0041F800'),
+            'vanilla': ('00760E50','004ABC20','004ABAC0','004AAE60','004A9CC0','004ACCF0','004AC6E0'),
+            'hof': ('0075BAE0','009F3C00','009F3AA0','009F2E40','0049B420','0044BBF0','0044AFE0'),
+        }
+        core = (ROOT / 'android/host/core.c').read_text()
+        state = core[core.index('VOID_HIDDEN uint32_t g_eax'):core.index('#define VOID_ENTER_RING')]
+        runtime = prepare_windows_runtime.platform_header((ROOT / 'android/runtime/recomp_types.h').read_text())
+        compiler, _, _ = build_windows.compiler_environment()
+        flags = ['/clang:-Wno-unused-variable', '/clang:-Wno-unused-label', '/clang:-Wno-unused-function']
+        for edition, methods in original.items():
+            with self.subTest(edition=edition):
+                folder = ROOT / 'generated' / ('' if edition == 'toe' else edition)
+                bodies = {}
+                for path in (folder / 'game-x86').glob('game_*.c'):
+                    text = path.read_text()
+                    for address in methods[:6]:
+                        if 'void sub_' + address + '(' in text:
+                            bodies[address] = function(text, 'void sub_' + address + '(')
+                    if len(bodies) == 6:
+                        break
+                self.assertEqual(set(bodies), set(methods[:6]))
+                native = '\n'.join(bodies[address] for address in methods[:6]).replace('void sub_', 'static void sub_')
+                probe = PROBE[:PROBE.index('int main(void){')]
+                probe = probe.replace('if(target==0xCF7000){g_esp+=8;return;}', '''
+ if(target==0xCF7000){sub_00CF7000();return;}
+ if(target==0x8EBF00){sub_008EBF00();return;}
+ if(target==0xB71E70){sub_00B71E70();return;}
+ if(target==0x41F800){uint32_t n=MEM32(g_esp+4);for(uint32_t i=0;i<n;i++)MEM32(g_ecx+4*i)=g_edx;g_eax=g_edx;g_esp+=8;return;}
+''')
+                begin = probe.index(' if(target==0x7CD040){')
+                end = probe.index(' fprintf(stderr,"unexpected callback', begin)
+                probe = probe[:begin] + ''' if(target==0x7CD040){
+  observed_rod=MEMF(g_ecx+0x70);uint32_t out=MEM32(g_esp+4);
+  const float c=.7071067811865475244f;
+  const float world[16]={0,c,c,30, -1,0,0,76, 0,-c,c,32, 0,0,0,1};
+  memcpy(GPTR(out),world,64);g_eax=out;g_esp+=8;return;
+ }
+''' + probe[end:]
+                probe += r'''
+int main(void){
+ /* CONSTANTS */
+ const float h=614.4f,w=1365.6f;float perspective[16],actual[2],expected[2],wrong[2];
+ MEM32(0x102E0)=0x1000;MEMF(0x20078)=-1.57079632679f;
+ memset(GPTR(0x30000),0xA5,0x700);capture(w,h,54,42,0,1,perspective);
+ assert(MEM32(0x30400)==2);
+ float combined[16];memcpy(combined,GPTR(0x30100),64);
+ assert(deployment_projection.valid&&!memcmp(deployment_projection.matrix,combined,64));
+ point(deployment_projection.matrix,58,76,2,actual);point(perspective,58,76,2,wrong);
+ /* Independently apply inverse of known cameraWorld, then the original P. */
+ const float c=.7071067811865475244f,localY=c*(28+30),localZ=c*(28-30);
+ expected[0]=.5f;expected[1]=.5f*(1-(perspective[5]*localZ+perspective[6]*localY)/localY);
+ assert(fabsf(actual[0]-expected[0])<.00001f&&fabsf(actual[1]-expected[1])<.00001f);
+ assert(actual[1]>0&&actual[1]<1&&wrong[1]<-10);
+ printf("PASS original transform context depth2: camera inverse/basis/multiply, worldY%.3fpx versus wrong P-only %.3fpx; unchanged camera/RET8 ABI\n",actual[1]*h,wrong[1]*h);
+ return 0;
+}
+'''
+                mapping = dict(port_patches.load_contract(edition)['addresses'])
+                mapping.update(zip(original['toe'], methods))
+                if edition != 'toe':
+                    mapping.update(zip(('00CF60A0','00CF7AC0'),
+                                       ('004AA110','004AB950') if edition == 'vanilla'
+                                       else ('009F20F0','009F3930')))
+                    mapping.update({'000100A4':'0001009C',
+                                    '000102E0':'000102D8' if edition == 'vanilla' else '000102F0'})
+                # Transform fixture addresses before embedding the actual lifted bodies.
+                probe = re.sub(r'(0x|sub_)([0-9A-Fa-f]+)',
+                    lambda m: m[1] + mapping.get(f'{int(m[2],16):08X}',m[2]), probe)
+                image = pefile.PE(str(folder / 'input/H5_Game.exe'))
+                constants = []
+                for address in sorted(set(int(n,16) for n in re.findall(r'ADDR\(0x([0-9A-F]+)\)',native))):
+                    data = image.get_data(address-image.OPTIONAL_HEADER.ImageBase,8)
+                    self.assertEqual(len(data),8)
+                    constants.append(f'memcpy(GPTR(0x{address:X}),(unsigned char[]){{'+','.join(map(str,data))+'},8);')
+                image.close()
+                camera_path, _ = port_patches.adapt_host_source(ROOT / 'android/host/touch_camera.c',
+                    ROOT / 'build/tests' / ('projection-context-' + edition), edition)
+                camera = camera_path.read_text()
+                for header in ('host.h','input.h','touch.h'):
+                    camera = camera.replace(f'#include "{header}"\n','')
+                probe = probe.replace('/* STATE */',state).replace('/* NATIVE */',native)
+                probe = probe.replace('/* CONSTANTS */','\n'.join(constants))
+                compile_probe('projection-context-' + edition,probe,
+                    {'runtime.h':runtime,'camera_impl.h':camera},extra_flags=flags,compiler_override=compiler)
+                if edition == 'toe':
+                    old = 'memcpy(deployment_projection.matrix, GPTR(output + 0x100),'
+                    self.assertEqual(camera.count(old),1)
+                    wrong = camera.replace(old,'memcpy(deployment_projection.matrix, GPTR(output),')
+                    with self.assertRaises(AssertionError):
+                        compile_probe('projection-context-p-only-negative',probe,
+                            {'runtime.h':runtime,'camera_impl.h':wrong},extra_flags=flags,compiler_override=compiler)
+
     def test_legacy_original_projection_and_extra_hud(self):
         import pefile
         import port_patches

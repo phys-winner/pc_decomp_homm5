@@ -3,7 +3,7 @@
 Heroes of Might and Magic V, Hammers of Fate and Tribes of the East on Android ARM64 through static
 x86 recompilation, with native touch controls and a Direct3D 9 to OpenGL ES bridge.
 
-**Current version: 0.4-dev.** All three engines use ThinLTO and their own device-trained PGO profiles.
+**Current version: 0.5-dev.** All three engines use ThinLTO and their own device-trained PGO profiles.
 This is an experimental port for sideloading.
 The original game's menus, adventure maps, towns, battles, sound and saves run
 through a local Win32 compatibility host. The game and eight DLLs are translated
@@ -16,6 +16,9 @@ The build inputs are the Russian releases of the three games from
 [Heroes of Might and Magic 5: Bundle on GOG](https://www.gog.com/en/game/heroes_of_might_and_magic_5_bundle).
 Use your own installed copies. Other languages, executable revisions and mods
 are not verified build inputs.
+The APK uses two original-data folders: one complete GOG Gold installation for
+Heroes V 1.6 + Hammers of Fate 2.1, and a separate GOG Tribes of the East 3.1
+installation. It keeps three **Play** choices and separate edition settings and saves.
 
 | Edition ID | Original version | Input manifest | Native library |
 | --- | --- | --- | --- |
@@ -67,8 +70,15 @@ prepared DLLs. Town music uses the original resources and pause settings.
   original PC game with ToE 3.1. Peers use the same original game version and data;
   those checks do not establish LAN coverage for the other editions. Network
   discovery depends on the local Wi-Fi network.
-- The launcher accepts an installed game folder or a ZIP containing its files.
-  It can convert DXT textures to ASTC/ETC2 and skip the intro videos.
+- The launcher accepts an installed GOG game folder, a ZIP containing its files,
+  or an offline GOG setup EXE with its adjacent BIN files. Vanilla and HoF share
+  one Gold folder; ToE has its own folder. The launcher can convert DXT textures
+  to ASTC/ETC2 and skip the intro videos.
+- The launcher's **4 GB address space** option lets each 32-bit engine use
+  addresses above 2 GB. Its initial default is on when Android reports at least
+  5 GiB of physical RAM; a saved player choice takes priority. Changes apply at
+  the next game start. The port preserves the original EXE and implements this
+  in its runtime; the Windows `4gb_patch.exe` utility is not bundled or executed.
 - An optional launcher switch, off by default, applies the MMH5.5 New Creature
   Framework patches to ToE 3.1 (1000 creature records, IDs up to 999; random maps skip creatures
   without map objects): the `Original` group of
@@ -119,21 +129,27 @@ do not establish the same gain on other phones or in battles.
 
 ## Build requirements
 
-The shared launcher base must include the installation-conflict hook and the
-static `Launch.folder(context, distribution, part)` accessor. The checkout used
-for this build is already updated. For an older `../launcher`, apply
-`patches/launcher/installation-conflicts.patch` from this repository to that
-base before building.
+Use the current shared launcher base with grouped game folders, the GOG importer,
+the `PortHooks.installationProblem` and `PortHooks.verifyInstallation` hooks, and
+the static `Launch.folder(context, distribution, part)` accessor. The older
+`patches/launcher/installation-conflicts.patch` and
+`patches/launcher/dxt-status.patch` document the conflict/DXT changes; they do not
+add grouped folders or the GOG importer to an older base.
+For a newer base that already displays DXT support in folding section headings,
+use `patches/launcher/dxt-status-folded.patch` instead of `dxt-status.patch` to keep
+the support message bold, red when unsupported and green when supported.
 
 The current scripts build on **Windows x64**, without Gradle. Install:
 
-| Tool | Version |
+| Tool | Version / requirement |
 | --- | --- |
 | Python | 3.13 used during development |
 | Android SDK platform | `platforms;android-37.0` (the APK targets SDK 37) |
 | Android SDK Build Tools | `build-tools;36.1.0` |
 | Android NDK | `27.2.12479018` |
+| Android SDK CMake | `cmake;3.22.1`, including Ninja |
 | JDK | 17 or later; 24.0.1 used during development |
+| Git | In `PATH`, for fetching and verifying the pinned GOG reader sources |
 | UPX | 5.2.1, for unpacking the private copy of `fmod.dll` |
 
 The launcher is the shared port launcher base, a sibling project
@@ -150,6 +166,19 @@ Versions, origins and local adaptations are recorded in
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 Keep the supplied MojoShader snapshot: a plain upstream checkout omits the
 legacy shader fixes used by this port.
+
+The GOG reader uses pinned innoextract 1.9, liblzma 5.4.7, bzip2 1.0.8 and
+Boost 1.84.0. `tools/build_innoextract.py --fetch --jobs 2` fetches those sources
+into ignored `reference/` directories and builds the standalone ARM64/API 26
+reader at `build/gog-android/libinnoextract.so`, with its build receipt beside it.
+The first fetch needs network access; later builds reuse the pinned local sources.
+The APK builder also invokes this reader build when GOG import is enabled in
+`android/port.json`. A Stronghold checkout is not needed to build it.
+The reader's licenses are included in the APK and available in
+[`licenses/innoextract.txt`](licenses/innoextract.txt),
+[`licenses/boost.txt`](licenses/boost.txt),
+[`licenses/bzip2.txt`](licenses/bzip2.txt) and
+[`licenses/liblzma.txt`](licenses/liblzma.txt).
 
 ## Build the APK
 
@@ -170,9 +199,10 @@ notepad port.json
 ```
 
 Set `game_directory` to the ToE installation, and set
-`editions.vanilla.game_directory` and `editions.hof.game_directory` to the base
-game and Hammers of Fate installations. A combined base-game/HoF installation
-can supply both paths, for example `C:/Games/Heroes of Might and Magic V`.
+`editions.vanilla.game_directory` and `editions.hof.game_directory` to the same
+complete GOG Gold installation, for example `C:/Games/Heroes of Might and Magic V`.
+The build retains a field per engine because Vanilla reads `bin` and HoF reads
+`bina1` inside that one installation.
 Absolute paths and
 paths relative to the repository root are supported. Use forward slashes or
 escaped backslashes in JSON. The example uses `originals/tribes-of-the-east`.
@@ -186,6 +216,7 @@ The scripts resolve the SDK using `ANDROID_SDK`, `ANDROID_HOME`, then
 Generate the modules for all three editions, then compile and package:
 
 ```powershell
+python tools/build_innoextract.py --fetch --jobs 2
 foreach ($homm5Edition in @("toe", "vanilla", "hof")) {
     python -X utf8 tools/lift_homm5.py --edition $homm5Edition --upx $homm5Upx
     if ($LASTEXITCODE -ne 0) { throw "Generation failed: $homm5Edition" }
@@ -262,19 +293,56 @@ are excluded from Git.
 1. Install your APK on an ARM64 Android device and open **Heroes V**.
 2. Grant file access when the launcher asks: Android 11 and later need
    *All files access*; Android 8–10 ask for storage, and a permanently refused
-   permission opens the app's settings. Choose the game folder (a folder inside
-   or above it works too) or a ZIP. A folder holding several editions, for
-   example Vanilla + HoF, is assigned to each of them. A ZIP is unpacked once into
-   `/sdcard/HeroesV/game`, `game-hof` or `game-vanilla` (or a folder you pick),
-   keeping only the folders the game reads and checking every file; a combined
-   Vanilla + HoF archive is unpacked once for both. An offline GOG installer EXE
-   is not a game ZIP.
-3. Vanilla 1.6 requires `bin/`, `data/` and `DataLS/`, including
-   `DataLS/p6-data.pak`. HoF 2.1 requires `bina1/`, base `data/` and `dataa1/`;
-   it does not use the Vanilla `DataLS/` bank. ToE requires `bin/` and `data/`.
-4. Texture conversion is optional and can take time and additional storage space.
-5. Start the game from the launcher; keep a separate copy of your original game
+   permission opens the app's settings.
+3. Select the original game files under **Game files**. There are exactly two
+   data-folder choices: **Heroes V + Hammers of Fate (GOG)**, shared by Vanilla
+   and HoF, and **Tribes of the East**. Their defaults are
+   `/sdcard/HeroesV/game-hof/` and `/sdcard/HeroesV/game/`. Choose an installed
+   GOG folder (a folder inside or above it also works) or a ZIP of that installed
+   game. The Gold folder must contain both `bin/` and `bina1/`, base `data/`,
+   `DataLS/` including `p6-data.pak`, and `dataa1/` including `a1p1-data.pak`.
+   ToE uses its separate `bin/` and `data/`, including `a2p1-data.pak`.
+   An empty required EXE or data bank is reported as `0 B`.
+4. To import an offline installer, choose **Install from GOG…** and select its
+   setup EXE in device storage. Keep every matching BIN beside it; a single EXE
+   URI from another app does not supply access to its sibling BIN files. This
+   action uses the built-in file browser and All files access. The confirmation
+   names the detected package and its destination. Use its other-folder button
+   to choose an empty destination directly, or a nonempty parent in which a new
+   game folder will be created. The original EXE/BIN pair is kept. GOG files are
+   read as data by the bundled reader; the Windows installer is never executed.
+   Gold is unpacked once and supplies both Vanilla and HoF.
+5. GOG extraction checks payload checksums and the required original EXE/Granny
+   sizes and SHA-256 values before replacing a destination. It uses a temporary
+   full copy, so enough free space is needed while the old installation remains
+   present. Cancellation or failed validation removes that temporary copy and
+   keeps the previous destination. Unsupported original-image diagnostics give
+   the expected edition/version, size and SHA-256 and the found size and SHA-256.
+   Folder selection and game startup also verify the required original images.
+6. Texture conversion is optional and can take time and additional storage space.
+7. Start the game from the launcher; keep a separate copy of your original game
    files.
+
+Folder buttons remain available when the game is **Ready to play**. Changing
+the Gold folder through either legacy edition changes that one shared choice;
+the ToE folder is kept. Choosing a folder does not move or delete its files,
+and the choice survives restarting the app. If a device's system folder picker
+is unavailable or unsuitable, enable **Always use the built-in file browser**
+under **About**.
+
+An update preserves an earlier common Vanilla/HoF location. If the two old
+choices point to different locations, the launcher asks for one complete Gold
+installation and displays both old paths. Choose it explicitly; the old
+directories, their files and the historical choices are kept. Mixed Gold/ToE
+files or overlapping Gold/ToE roots are refused.
+
+The GOG importer and folder checks were physically exercised with
+`setup_heroes_of_might_and_magic_v_2.1_v2_(russian)_(28567).exe` and its matching
+`-1.bin` on the test tablet, Android 11/API 30. This imported 378 game files and checked
+both Gold editions' original EXE/Granny hashes. The same-size corrupt-payload,
+missing/truncated BIN, cancellation, folder migration and restart cases were
+also checked. Verified installer coverage is limited to this Russian Gold pair;
+Android 16, other localizations and a ToE installer import remain untested.
 
 The launcher shows a card per edition with **Play**, or *Return to the game*
 while it runs. Options: skip the opening videos (per edition, on by default),
@@ -294,14 +362,21 @@ original confirmation buttons.
 
 The application ID is `org.homm5.port`.
 
-| Edition | Developer resource copy | Prepared PE images | Settings, profiles and saves |
-| --- | --- | --- | --- |
-| ToE | `/sdcard/HeroesV/game/` | `/sdcard/HeroesV/lifted/` | `/sdcard/HeroesV/userdata/` |
-| Vanilla | `/sdcard/HeroesV/game-vanilla/` | `/sdcard/HeroesV/lifted-vanilla/` | `/sdcard/HeroesV/userdata-vanilla/` |
-| HoF | `/sdcard/HeroesV/game-hof/` | `/sdcard/HeroesV/lifted-hof/` | `/sdcard/HeroesV/userdata-hof/` |
+| GOG package | Default launcher data folder | Play choices |
+| --- | --- | --- |
+| Heroes V + Hammers of Fate (Gold) | `/sdcard/HeroesV/game-hof/` | Vanilla 1.6 and HoF 2.1 |
+| Tribes of the East | `/sdcard/HeroesV/game/` | ToE 3.1 |
 
-The launcher can also use another selected resource directory. Its writable
-folders remain under `/sdcard/HeroesV/`, as listed above.
+| Edition | Settings, profiles and saves |
+| --- | --- |
+| ToE | `/sdcard/HeroesV/userdata/` |
+| Vanilla | `/sdcard/HeroesV/userdata-vanilla/` |
+| HoF | `/sdcard/HeroesV/userdata-hof/` |
+
+Either of the two data folders can be changed. Writable edition folders stay
+under `/sdcard/HeroesV/`, as listed above. The APK keeps its prepared DLLs in
+private app storage; the standalone developer tools below print their own
+edition-specific data/image paths and do not set the APK launcher's choices.
 
 Optional installation through ADB:
 
@@ -408,12 +483,13 @@ All three editions include the console switch, separate
 OpenGL ES scene/UI filters and the FSR sharpness slider. Each edition keeps its
 own profile settings. All three editions keep the original battle camera distance and aim,
 with the vertical coverage of its 16:9 PC view on wider displays, including attack
-close-ups. Above 100% UI scale, deployment shifts the army above the reserve bar
-without zooming out; the battle overview compensates only for the extra area
-occupied by the enlarged HUD. Native attack close-ups retain their own framing.
+close-ups. Above 100% UI scale, deployment keeps the entire available placement
+grid above the reserve bar without zooming out; the battle overview compensates
+only for the extra area occupied by the enlarged HUD. Native attack close-ups
+retain their own framing.
 The **Вмещать поле боя** switch is removed in all three editions; its old saved
 variable remains registered for profile compatibility and no longer changes the camera.
-Vanilla and HoF may share an installation; keep ToE separate:
+Vanilla and HoF use one shared GOG Gold installation; ToE stays separate:
 the launcher warns about conflicting paths and mixed Vanilla/ToE archives and
 refuses incompatible import destinations before replacing files.
 
@@ -421,6 +497,13 @@ The interface scale is an upper limit: a large panel temporarily uses
 the largest scale at which it fits on screen. Closing it restores the requested
 scale. This also applies to adventure dialogs such as level-up; wrapped list
 rows grow to keep their text from overlapping the next row.
+Cutscenes, dialogue scenes, video screens and loading illustrations temporarily
+use the original 100% interface scale, then restore the chosen game scale. This
+keeps loading artwork from starting cropped before the screen's adaptive layout
+fits it. Original illustrations keep their own proportions, including side margins
+on wider screens. Vanilla and HoF dialogue
+cameras also preserve the original vertical field of view on wide displays by
+showing more at the sides; ToE keeps its existing wide-screen camera conversion.
 
 ## LAN over Tailscale or another VPN (experimental)
 
@@ -467,17 +550,43 @@ send `homm5.1.log` (the session that crashed) together with `homm5.log`.
 
 ## Versions and local release files
 
-The current version is `0.4-dev` / code `8`. Earlier development builds used
-`0.1-dev`, `0.2-dev`, `0.3-dev`, `0.3.1-dev` and `0.3.2-dev`. The version is stored in
+The current version is `0.5-dev` / code `9`. Earlier development builds used
+`0.1-dev`, `0.2-dev`, `0.3-dev`, `0.3.1-dev`, `0.3.2-dev` and `0.4-dev`. The version is stored in
 `android/app/AndroidManifest.xml`; increase `android:versionCode` for every
 subsequent published build. Version `0.3-dev` uses code `5` (the replacement
 build supersedes the earlier code `4` APK); `0.3.1-dev` uses code `6`, and
-`0.3.2-dev` uses code `7`.
+`0.3.2-dev` uses code `7`, and `0.4-dev` uses code `8`.
 
-Local release copies use `heroes-v-0.4-dev-<sha256-prefix>.apk`, where the suffix
+Local release copies use `heroes-v-0.5-dev-<sha256-prefix>.apk`, where the suffix
 is the first eight characters of the APK's SHA-256, with a companion `.sha256`
 file. The `pub/` directory is ignored. Building and naming an APK does not
 automatically publish it or create a Git tag.
+
+## Changes in 0.5-dev
+
+Changes since 0.4-dev:
+
+- Import offline GOG EXE/BIN installers without executing Windows programs, with
+  checksum verification, cancellation and preservation of the previous installation.
+  Create `.nomedia` before extraction to keep game media out of Android galleries.
+- Use one shared Gold data folder for Heroes V 1.6 and Hammers of Fate 2.1,
+  plus a separate Tribes of the East 3.1 folder. Preserve edition saves/settings,
+  migrate existing choices and expose UserMODs paths and content directories.
+- Ask on each launch before using unsupported original-image sizes or hashes;
+  missing, unreadable, empty or malformed inputs remain hard errors.
+- Add the optional 4 GB guest address space, with a RAM-based initial default,
+  and fix runtime allocation, thread/TLS, sound-interface and sampler lifetimes.
+- Decode original DXT and converted CPU textures for spellbook/UI images in all
+  three editions; correct legacy widescreen dialogue cameras and scaled loading,
+  video and cutscene screens. Keep the deployment grid above the enlarged HUD.
+- Seed the original random generator with OS entropy at initial construction,
+  fixing repeated random duel heroes in all three editions while preserving
+  explicit seeds and restored/network state.
+- Smooth the launcher-to-game window transition and give the three Play buttons
+  distinct magic, snow and ember particles with independent initial layouts.
+- Keep optional native replacement groups disabled by default; no new universal
+  FPS improvement or full campaign/device compatibility is claimed.
+- Set Android version to `0.5-dev` / code `9`.
 
 ## Changes in 0.3.2-dev
 

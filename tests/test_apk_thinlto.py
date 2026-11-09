@@ -27,7 +27,7 @@ class ProposalLoader(importlib.abc.Loader):
 
 class ThinLtoRoutingTest(pgo_tests.ApkPGORoutingTest):
     @contextmanager
-    def fixture(self):
+    def fixture(self, gog=False):
         original_spec = importlib.util.spec_from_file_location
 
         def proposed_spec(name, location, *args, **kwargs):
@@ -36,7 +36,7 @@ class ThinLtoRoutingTest(pgo_tests.ApkPGORoutingTest):
             return original_spec(name, location, *args, **kwargs)
 
         with patch.object(pgo_tests.importlib.util, "spec_from_file_location", side_effect=proposed_spec):
-            with super().fixture() as values:
+            with super().fixture(gog=gog) as values:
                 yield values
 
     def test_thinlto_native_and_skip_select_the_same_distinct_library(self):

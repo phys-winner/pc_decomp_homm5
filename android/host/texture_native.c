@@ -11,12 +11,12 @@
  * (d3d9_resource.c: texture_set_storage via d3d_native_take).
  *
  * NGScene::CSWTextureData (0x00CC5F50) needs CPU pixels for the spellbook.
- * Decode converted DDSs with the existing converter, then let its original
+ * Decode compressed DDSs with the existing converter, then let its original
  * uncompressed loader build the CPU image. Both bodies are NATIVE_OVERRIDES
  * of tools/build_android.py, so direct calls reach them too. */
 #include "host.h"
 #include "d3d9_internal.h"
-#if defined(__ANDROID__) && !defined(HOMM5_LEGACY_UI)
+#if defined(__ANDROID__)
 #include <dlfcn.h>
 #endif
 
@@ -65,34 +65,41 @@ void sub_00A9CDC0(void)
     sub_00A9CDC0_lifted();
 }
 
-#if defined(__ANDROID__) && !defined(HOMM5_LEGACY_UI)
+#if defined(__ANDROID__)
 /* A temporary BGRA DDS keeps the original loader's mip allocation and ownership. */
 static uint32_t software_dds(uint32_t source, uint32_t size, uint32_t *bytes, uint32_t *consumed)
 {
     if (size < 128 || !void_vm_readable(source, size) || MEM32(source) != FOURCC('D', 'D', 'S', ' ') ||
-        MEM32(source + 4) != 124 || MEM32(source + 36) != FOURCC('H', '5', 'T', 'C') ||
-        MEM32(source + 40) != 2 || !(MEM32(source + 80) & 4u) ||
-        !d3d_native_find(MEM32(source + 84)) || !dxt_code(MEM32(source + 44)) ||
+        MEM32(source + 4) != 124 || !(MEM32(source + 80) & 4u) ||
         (MEM32(source + 112) & (0x200000u | 0x200u))) return 0;
+    int converted = MEM32(source + 36) == FOURCC('H', '5', 'T', 'C');
+    uint32_t original = MEM32(source + (converted ? 44 : 84));
+    if (!dxt_code(original) || (converted && (MEM32(source + 40) != 2 ||
+        !d3d_native_find(MEM32(source + 84))))) return 0;
     uint32_t width = MEM32(source + 16), height = MEM32(source + 12);
     uint32_t levels = MEM32(source + 28) ? MEM32(source + 28) : 1;
     if (!width || !height || width > 16384 || height > 16384 || levels > 15 ||
-        levels != MEM32(source + 48)) return 0;
+        (converted && levels != MEM32(source + 48))) return 0;
     uint64_t decoded = 128, packed = 128;
     uint32_t w = width, h = height;
     for (uint32_t l = 0; l < levels; ++l) {
         decoded += (uint64_t)w * h * 4;
-        packed += (uint64_t)((w + 3) / 4) * ((h + 3) / 4) * (MEM32(source + 44) == FOURCC('D', 'X', 'T', '1') ? 8u : 16u);
+        packed += (uint64_t)((w + 3) / 4) * ((h + 3) / 4) * (original == FOURCC('D', 'X', 'T', '1') ? 8u : 16u);
         if (w == 1 && h == 1 && l + 1 < levels) return 0;
         w = w > 1 ? w / 2 : 1; h = h > 1 ? h / 2 : 1;
     }
     if (packed > size || decoded > UINT32_MAX) return 0;
     typedef int (*decode_fn)(const uint8_t *, uint64_t, uint32_t, uint8_t *);
+    typedef int (*dxt_fn)(uint32_t, const uint8_t *, uint32_t, uint32_t, uint8_t *);
     static decode_fn decode;
-    if (!decode) {
+    static dxt_fn decode_dxt;
+    if (converted ? !decode : !decode_dxt) {
         void *library = dlopen("libtexconv.so", RTLD_NOW | RTLD_LOCAL);
-        if (library) decode = (decode_fn)dlsym(library, "texconv_decode_converted");
-        if (!decode) { void_log("[texture] cannot load converted CPU texture decoder"); return 0; }
+        if (library) {
+            decode = (decode_fn)dlsym(library, "texconv_decode_converted");
+            decode_dxt = (dxt_fn)dlsym(library, "texconv_decode_dxt");
+        }
+        if (converted ? !decode : !decode_dxt) { void_log("[texture] cannot load CPU texture decoder"); return 0; }
     }
     uint32_t data = void_galloc((uint32_t)decoded);
     if (!data) return 0;
@@ -103,15 +110,18 @@ static uint32_t software_dds(uint32_t source, uint32_t size, uint32_t *bytes, ui
     MEM32(data + 80) = 0x41; MEM32(data + 84) = 0; MEM32(data + 88) = 32;
     MEM32(data + 92) = 0x00FF0000; MEM32(data + 96) = 0x0000FF00;
     MEM32(data + 100) = 0x000000FF; MEM32(data + 104) = 0xFF000000;
-    uint32_t at = 128;
+    uint32_t at = 128, offset = 128;
     w = width; h = height;
     for (uint32_t l = 0; l < levels; ++l) {
         uint8_t *pixels = (uint8_t *)GPTR(data + at);
-        if (decode((const uint8_t *)GPTR(source), size, l, pixels)) { void_gfree(data); return 0; }
+        int failed = converted ? decode((const uint8_t *)GPTR(source), size, l, pixels)
+            : decode_dxt(original, (const uint8_t *)GPTR(source + offset), w, h, pixels);
+        if (failed) { void_gfree(data); return 0; }
         for (uint32_t i = 0; i < w * h; ++i) {
             uint8_t red = pixels[i * 4]; pixels[i * 4] = pixels[i * 4 + 2]; pixels[i * 4 + 2] = red;
         }
         at += w * h * 4;
+        offset += ((w + 3) / 4) * ((h + 3) / 4) * (original == FOURCC('D', 'X', 'T', '1') ? 8u : 16u);
         w = w > 1 ? w / 2 : 1; h = h > 1 ? h / 2 : 1;
     }
     *bytes = (uint32_t)decoded; *consumed = (uint32_t)packed;
@@ -123,7 +133,7 @@ static uint32_t software_dds(uint32_t source, uint32_t size, uint32_t *bytes, ui
 void sub_00CC5F50(void)
 {
     pending.native = NULL;
-#if defined(__ANDROID__) && !defined(HOMM5_LEGACY_UI)
+#if defined(__ANDROID__)
     uint32_t loader = g_ecx, io = 0, data = 0, bytes = 0, consumed = 0, saved[4];
     if (void_vm_readable(loader, 0x40)) {
         uint32_t stream = MEM32(loader + 0x3C);
@@ -139,7 +149,7 @@ void sub_00CC5F50(void)
     }
 #endif
     sub_00CC5F50_lifted();
-#if defined(__ANDROID__) && !defined(HOMM5_LEGACY_UI)
+#if defined(__ANDROID__)
     if (data) {
         memcpy(GPTR(io + 4), saved, sizeof saved);
         MEM32(io + 16) = saved[0] + consumed;

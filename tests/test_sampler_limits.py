@@ -39,6 +39,9 @@ static uint32_t caps[76];
 #define MEM8(a) (((uint8_t *)caps)[a])
 #define MEM32(a) (caps[(a)/4])
 static int supported, queries, parameters;
+static GLuint unit_sampler[32];
+static unsigned char sampler_live[10000];
+static unsigned sampler_alive, sampler_created;
 static float driver_max, parameter;
 static const unsigned char *glGetStringi(GLenum name, GLuint i) {
     assert(name==GL_EXTENSIONS && i<2);
@@ -50,7 +53,15 @@ static void glGetIntegerv(GLenum name, GLint *value) { assert(name==GL_NUM_EXTEN
 static void glGetFloatv(GLenum name, GLfloat *value) {
     assert(supported && name==GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT); ++queries; *value=driver_max;
 }
-static void glGenSamplers(GLint n, GLuint *sampler) { static GLuint next; assert(n==1); *sampler=++next; }
+static void glGenSamplers(GLint n, GLuint *sampler) {
+    assert(n==1 && sampler_created+1<sizeof sampler_live);
+    *sampler=++sampler_created;sampler_live[*sampler]=1;++sampler_alive;
+}
+static void glDeleteSamplers(GLint n, const GLuint *sampler) {
+    assert(n==1 && *sampler && sampler_live[*sampler]);
+    for(unsigned i=0;i<32;++i)assert(unit_sampler[i]!=*sampler);
+    sampler_live[*sampler]=0;--sampler_alive;
+}
 static void glSamplerParameteri(GLuint sampler, GLenum name, GLint value) { assert(sampler && name && value); }
 static void glSamplerParameterfv(GLuint sampler, GLenum name, const GLfloat *value) {
     assert(sampler && name==GL_TEXTURE_BORDER_COLOR_EXT && value);
@@ -63,7 +74,10 @@ static void glSamplerParameterf(GLuint sampler, GLenum name, GLfloat value) {
 }
 #include "production.h"
 static void reset_driver(int support, float maximum) {
+    memset(unit_sampler,0,sizeof unit_sampler);
+    for(int i=0;i<sampler_count;++i)glDeleteSamplers(1,&sampler_cache[i].sampler);
     supported=support; driver_max=maximum; queries=parameters=sampler_count=0;
+    sampler_next=0;
     memset(&d3d_gl_limits,0,sizeof d3d_gl_limits); init_limits(); fill_caps(0);
 }
 static void sample(uint32_t min, uint32_t mag, uint32_t requested, int no_filter) {
@@ -84,7 +98,19 @@ int main(void) {
     sample(3,3,16,1); assert(parameters==6 && parameter==1);
     sample(3,3,16,1); assert(parameters==6);
     reset_driver(1,32); sample(3,3,32,0); assert(parameter==32 && MEM32(108)==16);
-    puts("PASS optional anisotropy: exact extension, no unsupported enum/query, driver clamp, linear fallback, reuse and caps");
+    reset_driver(1,4);
+    uint32_t ss[14]={0};ss[1]=ss[2]=ss[3]=ss[5]=ss[6]=1;
+    for(unsigned i=0;i<4096;++i) {
+        ss[4]=i;GLuint id=sampler_for(ss,0,1,0);
+        if(i<32)unit_sampler[i]=id;
+        for(unsigned unit=0;unit<32 && unit<=i;++unit)assert(sampler_live[unit_sampler[unit]]);
+        assert(sampler_alive<=512 && sampler_count<=512);
+        unsigned before=sampler_created;
+        assert(sampler_for(ss,0,1,0)==id && sampler_created==before);
+    }
+    assert(sampler_alive==512);
+    reset_driver(0,1);assert(!sampler_alive);
+    puts("PASS samplers: optional anisotropy/caps; 4096 states stay within 512 live objects, bound units survive eviction, overflow reuse and complete cleanup");
     return 0;
 }
 ''', {"production.h": production}, extra_flags=("/O2",))

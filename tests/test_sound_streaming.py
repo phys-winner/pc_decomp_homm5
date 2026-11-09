@@ -692,7 +692,10 @@ int main(void) {
             "static void audio_close_stream(", "static void audio_close_failed(",
             "static uint32_t audio_write_frames(", "uint32_t void_audio_output("))
         harness = AAUDIO_HARNESS[:AAUDIO_HARNESS.index("int main(void) {")] + AAUDIO_WANTED_MAIN
-        compile_probe("aaudio-queue-shortfall", harness, {"android_audio.h": globals_ + functions})
+        for legacy in (False, True):
+            compile_probe("aaudio-queue-shortfall" + ("-legacy" if legacy else ""),
+                          ("#define HOMM5_LEGACY_UI 1\n" if legacy else "") + harness,
+                          {"android_audio.h": globals_ + functions})
 
     def test_aaudio_partial_writes_and_lifecycle(self):
         source = (ROOT / "android/host/android_main.c").read_text(encoding="utf8")

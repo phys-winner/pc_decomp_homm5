@@ -19,7 +19,8 @@
  *   quit                  end the process (writing the profile first)
  * '#' starts a comment.
  *
- * $VOID_INPUT_LIVE names a file that is read as it grows, for exploring a
+ * $VOID_INPUT_LIVE names a file (default <data>/input.live, if present at
+ * startup) that is read as it grows, for exploring a
  * running game: each new line is "<action> [args]" without a time and runs
  * at once; "sleep <seconds>" paces a batch (adb shell "echo 'down 57' >> …"). */
 #include "host.h"
@@ -233,6 +234,11 @@ static void start_detached(void *(*fn)(void *), void *arg)
 void void_input_script_start(void)
 {
     const char *live = getenv("VOID_INPUT_LIVE");
+    char live_path[1024];
+    if (!live) {
+        int n = snprintf(live_path, sizeof live_path, "%s/input.live", void_data_dir());
+        if (n >= 0 && (size_t)n < sizeof live_path && !access(live_path, F_OK)) live = live_path;
+    }
     if (live && *live) {
         void_log("[live] reading commands from %s", live);
         start_detached(live_thread, strdup(live));

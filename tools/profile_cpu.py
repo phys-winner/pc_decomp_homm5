@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import zipfile
+from editions import EDITION_IDS, edition_spec
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = "org.homm5.port"
@@ -17,8 +18,14 @@ SDK = Path(os.environ.get("ANDROID_SDK_ROOT", Path.home() / "AppData/Local/Andro
 NDK = Path(os.environ.get("ANDROID_NDK_HOME", SDK / "ndk/27.2.12479018"))
 
 
-def validate_target(cmdline, status, uid):
-    if cmdline.split(b"\0", 1)[0] != PACKAGE.encode():
+def process_name(edition="toe"):
+    if edition not in EDITION_IDS:
+        raise ValueError("Unknown Heroes V edition: " + str(edition))
+    return PACKAGE + (":" + edition if edition != "toe" else "")
+
+
+def validate_target(cmdline, status, uid, edition="toe"):
+    if cmdline.split(b"\0", 1)[0] != process_name(edition).encode():
         raise ValueError("PID is not the Heroes V application process")
     ids = next((line.split()[1:] for line in status.splitlines() if line.startswith("Uid:")), [])
     if len(ids) != 4 or any(int(value) != uid for value in ids):
@@ -34,6 +41,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pid", type=int, required=True, help="Already running Heroes V PID supplied by the caller")
     parser.add_argument("--serial", required=True, help="Explicit ADB device serial")
+    parser.add_argument("--edition", choices=EDITION_IDS, default="toe")
     parser.add_argument("--duration", type=float, default=15)
     parser.add_argument("--event", default="cpu-cycles:u", help="Simpleperf event; cpu-cycles also samples kernel time")
     parser.add_argument("--receipt", type=Path, default=ROOT / "build/cpu-profile/receipt.json", help="Exact installed APK receipt, including archived comparison builds")
@@ -55,10 +63,13 @@ def main():
 
     uid = int(device("run-as", PACKAGE, "id", "-u").strip())
     validate_target(device("run-as", PACKAGE, "cat", f"/proc/{args.pid}/cmdline", binary=True),
-                    device("run-as", PACKAGE, "cat", f"/proc/{args.pid}/status"), uid)
+                    device("run-as", PACKAGE, "cat", f"/proc/{args.pid}/status"), uid, args.edition)
     # Local symbol tables must belong to the APK actually installed, including builds without ELF build IDs.
     receipt = json.loads(args.receipt.read_text())
     library = Path(receipt["library"])
+    library_name = "lib" + edition_spec(args.edition)["library"] + ".so"
+    if library.name != library_name or receipt.get("edition", args.edition) != args.edition:
+        raise RuntimeError("The receipt does not name the selected edition's engine")
     if not library.is_file():
         raise RuntimeError("The exact library named by the APK receipt is unavailable")
     apk_path = device("pm", "path", PACKAGE).strip().splitlines()
@@ -84,6 +95,7 @@ def main():
                     "-p", str(args.pid), "-e", args.event, "-f", "1000",
                     "--call-graph", "fp", "--duration", str(args.duration), "-o", remote]
     metadata = {"status": "RECORDING", "pid": args.pid, "uid": uid, "serial": args.serial,
+                "edition": args.edition, "process_name": process_name(args.edition),
                 "event": args.event, "frequency": 1000, "callgraph": "fp",
                 "duration_seconds": args.duration, "record_command": record,
                 "installed_apk_sha256": installed_sha,
@@ -104,8 +116,8 @@ def main():
                 if member.startswith("lib/arm64-v8a/") and member.endswith(".so"):
                     with archive.open(member) as source, (symbols / Path(member).name).open("wb") as target:
                         shutil.copyfileobj(source, target)
-        shutil.copy2(library, symbols / "libhomm5.so")
-        if digest(symbols / "libhomm5.so") != receipt["library_sha256"]:
+        shutil.copy2(library, symbols / library_name)
+        if digest(symbols / library_name) != receipt["library_sha256"]:
             raise RuntimeError("Local libhomm5.so changed while taking the symbol snapshot")
         metadata["symbol_snapshots"] = {path.name: digest(path) for path in sorted(symbols.glob("*.so"))}
         result = subprocess.run(record, capture_output=True, text=True, encoding="utf-8", errors="replace")

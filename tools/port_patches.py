@@ -11,6 +11,8 @@ from editions import ROOT, edition_spec, generated_root, module_manifest
 REQUIRED_FEATURES = (
     "army", "touch", "camera", "cursor", "combobox", "ui_scale", "render_scale",
     "cutscene_horplus", "shadows", "alpha_test", "textures", "audio", "lan", "profile", "telemetry_disabled", "widescreen_ui",
+    "large_address_aware",
+    "native_algorithms",
 )
 
 TEXTURE_GENERATED_HOOKS = {
@@ -151,28 +153,28 @@ def validate_native_inputs(edition, root=ROOT):
                          ("/zz_port_textures_v2.pak", "0x40000000u", "0x80000000u"))]
             if len(hooks) != count:
                 raise ValueError(edition + ": mandatory texture hooks are missing: " + function)
-        from build_android import guard_fpu_memory, round_x87_precision
-        for module in {patch["module"] for patch in data["generated_patches"]}:
-            seams = [patch for patch in data["generated_patches"] if patch["module"] == module]
-            declarations = re.compile(rb"(?m)^void (" + b"|".join(
-                re.escape(name.encode()) for name in sorted({patch["function"] for patch in seams})) + rb")\(void\) \{")
-            seen = [0] * len(seams)
-            sources = reports.get(module, {}).get("sources", ())
-            for name in sources:
-                text = (generated_root(edition, root) / (module + "-x86") / name).read_bytes()
-                for match in declarations.finditer(text):
-                    end = re.search(rb"\n\}\r?\n", text[match.start():])
-                    if end is None:
-                        raise ValueError(edition + ": generated function boundary changed: " + match[1].decode())
-                    body = round_x87_precision(guard_fpu_memory(text[match.start():match.start() + end.end()]))
-                    for index, patch in enumerate(seams):
-                        if patch["function"].encode() != match[1]:
-                            continue
-                        if body.count(patch["old"].encode()) != 1:
-                            raise ValueError(edition + ": generated hook anchor changed: " + patch["function"])
-                        seen[index] += 1
-            if any(count != 1 for count in seen):
-                raise ValueError(edition + ": required generated hook is missing or duplicated: " + module)
+    from build_android import guard_fpu_memory, round_x87_precision
+    for module in {patch["module"] for patch in data["generated_patches"]}:
+        seams = [patch for patch in data["generated_patches"] if patch["module"] == module]
+        declarations = re.compile(rb"(?m)^void (" + b"|".join(
+            re.escape(name.encode()) for name in sorted({patch["function"] for patch in seams})) + rb")\(void\) \{")
+        seen = [0] * len(seams)
+        generated_sources = reports.get(module, {}).get("sources", ())
+        for name in generated_sources:
+            text = (generated_root(edition, root) / (module + "-x86") / name).read_bytes()
+            for match in declarations.finditer(text):
+                end = re.search(rb"\n\}\r?\n", text[match.start():])
+                if end is None:
+                    raise ValueError(edition + ": generated function boundary changed: " + match[1].decode())
+                body = round_x87_precision(guard_fpu_memory(text[match.start():match.start() + end.end()]))
+                for index, patch in enumerate(seams):
+                    if patch["function"].encode() != match[1]:
+                        continue
+                    if body.count(patch["old"].encode()) != 1:
+                        raise ValueError(edition + ": generated hook anchor changed: " + patch["function"])
+                    seen[index] += 1
+        if any(count != 1 for count in seen):
+            raise ValueError(edition + ": required generated hook is missing or duplicated: " + module)
     return dict(edition=edition, features=list(REQUIRED_FEATURES), engine_sha256=engine["sha256"],
                 contract_sha256=digest(contract_path(edition, root)), sources=sources)
 
@@ -210,8 +212,6 @@ def adapt_host_source(source, out, edition, root=ROOT):
 
 
 def adapt_generated_source(text, module, edition, root=ROOT):
-    if edition == "toe":
-        return text
     for patch in load_contract(edition, root)["generated_patches"]:
         declaration = ("void " + patch["function"] + "(void) {").encode()
         if patch["module"] != module or declaration not in text:

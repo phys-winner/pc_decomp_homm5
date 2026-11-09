@@ -5,6 +5,7 @@
  * GetProcAddress resolving to host shims. */
 #define _GNU_SOURCE
 #include "host.h"
+extern uint32_t void_vm_user_top(void);
 #include <ctype.h>
 #include <errno.h>
 #include <strings.h>
@@ -284,6 +285,10 @@ static int map_image(void_module *m, const char *path, uint32_t expected_base)
         }
     }
     free(file);
+    if (m->kind == MOD_LIFTED_EXE) {
+        uint32_t flags = image_base + lfanew + 0x16;
+        MEM16(flags) = (uint16_t)((MEM16(flags) & ~0x20u) | (void_vm_user_top() > 0x80000000u ? 0x20u : 0));
+    }
     m->base = image_base;
     m->size = image_size;
     m->entry = entry_rva ? image_base + entry_rva : 0;

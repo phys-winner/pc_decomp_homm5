@@ -1,4 +1,4 @@
-/* Legacy CutScene cameras need Hor+; DialogScene already applies it itself. */
+/* Animated CutScene cameras need Hor+; only ToE also adjusts DialogScene controllers. */
 #include "host.h"
 #include <math.h>
 
@@ -28,7 +28,11 @@ uint32_t void_cutscene_fov(uint32_t camera, uint32_t viewport, uint32_t fov, uin
     if (base && void_vm_readable(base, 4)) {
         const uint32_t args[] = {base, 0, 0x00F272C0u, 0x00F323A8u, 0};
         uint32_t screen = void_call_guest(0x00D119FCu, 5, args, 0);
-        if (cutscene_read32(screen) == 0x00E3261Cu && cutscene_read32(screen + 0x18C) == camera) {
+        if ((cutscene_read32(screen) == 0x00E3261Cu && cutscene_read32(screen + 0x18C) == camera)
+#ifdef HOMM5_LEGACY_UI
+            || (cutscene_read32(screen) == 0x00E3DD4Cu && cutscene_read32(screen + 0xA4) == camera)
+#endif
+            ) {
 #ifdef HOMM5_LEGACY_UI
             float original;
             memcpy(&original, &fov, sizeof original);

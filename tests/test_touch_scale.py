@@ -5,6 +5,78 @@ from test_static_tls import compile_probe
 
 ROOT = Path(__file__).resolve().parents[1]
 
+LOADING_PROBE = r'''
+    {
+    /* The first pump after screen installation must use the native canvas.
+       Adaptive fitting a loading image later does not meet this contract. */
+    backbuffer_w=1920;backbuffer_h=1080;dimensions(1920,1080,1366,768);
+    MEM32(0x22000)=0x00E1DA84u;void_touch_set_scale(2.f);pump();
+    near(MEMF(0xF74BE0),683);near(MEMF(0xF74BE4),384);
+    assert(scale_percent==200&&fit.requested==200);
+    int before=relayouts,abort_count=aborts;
+    unsigned battle_frames=native_combat_frames;
+    MEM32(0x22000)=0x00E34674u;gesture_active=1;pump();
+    near(MEMF(0xF74BE0),1366);near(MEMF(0xF74BE4),768);
+    assert(scale_percent==200&&fit.requested==100&&fit.percent==100);
+    assert(relayouts==before+1&&aborts==abort_count+1&&!gesture_active);
+    assert(native_combat_frames==battle_frames);
+    before=relayouts;abort_count=aborts;
+    for(unsigned idle=0;idle<12;++idle)pump();
+    assert(relayouts==before&&aborts==abort_count&&scale_percent==200);
+    dimensions(1920,1080,777,666);pump();
+    near(MEMF(0xF74BE0),1366);near(MEMF(0xF74BE4),768);
+    assert(relayouts==before+1&&fit.requested==100&&scale_percent==200);
+    before=relayouts;backbuffer_w=1280;backbuffer_h=800;pump();
+    assert(relayouts==before); /* Wait for the original UI physical resize. */
+    dimensions(1280,800,777,666);pump();
+    near(MEMF(0xF74BE0),1229);near(MEMF(0xF74BE4),768);
+    assert(relayouts==before+1&&fit.requested==100&&scale_percent==200);
+    /* Reuse the same address for ordinary UI: the saved request returns. */
+    MEM32(0x22000)=0x00E1DA84u;pump();
+    near(MEMF(0xF74BE0),614.5f);near(MEMF(0xF74BE4),384);
+    assert(scale_percent==200&&fit.requested==200&&fit.percent==200);
+    assert(native_combat_frames>battle_frames);
+    puts("PASS LoadingScreen first pump100 from UI200, no adaptive fallback, preserved choice, resize/idempotence and ordinary UI200 restore");
+    }
+'''
+
+CINEMATIC_PROBE = r'''
+    {
+    const uint32_t cinematic_types[]={0x00E3261Cu,0x00E3DD4Cu,0x00E3D1ECu,0x00E34674u};
+    const float user_scales[]={.5f,1.25f,2.f};
+    for(unsigned kind=0;kind<4;++kind)for(unsigned choice=0;choice<3;++choice){
+        float scale=user_scales[choice];int requested=(int)lroundf(scale*100);
+        backbuffer_w=1920;backbuffer_h=1080;dimensions(1920,1080,1366,768);
+        MEM32(0x22000)=0x00E1DA84u;void_touch_set_scale(scale);pump();
+        near(MEMF(0xF74BE0),1366.0f/scale);near(MEMF(0xF74BE4),768.0f/scale);
+        assert(scale_percent==requested);
+        unsigned battle_frames=native_combat_frames;int before=relayouts;
+        /* The same screen allocation may be reused for a cinematic. */
+        MEM32(0x22000)=cinematic_types[kind];gesture_active=1;pump();
+        near(MEMF(0xF74BE0),1366);near(MEMF(0xF74BE4),768);
+        assert(scale_percent==requested&&relayouts==before+1&&!gesture_active);
+        assert(native_combat_frames==battle_frames);
+        before=relayouts;int abort_count=aborts;
+        for(unsigned idle=0;idle<12;++idle)pump();
+        assert(relayouts==before&&aborts==abort_count&&scale_percent==requested);
+        /* Native relayout can reset the canvas while the cinematic is active. */
+        dimensions(1920,1080,777,666);pump();
+        near(MEMF(0xF74BE0),1366);near(MEMF(0xF74BE4),768);
+        assert(relayouts==before+1&&scale_percent==requested);
+        before=relayouts;backbuffer_w=1280;backbuffer_h=800;pump();
+        assert(relayouts==before); /* D3D/UI physical-size race: no premature write. */
+        dimensions(1280,800,777,666);pump();
+        near(MEMF(0xF74BE0),1229);near(MEMF(0xF74BE4),768);
+        assert(relayouts==before+1&&scale_percent==requested);
+        MEM32(0x22000)=0x00E1DA84u;pump();
+        near(MEMF(0xF74BE0),1229.0f/scale);near(MEMF(0xF74BE4),768.0f/scale);
+        assert(scale_percent==requested&&native_combat_frames>battle_frames);
+    }
+    puts("PASS native canvas100 at UI50/125/200 for cutscene/dialog/video/loading, stored choice and battle restore, pointer reuse, idempotence, native reset and resize race");
+    }
+'''
+CINEMATIC_PROBE = LOADING_PROBE + CINEMATIC_PROBE
+
 HARNESS = r'''
 #include <assert.h>
 #include <math.h>
@@ -27,12 +99,13 @@ typedef void (*void_fn)(void);
 #define VLOG(...) ((void)0)
 static int mapped=1, writable=1, dispatch=1, has_screen=1;
 static unsigned native_combat_frames;
-static float last_combat_height;
+static float last_combat_height,last_combat_hud,last_combat_top,last_combat_bottom;
 static void void_touch_adventure_frame(uint32_t s,float h,float t,float b) {(void)s;(void)h;(void)t;(void)b;}
 static void void_touch_combat_frame(uint32_t s,float w,float h,float hud,float t,float b) {
     if(!s)return;
-    assert(s==0x22000&&w>0&&h>=384&&hud>=0&&hud<=h&&!t&&!b);
+    assert(s==0x22000&&w>0&&h>=384&&hud>=0&&hud<=h&&t>=0&&b>=t&&b<=h);
     last_combat_height=h;
+    last_combat_hud=hud;last_combat_top=t;last_combat_bottom=b;
     ++native_combat_frames;
 }
 static int backbuffer_w=1920,backbuffer_h=1080,aborts,relayouts,queries,gesture_active;
@@ -50,6 +123,10 @@ static void native_layout(uint32_t e,const float *r) {
 }
 /* The original CWindow::Layout: thiscall, parent rectangle at [esp+4], RET 4. */
 static uint32_t g_ecx, g_esp;
+static int g_fp_top;
+static uint32_t void_window_main(void){return 1;}
+static uint32_t void_window_thread(uint32_t hwnd){(void)hwnd;return 7;}
+static uint32_t void_thread_id(void){return 7;}
 typedef struct {uint32_t ecx,esp;} void_regs;
 static void void_regs_save(void_regs *r){r->ecx=g_ecx;r->esp=g_esp;}
 static void void_regs_load(const void_regs *r){g_ecx=r->ecx;g_esp=r->esp;}
@@ -426,10 +503,114 @@ int main(void) {
         assert(pass.stacks==(unsigned)(i==1));
         if(i==1)assert(pass.stack_top==30&&pass.stack_bottom==50);
     }
+    /* Device replay: UI125 deployment uses PlacementBar600x165, while ATBBar is hidden.
+       The bar is below the old .45*1365.6 width cutoff, so no fitting was ever armed. */
+    MEM32(viewport.screen)=0xE1DA84;
+    MEMF(root+0x64)=MEMF(root+0x68)=0;
+    MEMF(0x72000+0xA4)=1365.6f;MEMF(0x72000+0xA8)=768;
+    const char *battle_names[5]={"PlacementBar","Jogdial","ATBBar","StackInfo","StackInfo"};
+    const float battle_spec[5][7]={{600,165,0,2,18,-12,1},{203,215,2,2,-22,-4,1},
+        {766,162,0,2,21,-9,0},{27,24,0,0,361.77716f,450.3046f,1},
+        {35,24,0,0,932.9798f,503.2166f,1}};
+    const float battle_parent[4]={0,0,1365.6f,768};
+    for(int i=0;i<5;++i){
+        uint32_t p=MEM32(elements[i]+0x140),name=0x7A000+32*i;
+        memcpy(GPTR(name),battle_names[i],strlen(battle_names[i]));
+        MEM32(p+0x58)=name;MEM32(p+0x5C)=name+(uint32_t)strlen(battle_names[i]);
+        MEMF(p+0xA4)=battle_spec[i][0];MEMF(p+0xA8)=battle_spec[i][1];
+        MEM32(p+0x9C)=(uint32_t)battle_spec[i][2];MEM32(p+0x94)=(uint32_t)battle_spec[i][3];
+        MEMF(p+0x88)=battle_spec[i][4];MEMF(p+0x8C)=battle_spec[i][5];MEM8(p+0x70)=(uint8_t)battle_spec[i][6];
+        native_layout(elements[i],battle_parent);
+    }
+    assert(scale_fits(root,1,1365.6f,614.4f,1707,768,125)==125);
+    near(last_combat_hud,437);near(last_combat_top,450.3046f);near(last_combat_bottom,527.2166f);
+    assert(scale_fits(root,0,832,384,1664,768,200)==197); /* Placement bar and dial fit together. */
+    uint32_t placement_bar=MEM32(elements[0]+0x140),atb=MEM32(elements[2]+0x140);
+    MEM8(placement_bar+0x70)=0;
+    assert(scale_fits(root,1,1365.6f,614.4f,1707,768,125)==125);
+    near(last_combat_hud,614.4f); /* Hidden deployment HUD must not steer the lens. */
+    MEM8(atb+0x70)=1;
+    assert(scale_fits(root,1,1365.6f,614.4f,1707,768,125)==125);
+    near(last_combat_hud,443); /* Ordinary battle initiative retains its original measurement. */
+    for(unsigned i=0;i<5;++i)MEM8(MEM32(elements[i]+0x140)+0x70)=0;
+    void_android_display_size=NULL;alternate_top=bad_cast=cycle_screens=flip_on_query=0;
+    /* CINEMATIC_PROBE */
     puts("PASS native UI scale: record-only setter, readiness, coherent inverse/ray, native relayout, abort-before-change, idempotence, resize recovery, top anchoring and fit, battle lens before labels at UI125/200");
     return 0;
 }
 '''
+HARNESS = HARNESS.replace('    /* CINEMATIC_PROBE */', CINEMATIC_PROBE)
+
+LEGACY_CINEMATIC_HARNESS = r'''
+#include <assert.h>
+#include <math.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stddef.h>
+static uint8_t memory[0x1200000];
+#define MEM32(a) (*(uint32_t *)(memory+(uint32_t)(a)))
+#define MEMF(a) (*(float *)(memory+(uint32_t)(a)))
+#define VLOG(...) ((void)0)
+typedef int pthread_mutex_t;
+static int locked;
+static void pthread_mutex_lock(pthread_mutex_t *p){(void)p;assert(!locked);locked=1;}
+static void pthread_mutex_unlock(pthread_mutex_t *p){(void)p;assert(locked);locked=0;}
+typedef void (*void_fn)(void);
+typedef struct {int kind;float scale;} void_touch_event;
+enum {TOUCH_ABORT=10};
+static pthread_mutex_t scale_lock;
+static int scale_percent=100;
+static uint32_t viewport_scratch;
+static struct {uint32_t root;} viewport;
+static struct {uint32_t screen;int requested,percent;} fit;
+static struct {uint32_t screen,root;float width,height;} loading_layout;
+static void_fn original_list_layout;
+static int backbuffer_w=1920,backbuffer_h=1080,relayouts,aborts,gesture_active;
+static unsigned native_combat_frames;
+static float old_w,old_h;
+static int (*void_android_display_size)(int *,int *);
+static uint32_t void_module_exe_base(void){return 0x400000;}
+static int void_vm_readable(uint32_t a,uint32_t n){return a>0&&(uint64_t)a+n<=sizeof memory;}
+static int void_vm_writable(uint32_t a,uint32_t n){return void_vm_readable(a,n);}
+static uint32_t scale_read32(uint32_t a){return void_vm_readable(a,4)?MEM32(a):0;}
+static uint32_t scale_current_screen(void){return 0x22000;}
+static void dummy(void){}
+static void sub_00A50560(void){}
+static void scale_layout_override(void){}
+static void scale_list_layout(void){}
+static void_fn void_dispatch_find(uint32_t a){return a==0x8885D0||a==0xA50560?NULL:dummy;}
+static void void_dispatch_add(uint32_t a,void_fn f){(void)a;(void)f;assert(0);}
+static void void_input_screen_size(int *w,int *h){*w=backbuffer_w;*h=backbuffer_h;}
+static void void_touch_engine_event(const void_touch_event *e){
+ assert(!locked&&e->kind==TOUCH_ABORT&&e->scale==1);
+ assert(MEMF(0xF74BE0)==old_w&&MEMF(0xF74BE4)==old_h);gesture_active=0;++aborts;
+}
+static uint32_t void_call_guest(uint32_t va,int n,const uint32_t *a,int pops){
+ assert(va==0x8385A0&&!n&&!a&&pops==1);return 0x20000;
+}
+/* The existing legacy-root probe verifies native relayout geometry separately. */
+static void void_touch_legacy_relayout(void){++relayouts;}
+static void scale_refresh_text(void){}
+static void void_touch_combat_frame(uint32_t s,float w,float h,float hud,float t,float b){
+ (void)w;(void)h;(void)hud;(void)t;(void)b;if(s)++native_combat_frames;
+}
+static uint32_t void_galloc(uint32_t n){assert(n==16);return 0x80000;}
+static int scale_viewport_ready(float w,float h){(void)w;(void)h;viewport.root=0x24000;return 1;}
+static uint32_t scale_screen_root(uint32_t s){assert(s==0x22000);return 0x24000;}
+static int scale_is_root(uint32_t r){(void)r;return 1;}
+static int scale_fits(uint32_t r,int a,float w,float h,float bw,float bh,int requested){
+ (void)r;(void)a;(void)w;(void)h;(void)bw;(void)bh;return requested;
+}
+/* ACTUAL */
+static void near(float a,float b){if(fabsf(a-b)>=.0002f)fprintf(stderr,"%.4f != %.4f\n",a,b);assert(fabsf(a-b)<.0002f);}
+static void dimensions(float pw,float ph,float vw,float vh){MEMF(0xF74BF0)=pw;MEMF(0xF74BF4)=ph;MEMF(0xF74BE0)=vw;MEMF(0xF74BE4)=vh;}
+static void pump(void){old_w=MEMF(0xF74BE0);old_h=MEMF(0xF74BE4);void_touch_scale_pump();}
+int main(void){
+ MEMF(0xF74BE8)=1024;MEMF(0xF74BEC)=768;MEM32(0xFE719C)=0x10000;
+ /* CINEMATIC_PROBE */
+ return 0;
+}
+'''.replace(' /* CINEMATIC_PROBE */', CINEMATIC_PROBE)
 
 
 class TouchScaleTest(unittest.TestCase):
@@ -461,6 +642,79 @@ class TouchScaleTest(unittest.TestCase):
         source = '\n'.join(line for line in source.splitlines()
                            if not line.startswith("extern int void_android_"))
         compile_probe("touch_scale", HARNESS, {"touch_scale_impl.h": source})
+
+    def test_cinematic_scale_rejects_disabled_screen_policy(self):
+        source = (ROOT / "android/host/touch_scale.c").read_text(encoding="utf-8")
+        for vtable in ('0x00E3261Cu', '0x00E3DD4Cu', '0x00E3D1ECu'):
+            self.assertEqual(source.count(vtable), 1)
+            source = source.replace(vtable, '0x00E00001u', 1)
+        for name in ("host.h", "input.h", "touch.h"):
+            source = source.replace(f'#include "{name}"\n', '')
+        source = '\n'.join(line for line in source.splitlines()
+                           if not line.startswith("extern int void_android_"))
+        with self.assertRaisesRegex(AssertionError, r'2732\.0000 != 1366\.0000'):
+            compile_probe("touch_scale_cinematic_negative", HARNESS, {"touch_scale_impl.h": source})
+
+    def test_loading_first_pump_rejects_missing_policy(self):
+        source = (ROOT / "android/host/touch_scale.c").read_text(encoding="utf-8")
+        policy = 'scale_read32(screen) == 0x00E34674u) requested = 100;'
+        self.assertEqual(source.count(policy), 1)
+        source = source.replace(policy, policy.replace('0x00E34674u', '0x00E00001u'), 1)
+        for name in ("host.h", "input.h", "touch.h"):
+            source = source.replace(f'#include "{name}"\n', '')
+        source = '\n'.join(line for line in source.splitlines()
+                           if not line.startswith("extern int void_android_"))
+        with self.assertRaisesRegex(AssertionError, r'683\.0000 != 1366\.0000'):
+            compile_probe("touch_scale_loading_negative", HARNESS, {"touch_scale_impl.h": source})
+
+    def test_legacy_cinematic_scale_uses_original_screen_types(self):
+        import re
+        import sys
+        sys.path.insert(0, str(ROOT / "tools"))
+        import port_patches
+        from test_d3d_lifecycle import function
+        # Primary constructor writes and original RTTI, independent of the port's maps.
+        expected_types = {
+            "vanilla": ("00E1031C", "00E1C644", "00E1BA8C", "00E12E5C"),
+            "hof": ("00DE618C", "00DF14B0", "00DF0ADC", "00DE831C"),
+        }
+        for edition, (cutscene, dialog, video, loading) in expected_types.items():
+            with self.subTest(edition=edition):
+                contract = port_patches.load_contract(edition)
+                self.assertEqual(contract["addresses"]["00E3261C"], cutscene)
+                self.assertEqual(contract["addresses"]["00E3DD4C"], dialog)
+                self.assertEqual(contract["addresses"]["00E3D1EC"], video)
+                self.assertEqual(contract["addresses"]["00E34674"], loading)
+                path, _ = port_patches.adapt_host_source(ROOT / "android/host/touch_scale.c",
+                    ROOT / "build/tests" / ("cinematic-scale-" + edition), edition)
+                adapted = path.read_text(encoding="utf-8")
+                actual = (function(adapted, "void void_touch_set_scale(") +
+                          function(adapted, "static int scale_pump(") +
+                          function(adapted, "void void_touch_scale_pump("))
+                addresses = dict(contract["addresses"])
+                addresses.update({"00E3261C": cutscene, "00E3DD4C": dialog,
+                                  "00E3D1EC": video, "00E34674": loading})
+
+                def mapped(match):
+                    value = match[2].upper().zfill(8)
+                    return match[1] + addresses.get(value, match[2])
+
+                harness = re.sub(r'(0x|sub_)([0-9A-Fa-f]{6,8})(?![0-9A-Fa-f])',
+                                 mapped, LEGACY_CINEMATIC_HARNESS)
+                compile_probe("cinematic-scale-" + edition,
+                              harness.replace('/* ACTUAL */', actual), {})
+
+    def test_deployment_rejects_old_hud_width_cutoff(self):
+        source = (ROOT / "android/host/touch_scale.c").read_text(encoding="utf-8")
+        current = '(size[0] > pass->view_w * .45f || scale_named(placement, "PlacementBar"))'
+        self.assertIn(current, source)
+        source = source.replace(current, 'size[0] > pass->view_w * .45f', 1)
+        for name in ("host.h", "input.h", "touch.h"):
+            source = source.replace(f'#include "{name}"\n', '')
+        source = '\n'.join(line for line in source.splitlines()
+                           if not line.startswith("extern int void_android_"))
+        with self.assertRaisesRegex(AssertionError, "614.4000 != 437.0000"):
+            compile_probe("touch_scale_deployment_negative", HARNESS, {"touch_scale_impl.h": source})
 
 
 if __name__ == "__main__":

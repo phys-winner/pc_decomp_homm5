@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.homm5.port"
-    android:versionCode="8" android:versionName="0.4-dev">
+    android:versionCode="9" android:versionName="0.5-dev">
   <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="37" />
   <uses-feature android:glEsVersion="0x00030002" android:required="true" />
   <!-- Android 8-10 read the game's files and keep the saves in /sdcard/HeroesV with these (asked for by
@@ -24,15 +24,18 @@
     <!-- The home-screen entry is the launcher's (port.json, tools/build_game_apk.py). Tribes of the East
          runs in the main process; exported for the tools (am start of org.homm5.port/.GameActivity). -->
     <activity android:name=".GameActivity" android:exported="true" android:screenOrientation="sensorLandscape"
+        android:theme="@style/GameLaunch"
         android:windowSoftInputMode="adjustNothing"
         android:configChanges="orientation|screenSize|keyboardHidden|keyboard|navigation|screenLayout|uiMode"
         android:launchMode="singleTask" />
     <activity android:name=".VanillaGameActivity" android:exported="true" android:label="Heroes V"
+        android:theme="@style/GameLaunch"
         android:screenOrientation="sensorLandscape" android:windowSoftInputMode="adjustNothing"
         android:process=":vanilla" android:taskAffinity="org.homm5.port.vanilla"
         android:configChanges="orientation|screenSize|keyboardHidden|keyboard|navigation|screenLayout|uiMode"
         android:launchMode="singleTask" />
     <activity android:name=".HofGameActivity" android:exported="true" android:label="Hammers of Fate"
+        android:theme="@style/GameLaunch"
         android:screenOrientation="sensorLandscape" android:windowSoftInputMode="adjustNothing"
         android:process=":hof" android:taskAffinity="org.homm5.port.hof"
         android:configChanges="orientation|screenSize|keyboardHidden|keyboard|navigation|screenLayout|uiMode"

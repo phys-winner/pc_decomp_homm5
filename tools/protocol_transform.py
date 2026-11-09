@@ -6,6 +6,14 @@ The summary is produced from the canonical generated sources; this pass only
 rewrites statements whose shape it recognises and leaves anything else on the
 full protocol (RECOMP_CALL / RECOMP_ICALL / RECOMP_ITAIL + all registers).
 It runs after the other source passes, so their regions keep their pins.
+
+Clean exits: a masked exit may leave a callee-saved register unpublished only when the body
+never wrote it to the globals itself. A nested call site that publishes EBX/ESI/EDI/EBP, a call kept on
+the full protocol, a cooperative yield or an EH frame leaves an intermediate value in the global copy;
+callers that read the globals after the call (host code, NATIVE_OVERRIDES, full-protocol sites) would
+take it for the preserved one. Such exits republish the body's own value. Found in the UT3 port
+(2026-11-08), where the first masked build crashed in a DLL's static constructors. Only the mask
+constants change, so the macro shapes and the PGO profile hashes stay as they were.
 """
 import json
 from pathlib import Path
@@ -16,7 +24,11 @@ ROOT = Path(__file__).resolve().parents[1]
 SUMMARY = ROOT / 'build/call-protocol/summary.json'
 
 ABI4 = 0x01 | 0x02 | 0x04 | 0x10        # eax ecx edx esp
+CS = 0x08 | 0x20 | 0x40 | 0x80          # ebx ebp esi edi
 ALL = 0xFF
+# Statements that publish every register (full-protocol transfers, yields, EH landings). Tails are
+# exits: what they publish is already the body's final state.
+FULL_MARKERS = (b'RECOMP_BACKEDGE', b'RECOMP_EH_ENTER', b'RECOMP_CALL(', b'RECOMP_ICALL(', b'CPUID(')
 
 FUNCTION_START = re.compile(rb'^void (sub_[0-9A-F]{8})(?:_lifted)?\(void\) \{\r?$', re.M)
 FUNCTION_END = re.compile(rb'\n\}\r?\n')
@@ -105,8 +117,12 @@ def transform_body(name, body, proto, module):
     full_body = exit_mask == ALL
     keep_flags = full_body or name in proto.flags_out
 
+    dirty = 0
+
     def call(match):
+        nonlocal dirty
         pub, rel, fl = proto.call_masks(match[1].decode())
+        dirty |= pub & CS
         site = SITE.match(body, match.end())
         return b'RECOMP_CALL_P(%s, 0x%02Xu, 0x%02Xu, %d, 0x%su);' % (
             match[1], pub, rel, fl, site[1] if site else b'0')
@@ -126,6 +142,10 @@ def transform_body(name, body, proto, module):
 
     body = CALL.sub(call, body)
     body = rewrite_icalls(body, proto)
+    if not full_body:
+        if any(marker in body for marker in FULL_MARKERS):
+            dirty |= CS
+        exit_mask |= dirty
     if not keep_flags:
         body = RET_FLAGS.sub(lambda m: m[1], body)
     if not full_body:

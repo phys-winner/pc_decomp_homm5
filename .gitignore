@@ -8,6 +8,10 @@
 !/licenses/
 /licenses/*
 !/licenses/fidelityfx-fsr.txt
+!/licenses/innoextract.txt
+!/licenses/boost.txt
+!/licenses/bzip2.txt
+!/licenses/liblzma.txt
 !/dependencies.json
 !/requirements.txt
 !/port.example.json
@@ -22,6 +26,7 @@
 !/android/host/d3d9_thread_check.inc
 !/android/**/*.java
 !/android/**/*.xml
+!/android/gog/CMakeLists.txt
 
 !/native/
 /native/*
@@ -47,6 +52,8 @@
 !/tools/
 /tools/*
 !/tools/*.py
+!/tools/function_coverage_runtime.c
+!/tools/function_coverage_runtime.h
 
 !/tests/
 /tests/**

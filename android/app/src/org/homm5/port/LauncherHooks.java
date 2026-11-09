@@ -1,6 +1,7 @@
 package org.homm5.port;
 
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import java.io.File;
 import java.util.LinkedHashMap;
@@ -18,6 +19,21 @@ import org.homm5.port.launcher.PortHooks;
  *  launcher's process and in the game's (Launch.attach), so it never touches the game's activity
  *  or native library. */
 public final class LauncherHooks implements PortHooks {
+    @Override public void verifyInstallation(Context context, String distribution, String part, File folder) throws java.io.IOException {
+        if (!"game".equals(part) || !Games.valid(distribution)) return;
+        if ("toe".equals(distribution)) Assets.verifyOriginals(context, folder, distribution, true);
+        else {
+            Assets.verifyOriginals(context, folder, "vanilla", true);
+            Assets.verifyOriginals(context, folder, "hof", true);
+        }
+    }
+
+    @Override public void prepare(Context context, String distribution, Intent intent) {
+        // Android 8.0 uses the window's own fade; later versions dim without a task transition.
+        if (Games.valid(distribution) && android.os.Build.VERSION.SDK_INT >= 27)
+            intent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
+    }
+
     @Override public String installationProblem(Context context, String distribution, String part, File folder) {
         if (!"game".equals(part) || !Games.valid(distribution) || !storage(context)) return null;
         Map<String, File> folders = new LinkedHashMap<>();
@@ -31,7 +47,15 @@ public final class LauncherHooks implements PortHooks {
 
     @Override public java.util.List<String> missing(Context context, String distribution, String part, File folder) {
         String problem = installationProblem(context, distribution, part, folder);
-        return problem == null ? java.util.Collections.emptyList() : java.util.Collections.singletonList(problem);
+        if (problem != null) return java.util.Collections.singletonList(problem);
+        java.util.List<String> missing = new java.util.ArrayList<>();
+        if ("game".equals(part) && ("vanilla".equals(distribution) || "hof".equals(distribution)))
+            for (String id : new String[] {"vanilla", "hof"}) for (String path : Games.required(id)) {
+                File file = Games.child(folder, path);
+                if (file == null || !file.isFile() || !file.canRead() || file.length() == 0)
+                    if (!missing.contains(path)) missing.add(path + (file != null && file.isFile() && file.length() == 0 ? " (0 B)" : ""));
+            }
+        return missing;
     }
     static final String OLD_PREFERENCES = "launcher", MIGRATED = "moved_to_launcher_base";
     /** The old launcher's files in the app's private files: start markers and the DXVK renderer's state. */
