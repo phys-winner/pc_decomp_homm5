@@ -37,7 +37,8 @@ class ApkResourcesTest(unittest.TestCase):
         self.assertEqual(game.get(ANDROID + "exported"), "true")      # tools start it with am start -n
         for activity in activities.values():
             self.assertEqual(activity.findall("intent-filter"), [])   # the home-screen entry is the launcher base's
-            self.assertEqual(activity.get(ANDROID + "launchMode"), "singleTask")
+            self.assertEqual(activity.get(ANDROID + "launchMode"), "singleTop")
+            self.assertIsNone(activity.get(ANDROID + "taskAffinity"))
         self.assertEqual(application.findall("service"), [])          # the base declares its own work service
         permissions = {permission.get(ANDROID + "name"): permission.get(ANDROID + "maxSdkVersion")
                        for permission in manifest.findall("uses-permission")}

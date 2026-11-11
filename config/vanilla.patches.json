@@ -88,7 +88,9 @@
       "android/app/src/org/homm5/port/NativeLibrary.java",
       "tools/editions.py",
       "android/host/rpc.c",
-      "android/host/host.h"
+      "android/host/host.h",
+      "android/host/d3d9_gl.c",
+      "tools/build_android.py"
     ],
     "telemetry_disabled": [
       "tools/profile_defaults.py",
@@ -123,13 +125,13 @@
   "sources": {
     "android/app/src/org/homm5/port/GameActivity.java": "76669d1273e3d27c116d761bca6619731b58a76b6ac617b53964c20ce01f762b",
     "android/app/src/org/homm5/port/Games.java": "8c7f15083a3f2fa177c51e3edf22dea5c5c9239c21fc2daf8e097fd79116142f",
-    "android/app/src/org/homm5/port/LauncherHooks.java": "8d167e0ceb403092fb8ed6f583f88910451651d304eaf7bd6bdda6ad0c4dbc6a",
+    "android/app/src/org/homm5/port/LauncherHooks.java": "602f10467ca4e36292aa83b6dbe81f7f94430216e86a57d1c2b727804ea75b5f",
     "android/app/src/org/homm5/port/Textures.java": "b162fd061c21dd25eb9d5f9417eaacfa95d5e5310e2af4beb4a1b83e049a5522",
     "android/host/android_main.c": "21dcaccca5915c779bbdeb28a224f6d3831d12b3b24b5b60a9d2415f95f4ac32",
     "android/host/cutscene.c": "da9cfd2e11f58534b57d575f515dc78d0503d94ab73492d4bef522e28aaf571d",
     "android/host/d3d9_device.c": "1785334ef4aae558ad50efee3a142f682ef51fd7fbdfededf7f97241618361da",
     "android/host/d3d9_ff.c": "547f8d3eb562988ddaad98fed1da1e1d8c106b28a97f971edc68e18737d2fff1",
-    "android/host/d3d9_gl.c": "bbc16e93fe9ec1369accf6470a29524180d262f0a00db8e8591479dea86d8250",
+    "android/host/d3d9_gl.c": "b6ca546525bf3a396d2ee33341a1081d1c29d84e794eea5d81a31c48547f32a9",
     "android/host/d3d9_internal.h": "b0a7bf850e7e39c3dac87d73c6d5de7c9c59afbaa0f0efc1c48bc54682d1858e",
     "android/host/d3d9_resource.c": "d41a0bc4aa261b3b411502ea002dc012056aec2fbf99c8d6608edd457078f556",
     "android/host/d3d9_shader.c": "fd05467e16433536a7867d92fea037bf258e19186148b47297bb30dfb08f396e",
@@ -154,7 +156,7 @@
     "android/texconv/texconv.h": "6bdafca201f973e1aa1b9b3819ae37603755618c837ef27affc1eaa6549ebf8b",
     "android/texconv/texconv_jni.cpp": "2f0a81e57a82666fd1559ba372c4b6c2c1116b7c0127ca1287d320ed8f97cd8d",
     "config/editions.json": "d027f842cc9cd9f4024d8de61b1c61930d9453dac85890fb3b759eac1089d304",
-    "tools/build_android.py": "dc08a9cadabb11a72d6d18c2996673459e01cd14420e8328a04d70dd7526fe3e",
+    "tools/build_android.py": "30734f813469bb8945a49dfcea23096cebf6425a2a2a39e5e226478a5c5e7d75",
     "tools/build_game_apk.py": "9ae955ea8260b11192c6c098f8c38cc111adae61b791ed36ce08ab26e833152d",
     "tools/editions.py": "6e2bfdfad721cfba7f052612eb7d5b5faf40f31e5d3f5c6ffbc4751e8b3b92af",
     "tools/lift_homm5.py": "4df9027a199c145caa065ccc4be9ca65c7bbe23104488cc15fe0d64e076aba62",
@@ -166,7 +168,7 @@
     "android/host/d3d9_filter.c": "e1d08e8834670a86570f91515088d672d1f740a91b0318f83d2ae5240820ae5e",
     "android/host/d3d9_thread.c": "e9314409ec952bb4e6602d1ae971286bdb32d1785f36e0f7deaa118c14e21fc3",
     "android/host/d3d9_thread.inc": "e8f3702d739a2d7b46edb96143ce8ddb896fa8c930c917fd4fbbb9f1a0ded673",
-    "android/host/d3d9_thread_check.inc": "b84bdca767f7113c940e9d0e0d8ae77f54ef7fefd08437f697a06e8b89853f5d",
+    "android/host/d3d9_thread_check.inc": "c21e26b871761849c510caa129fe61e3ca9c0e13cb39ba9f3c090c011fac1f4f",
     "android/host/threads.c": "464880a52bd33a7862addce6c0363f8951ecb12b0c8ac97a52e31935921fe7da",
     "android/app/src/org/homm5/port/Assets.java": "0840b01c97ef4d9c8b6e40f116e9e60d173896893413c14256b1a288db5339b5",
     "android/app/src/org/homm5/port/NativeLibrary.java": "8ba639dfe86b01abb2f2f686f3200638e8c43304eab661cb2b555cd1d9227ea6",
@@ -523,7 +525,8 @@
     "00C05AFD": "00A44C1D",
     "00C05B10": "00A44C30",
     "00C05B4A": "00A44C6A",
-    "00F78FC0": "00F2CC48"
+    "00F78FC0": "00F2CC48",
+    "00C308B0": "00B21310"
   },
   "reference_addresses": {
     "android/host/cutscene.c": [
@@ -542,7 +545,8 @@
       "00A3FB70"
     ],
     "android/host/d3d9_gl.c": [
-      "00A46BC0"
+      "00A46BC0",
+      "00C308B0"
     ],
     "android/host/fmod_stream.c": [
       "1101325D",

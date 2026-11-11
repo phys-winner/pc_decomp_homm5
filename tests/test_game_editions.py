@@ -149,7 +149,7 @@ class GameEditionTest(unittest.TestCase):
         for edition, name in [("vanilla", ".VanillaGameActivity"), ("hof", ".HofGameActivity")]:
             activity = next(a for a in app.findall("activity") if a.get(android + "name") == name)
             self.assertEqual(activity.get(android + "process"), ":" + edition)
-            self.assertEqual(activity.get(android + "taskAffinity"), "org.homm5.port." + edition)
+            self.assertIsNone(activity.get(android + "taskAffinity"))
         source = (JAVA_SOURCE / "GameActivity.java").read_text(encoding="utf-8")
         self.assertNotIn('static { System.loadLibrary("homm5"); }', source)
         self.assertIn("NativeLibrary.load(this, Games.library(gameEdition()))", source)

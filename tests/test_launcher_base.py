@@ -206,7 +206,7 @@ class LauncherSpecTest(unittest.TestCase):
         self.assertIsNone(activities[".GameActivity"].get(ANDROID + "process"))   # Tribes of the East: the main process
         for name, edition in ((".VanillaGameActivity", "vanilla"), (".HofGameActivity", "hof")):
             self.assertEqual(activities[name].get(ANDROID + "process"), ":" + edition)
-            self.assertEqual(activities[name].get(ANDROID + "taskAffinity"), "org.homm5.port." + edition)
+            self.assertIsNone(activities[name].get(ANDROID + "taskAffinity"))
         services = {s.get(ANDROID + "name"): s.get(ANDROID + "process") for s in application.findall("service")}
         self.assertEqual(services, {"org.homm5.port.launcher.Work$WorkService": ":launcher"})
         assets = Path(prepared["assets"]) / "launcher"

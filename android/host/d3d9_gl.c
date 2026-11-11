@@ -2260,6 +2260,22 @@ static void gl_device_destroy(void)
 
 static void run_device_destroy(void *unused) { (void)unused; gl_device_destroy(); }
 
+static void run_benchmark_sync(void *unused)
+{
+    (void)unused;
+    d3d_rt_wait_begin();
+    glFinish();
+    d3d_rt_wait_end();
+}
+
+/* The hardware benchmark's VB Lock/Unlock trick cannot wait on our CPU copies. */
+void sub_00C308B0(void)
+{
+    if (g_d3d_device) d3d_rt_sync(run_benchmark_sync, NULL);
+    g_eax = D3D_OK;
+    g_esp += 4;
+}
+
 void d3d_gl_device_destroy(void)
 {
     frame_deadline_ns = 0;

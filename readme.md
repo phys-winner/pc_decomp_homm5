@@ -3,7 +3,7 @@
 Heroes of Might and Magic V, Hammers of Fate and Tribes of the East on Android ARM64 through static
 x86 recompilation, with native touch controls and a Direct3D 9 to OpenGL ES bridge.
 
-**Current version: 0.5-dev.** All three engines use ThinLTO and their own device-trained PGO profiles.
+**Current version: 0.5.1-dev.** All three engines use ThinLTO and their own device-trained PGO profiles.
 This is an experimental port for sideloading.
 The original game's menus, adventure maps, towns, battles, sound and saves run
 through a local Win32 compatibility host. The game and eight DLLs are translated
@@ -550,17 +550,27 @@ send `homm5.1.log` (the session that crashed) together with `homm5.log`.
 
 ## Versions and local release files
 
-The current version is `0.5-dev` / code `9`. Earlier development builds used
-`0.1-dev`, `0.2-dev`, `0.3-dev`, `0.3.1-dev`, `0.3.2-dev` and `0.4-dev`. The version is stored in
+The current version is `0.5.1-dev` / code `10`. Earlier development builds used
+`0.1-dev`, `0.2-dev`, `0.3-dev`, `0.3.1-dev`, `0.3.2-dev`, `0.4-dev` and `0.5-dev`. The version is stored in
 `android/app/AndroidManifest.xml`; increase `android:versionCode` for every
 subsequent published build. Version `0.3-dev` uses code `5` (the replacement
 build supersedes the earlier code `4` APK); `0.3.1-dev` uses code `6`, and
-`0.3.2-dev` uses code `7`, and `0.4-dev` uses code `8`.
+`0.3.2-dev` uses code `7`, `0.4-dev` uses code `8`, and `0.5-dev` uses code `9`.
 
-Local release copies use `heroes-v-0.5-dev-<sha256-prefix>.apk`, where the suffix
+Local release copies use `heroes-v-0.5.1-dev-<sha256-prefix>.apk`, where the suffix
 is the first eight characters of the APK's SHA-256, with a companion `.sha256`
 file. The `pub/` directory is ignored. Building and naming an APK does not
 automatically publish it or create a Git tag.
+
+## Changes in 0.5.1-dev
+
+Changes since 0.5-dev:
+
+- Wait for actual GPU completion during graphics autodetection in all three editions,
+  preventing permanent freezes when creating a profile. Preserve the original calibration.
+- Keep the launcher and all three editions in one Android task. Remove stale edition
+  tasks from earlier builds so Recents shows one card and resumes the latest open game.
+- Set Android version to `0.5.1-dev` / code `10`.
 
 ## Changes in 0.5-dev
 

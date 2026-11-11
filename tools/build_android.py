@@ -64,6 +64,8 @@ NATIVE_OVERRIDES = ("sub_1102BC0B", "sub_110277DD", "sub_1102B103",
                     "sub_008863A0", "sub_006B92E0",
                     # UI quads render at display resolution above the scaled scene.
                     "sub_00A46BC0",
+                    # The graphics benchmark must wait for the GPU, not a CPU buffer copy.
+                    "sub_00C308B0",
                     # Port console variables (android/host/port_settings.c): the
                     # engine's variable registration.
                     "sub_00C11400",

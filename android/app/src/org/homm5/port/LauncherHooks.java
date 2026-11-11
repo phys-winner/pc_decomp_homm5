@@ -1,5 +1,7 @@
 package org.homm5.port;
 
+import android.app.Activity;
+import android.app.ActivityManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -63,6 +65,7 @@ public final class LauncherHooks implements PortHooks {
         "renderer.properties.tmp", "renderer-probe.txt", "renderer-probe.part", "renderer-probe.stage"};
 
     @Override public void migrate(Context context) {
+        keepCurrentTask(context);
         SharedPreferences old = context.getSharedPreferences(OLD_PREFERENCES, Context.MODE_PRIVATE);
         if (!old.getBoolean(MIGRATED, false)) {
             Map<String, ?> values = old.getAll();
@@ -77,6 +80,21 @@ public final class LauncherHooks implements PortHooks {
             old.edit().putBoolean(MIGRATED, true).commit();
         }
         if (storage(context)) removeInterruptedUnpacking(old);
+    }
+
+    /** Earlier builds left separate edition tasks in Recents; keep the task being opened. */
+    private static void keepCurrentTask(Context context) {
+        if (!(context instanceof Activity)) return;
+        Activity activity = (Activity) context;
+        if (activity.isFinishing() || activity.isDestroyed()) return;
+        ActivityManager manager = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
+        for (ActivityManager.AppTask task : manager.getAppTasks()) {
+            try {
+                if (task.getTaskInfo().persistentId != activity.getTaskId()) task.finishAndRemoveTask();
+            } catch (IllegalArgumentException removed) {
+                android.util.Log.w("HeroesV", "recent task already removed", removed);
+            }
+        }
     }
 
     /** Whether the shared storage's files can be changed by path (as the launcher base asks for it). */
