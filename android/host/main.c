@@ -11,12 +11,48 @@
 #include <unistd.h>
 
 int void_modules_start(void);
+void void_fmod_latency_init(void);
 void void_highlight_init(void);   /* highlight.c: the map's object highlight without its per-frame rebuild */
 void void_log_system_info(void);  /* core.c: the device and the engine build */
 
 void void_files_std_init(void);
 static int exiting;
 static int enumerated_devices;
+
+static void_fn original_hero_quick_combat;
+
+static int sanctuary_ref_live(uint32_t object)
+{
+    if (!object || !void_vm_readable(object, 8)) return 0;
+    uint32_t bases = MEM32(object + 4);
+    if (!void_vm_readable(bases, 8)) return 0;
+    uint32_t ref = object + 4 + MEM32(bases + 4);
+    return void_vm_readable(ref, 8) && !(MEM32(ref + 4) & 0x80000000u);
+}
+
+static void hero_quick_combat(void)
+{
+    uint32_t hero = g_ecx;
+    original_hero_quick_combat();
+#if HOMM5_LEGACY_UI
+    const uint32_t holder_offset = 0x1BC;
+#else
+    const uint32_t holder_offset = 0x1D4;
+#endif
+    /* The leaf is also IPlayer's getter in 1.6/2.1; only a sheltered IHero opts out. */
+    if (!(g_eax & 255u) || !void_vm_readable(hero, holder_offset + 4) ||
+        MEM32(hero) != 0x00E7E484u || !sanctuary_ref_live(hero)) return;
+    uint32_t holder = MEM32(hero + holder_offset);
+    if (void_vm_readable(holder, 8) && MEM32(holder) == 0x00E7D6D8u && sanctuary_ref_live(holder))
+        g_eax &= ~255u;
+}
+
+static void sanctuary_quick_combat_init(void)
+{
+    if (original_hero_quick_combat) return;
+    original_hero_quick_combat = void_dispatch_find(0x00B5AB50u);
+    if (original_hero_quick_combat) void_dispatch_add(0x00B5AB50u, hero_quick_combat);
+}
 
 static void enumerate_test_callback(void)
 {
@@ -104,6 +140,8 @@ int void_game_main(const char *game, const char *data, const char *images, int s
         code = void_dispatch_find(entry) ? 0 : 71;
         void_log("[selftest] imports and process TLS initialized; entry %08X, result %d", entry, code);
     } else {
+        void_fmod_latency_init();
+        sanctuary_quick_combat_init();
         void_touch_engine_init();
         void_highlight_init();
         void_input_script_start();

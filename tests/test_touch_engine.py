@@ -11,6 +11,7 @@ HARNESS = r'''
 #include <string.h>
 static unsigned char memory[0x1100000];
 #define ADDR(p) (memory + (uint32_t)(p))
+#define GPTR(p) ADDR(p)
 #define MEM32(p) (*(uint32_t *)ADDR(p))
 #define MEM8(p) (*(uint8_t *)ADDR(p))
 #define MEMF(p) (*(float *)ADDR(p))
@@ -412,6 +413,8 @@ int void_touch_camera_tilt(uint32_t screen, int kind, float dy) {
 int void_touch_camera(uint32_t screen, int combat, float x, float y, float dx, float dy, float scale, float rotation) {
     assert(screen == 0x4000 && (combat==0 || combat==1 || combat==2)); assert(isfinite(x+y+dx+dy+scale+rotation)); last_camera_kind=combat; ++cameras; return 1;
 }
+int void_touch_town_interrupt(uint32_t screen) {assert(screen==0x4000);return 0;}
+int void_touch_town_camera_home(uint32_t screen) {assert(screen==0x4000);++camera_pose_sets;last_pose_kind=2;return 1;}
 #include "touch_engine_actual.h"
 static void settle(void) { mock_now_ns += 1000000000ull; void_touch_ui_pump(); }
 static void reset(int kind) {
@@ -1073,6 +1076,22 @@ int main(void) {
     event(TOUCH_END,910,410); assert(!key_down[0x12] && !hero_stops && !commands);
     reset(1); hero_moving=1; event(TOUCH_BEGIN,900,400); event(TOUCH_TWO_FINGER_BEGIN,910,410);
     event(TOUCH_TWO_FINGER_TAP,910,410); event(TOUCH_END,910,410); assert(!key_down[0x12] && hero_stops==1 && !commands);
+    /* A quick two-finger chord over any HUD control still cancels the active command. */
+    reset(1);force_ui=1;MEM32(0x8044)=5;
+    event(TOUCH_BEGIN,100,200);event(TOUCH_TWO_FINGER_BEGIN,110,210);
+    event(TOUCH_TWO_FINGER_TAP,110,210);event(TOUCH_END,110,210);
+    assert(cancels==1&&!commands&&!downs&&!ups&&!cameras&&gesture.cancelled);
+    reset(1);force_ui=hero_moving=1;
+    event(TOUCH_BEGIN,100,200);event(TOUCH_TWO_FINGER_BEGIN,110,210);
+    event(TOUCH_TWO_FINGER_TAP,110,210);event(TOUCH_END,110,210);
+    assert(hero_stops==1&&!commands&&!downs&&!ups&&!cameras&&gesture.cancelled);
+    const uint32_t targeting_fields[]={0x394,0x388,0x38C};
+    for(unsigned i=0;i<sizeof targeting_fields/sizeof *targeting_fields;++i) {
+        reset(2);force_ui=1;MEM32(0x4000+targeting_fields[i])=42;
+        event(TOUCH_BEGIN,100,200);event(TOUCH_TWO_FINGER_BEGIN,110,210);
+        event(TOUCH_TWO_FINGER_TAP,110,210);event(TOUCH_END,110,210);
+        assert(cancels==1&&!commands&&!downs&&!ups&&!cameras&&gesture.cancelled);
+    }
     /* Two fingers on the battlefield are the camera and give no order. */
     reset(2); event(TOUCH_BEGIN,900,400); event(TOUCH_TWO_FINGER_BEGIN,900,400); event(TOUCH_TRANSFORM,920,410);
     event(TOUCH_END,920,410); assert(cameras==1 && last_camera_kind==1 && !commands && !cancels);
@@ -1089,19 +1108,28 @@ int main(void) {
     reset(2); event(TOUCH_BEGIN,900,400); event(TOUCH_TAP,900,400); event(TOUCH_END,900,400);
     event(TOUCH_BEGIN,900,400); assert(commands==1); event(TOUCH_PAN,950,410); assert(commands==1);
     MEM32(0x42E0)=0x188; event(TOUCH_END,950,410); assert(commands==2);
-    /* Adventure reset restores native default angles, keeping zoom and position. */
-    reset(1); MEMF(0xF339F4)=-.8f; MEMF(0xF339F8)=.7f;
+    /* Adventure reset matches native Home: distance, angles and FOV; anchor stays current. */
+    reset(1); MEMF(0xF339F0)=40;MEMF(0xF339F4)=-.8f; MEMF(0xF339F8)=.7f;MEMF(0xF33A00)=55;
     event(TOUCH_BEGIN,900,400); event(TOUCH_TWO_FINGER_BEGIN,900,400);
     event(TOUCH_THREE_FINGER_TAP,900,400); event(TOUCH_END,900,400);settle();
-    assert(!commands && camera_pose_sets==1 && last_pose_kind==0 && last_pose[1]==-.8f && last_pose[2]==.7f);
-    for(int i=0;i<10;++i)if(i!=1&&i!=2)assert(last_pose[i]==(float)(i+1));
-    /* A chord on UI or in targeting mode is consumed without clicking/casting. */
+    assert(!commands && camera_pose_sets==1 && last_pose_kind==0 && last_pose[0]==40&&last_pose[1]==-.8f && last_pose[2]==.7f&&last_pose[4]==55);
+    for(int i=0;i<10;++i)if(i!=0&&i!=1&&i!=2&&i!=4)assert(last_pose[i]==(float)(i+1));
+    /* A chord also resets over UI and in targeting mode, without clicking/casting. */
     reset(1);event(TOUCH_BEGIN,100,200);event(TOUCH_TWO_FINGER_BEGIN,100,200);
     event(TOUCH_THREE_FINGER_TAP,100,200);event(TOUCH_END,100,200);
-    assert(!downs && !ups && !camera_pose_sets && !commands);
+    assert(!downs && !ups && camera_pose_sets==1 && !commands);
     reset(2);MEM32(0x4394)=42;event(TOUCH_BEGIN,900,400);event(TOUCH_TWO_FINGER_BEGIN,900,400);
     event(TOUCH_THREE_FINGER_TAP,900,400);event(TOUCH_END,900,400);
-    assert(cancels==1 && !camera_pose_sets && !commands);
+    assert(cancels==1 && camera_pose_sets==1 && !commands);
+    /* Deployment and the main arena keep independent initial poses even on the same screen. */
+    reset(2);MEM32(0x42E0)=0x1000;event(TOUCH_BEGIN,900,400);
+    event(TOUCH_TWO_FINGER_BEGIN,900,400);event(TOUCH_THREE_FINGER_TAP,900,400);event(TOUCH_END,900,400);
+    assert(camera_pose_gets==1&&camera_pose_sets==1&&!commands&&!placement_ends);
+    MEM32(0x42E0)=0x80;event(TOUCH_BEGIN,900,400);
+    event(TOUCH_THREE_FINGER_TAP,900,400);event(TOUCH_END,900,400);
+    assert(camera_pose_gets==2&&camera_pose_sets==2&&!commands);
+    reset_town();event(TOUCH_BEGIN,900,400);event(TOUCH_THREE_FINGER_TAP,900,400);event(TOUCH_END,900,400);
+    assert(camera_pose_sets==1&&last_pose_kind==2&&!commands);
     reset(2); MEM32(0x42E0)=0x1000; event(TOUCH_BEGIN,900,400); event(TOUCH_PAN,950,410); event(TOUCH_END,950,410);
     assert(placement_begins==1 && placement_moves==1 && placement_ends==1 && releases==3 && !commands && !evaluations);
     reset(2); MEM32(0x42E0)=0x1000; event(TOUCH_BEGIN,900,400); event(TOUCH_TAP,900,400); event(TOUCH_END,900,400);

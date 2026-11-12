@@ -25,6 +25,8 @@ def engine_harness(edition, addresses):
         0x3B8: 0x38C if edition == 'vanilla' else 0x3A4,
         0x5E4: 0x55C if edition == 'vanilla' else 0x568,
         0x2E0: 0x2D8 if edition == 'vanilla' else 0x2F0,
+        0x3A0: 0x398 if edition == 'vanilla' else 0x394,
+        0x3A4: 0x39C if edition == 'vanilla' else 0x398,
     }
     harness = port_patches.legacy_ui_branch(HARNESS.encode(), False).decode()
     harness = re.sub(r'0x[0-9a-fA-F]+', lambda m:
@@ -47,6 +49,53 @@ def engine_harness(edition, addresses):
 
 
 class LegacyCameraTest(unittest.TestCase):
+    def test_adventure_home_matches_each_native_distance_angles_and_fov(self):
+        native = {
+            'toe': (0xF339F0, 0xF339F4, 0xF339F8, 0xF33A00),
+            'vanilla': (0xF10B2C, 0xF10B30, 0xF10B34, 0xF10B3C),
+            'hof': (0xEDD718, 0xEDD71C, 0xEDD720, 0xEDD728),
+        }
+        harness = r'''
+#include <assert.h>
+#include <math.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+static unsigned char memory[0x1100000];
+#define MEMF(p) (*(float *)(memory+(uint32_t)(p)))
+static struct {uint32_t screen;} gesture={0x1000};
+static int gets,sets,unreadable;
+static int void_vm_readable(uint32_t address,uint32_t size) {
+ return !unreadable&&address>=0x100&&(uint64_t)address+size<=sizeof memory;
+}
+static int void_touch_camera_pose(uint32_t screen,int kind,float pose[10],int set,int immediate) {
+ assert(screen==0x1000&&kind==0&&immediate==set);
+ if(!set){++gets;for(int i=0;i<10;++i)pose[i]=(float)(i+11);return 1;}
+ assert(pose[0]==40&&pose[1]==-.8f&&pose[2]==.7f&&pose[4]==55);
+ for(int i=0;i<10;++i)if(i!=0&&i!=1&&i!=2&&i!=4)assert(pose[i]==(float)(i+11));
+ ++sets;return 1;
+}
+#include "home.h"
+int main(void) {
+ MEMF(ROD)=40;MEMF(PITCH)=-.8f;MEMF(YAW)=.7f;MEMF(FOV)=55;
+ adventure_camera_home();assert(gets==1&&sets==1);
+ unreadable=1;adventure_camera_home();assert(gets==1&&sets==1);
+ puts("PASS native adventure Home: default rod/pitch/yaw/FOV, preserved roll/clipping/world anchor, unreadable guard");
+}
+'''
+        for edition, addresses in native.items():
+            with self.subTest(edition=edition):
+                path = ROOT / 'android/host/touch_engine.c'
+                if edition != 'toe':
+                    path, _ = port_patches.adapt_host_source(path,
+                        ROOT / 'build/tests' / ('adventure-home-' + edition), edition)
+                source = path.read_text()
+                start = source.index('static void adventure_camera_home(void)')
+                end = source.index('\n}\n', start) + 3
+                defines = ''.join(f'#define {name} {address}u\n' for name, address in
+                                  zip(('ROD', 'PITCH', 'YAW', 'FOV'), addresses))
+                compile_probe('adventure-home-' + edition, defines + harness, {'home.h': source[start:end]})
+
     def source(self, edition):
         source, _ = port_patches.adapt_host_source(ROOT / 'android/host/touch_camera.c',
             ROOT / 'build/tests' / ('legacy-camera-' + edition), edition)

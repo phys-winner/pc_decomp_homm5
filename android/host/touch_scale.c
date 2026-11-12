@@ -515,6 +515,25 @@ static int scale_fits(uint32_t root, int anchor, float width, float height, floa
 /* ------------------------------------------------------------------ text */
 
 static void_fn original_list_layout;
+static void_fn original_list_update;
+static void scale_refresh_window(uint32_t window, unsigned depth, unsigned *remaining);
+
+/* Filter changes create text without resizing the retained list. */
+static void scale_list_update(void)
+{
+    static unsigned depth;
+    uint32_t list = g_ecx >= 0xF8 ? g_ecx - 0xF8 : 0;
+    int outer = depth++ == 0;
+    original_list_update();
+    if (outer && scale_read32(list) == 0x00E94034u) {
+        void_regs saved;
+        void_regs_save(&saved);
+        unsigned remaining = 4096;
+        scale_refresh_window(list, 0, &remaining);
+        void_regs_load(&saved);
+    }
+    --depth;
+}
 
 /* Scrollable text rows must grow with wrapped columns before the native list places the next row. */
 static int scale_text_rows(uint32_t list)
@@ -556,6 +575,11 @@ static void scale_list_layout(void)
         ++depth;
         void_regs saved;
         void_regs_save(&saved);
+        if (!original_list_update) {
+            uint32_t update = scale_read32(scale_read32(list + 0xF8) + 0x0C);
+            if (update && (original_list_update = void_dispatch_find(update)))
+                void_dispatch_add(update, scale_list_update);
+        }
         uint32_t bar = scale_read32(list + 0x154), method = scale_read32(scale_read32(bar + 0xF8) + 0x18);
         if (method && void_dispatch_find(method) && !(void_call_guest_this(method, bar + 0xF8, 0, NULL) & 0xFFu) &&
             scale_text_rows(list)) {

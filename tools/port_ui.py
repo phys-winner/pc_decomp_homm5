@@ -230,6 +230,8 @@ def texts(edition="toe"):
            f"UI/{TEXTS}/PortAdditionalTooltip.txt": utf16("Настройки Android-порта и переход в лаунчер."),
            "UI/PortLauncher.txt": utf16("В лаунчер"),
            "UI/PortLauncherTooltip.txt": utf16("Завершить игру и открыть лаунчер. Сначала сохраните игру."),
+           "UI/PortSkipHints.txt": utf16("Пропустить все подсказки"),
+           "UI/PortSkipHintsTooltip.txt": utf16("Больше не показывать одноразовые подсказки управления во всех трёх играх."),
            "UI/ExitGameQuestion/Header.txt": utf16("Выход из игры"),
            "UI/ExitGameQuestion/Question.txt": utf16("Завершить игру? Несохранённый прогресс будет потерян.")}
     for identifier, _, _, name, tooltip, low, high, values, _ in options(edition):
@@ -332,8 +334,9 @@ def launcher_buttons(game_dir, edition="toe"):
     """Reuse the game's menu button, including its native input and rendering."""
     original, _ = source_resource(game_dir, "UI/GameOptions/Accept.(WindowMSButton).xdb", edition)
     members = {}
-    for name, parent, x, y, centered in (
-        ("PortOptionsLauncher", "UI/GameOptions/CategoryPanel.(WindowSimpleShared).xdb", 252, 490, False),
+    for name, action, parent, x, y, width, centered in (
+        ("PortOptionsLauncher", "PortLauncher", "UI/GameOptions/CategoryPanel.(WindowSimpleShared).xdb", 252, 472, 122, False),
+        ("PortSkipHints", "PortSkipHints", "UI/GameOptions/CategoryPanel.(WindowSimpleShared).xdb", 390, 472, 234, False),
     ):
         button = ET.fromstring(original)
         button.attrib.pop("ObjectRecordID", None)
@@ -341,10 +344,10 @@ def launcher_buttons(game_dir, edition="toe"):
         button.find("Visible").text = "true" if centered else "false"
         button.find("Priority").text = "1000"
         button.find("GameMessageReactions").clear()
-        button.find("TextFileRef").set("href", "/UI/PortLauncher.txt")
-        button.find("TooltipFileRef").set("href", "/UI/PortLauncherTooltip.txt")
+        button.find("TextFileRef").set("href", f"/UI/{action}.txt")
+        button.find("TooltipFileRef").set("href", f"/UI/{action}Tooltip.txt")
         for field, value in {"Position/First/x": x, "Position/First/y": y,
-                             "Size/First/x": 122, "Size/First/y": 34}.items():
+                             "Size/First/x": width, "Size/First/y": 34}.items():
             button.find("Placement/" + field).text = str(value)
         button.find("Placement/Size/Second").text = "true"
         for axis in ("HorAllign", "VerAllign"):
@@ -352,14 +355,43 @@ def launcher_buttons(game_dir, edition="toe"):
         for margin in ("LowerMargin", "UpperMargin"):
             button.find(f"Placement/{margin}/Second").text = "false"
         command = button.find("ButtonStates/Item/CommandsOnEnterState/Commands/Item")
-        command.set("href", "/UI/PortLauncher.(UISDirectRunReaction).xdb#xpointer(/UISDirectRunReaction)")
+        command.set("href", f"/UI/{action}.(UISDirectRunReaction).xdb#xpointer(/UISDirectRunReaction)")
         path = f"UI/{name}.(WindowMSButton).xdb"
         members[path] = ET.tostring(button, encoding="utf-8", xml_declaration=True)
         original, _ = source_resource(game_dir, parent, edition)
-        shared = ET.fromstring(original)
+        shared = ET.fromstring(members.get(parent, original))
         ET.SubElement(shared.find("Children"), "Item", href=f"/{path}#xpointer(/WindowMSButton)")
         members[parent] = ET.tostring(shared, encoding="utf-8", xml_declaration=True)
         original, _ = source_resource(game_dir, "UI/GameOptions/Accept.(WindowMSButton).xdb", edition)
+    # The original 122-wide button paints fixed-size textures even when its window is wider.
+    name = "UI/PortSkipHints.(WindowMSButton).xdb"
+    button = ET.fromstring(members[name])
+    button.find("Shared").set("href", "/UI/PortSkipHints.(WindowMSButtonShared).xdb#xpointer(/WindowMSButtonShared)")
+    members[name] = ET.tostring(button, encoding="utf-8", xml_declaration=True)
+    shared = ET.fromstring(source_resource(game_dir, "UI/Common/DlgButtons/Button_122_34.(WindowMSButtonShared).xdb", edition)[0])
+    shared.attrib.pop("ObjectRecordID", None)
+    shared.find("Placement/Size/First/x").text = "234"
+    shared.find("Placement/Size/Second").text = "true"
+    for layer in shared.findall("VisualStates/Item/*/Background") + shared.findall("VisualStates/Item/*/Foreground"):
+        href = layer.get("href", "")
+        if not href:
+            continue
+        original = ET.fromstring(source_resource(game_dir, "UI/Common/DlgButtons/" + href.split("#", 1)[0], edition)[0])
+        texture = original.find("Texture").get("href")
+        if not texture.startswith("/"):
+            texture = "/UI/Common/DlgButtons/" + texture
+        path = "UI/" + href.split(".(", 1)[0].replace("Button_122_34", "PortSkipHints") + ".(BackgroundSimpleScallingTexture).xdb"
+        layer.set("href", "/" + path + "#xpointer(/BackgroundSimpleScallingTexture)")
+        scaled = ET.Element("BackgroundSimpleScallingTexture")
+        ET.SubElement(scaled, "ClassTypeID").text = "285694784"
+        ET.SubElement(scaled, "Texture", href=texture)
+        ET.SubElement(scaled, "Color").text = original.findtext("Color")
+        size = ET.SubElement(scaled, "Size")
+        # Size is the source texture rectangle; the window supplies the stretched destination.
+        ET.SubElement(size, "x").text = "122"
+        ET.SubElement(size, "y").text = "34"
+        members[path] = ET.tostring(scaled, encoding="utf-8", xml_declaration=True)
+    members["UI/PortSkipHints.(WindowMSButtonShared).xdb"] = ET.tostring(shared, encoding="utf-8", xml_declaration=True)
     members["UI/PortLauncher.(UISDirectRunReaction).xdb"] = b'''<UISDirectRunReaction>
       <ClassTypeID>554457792</ClassTypeID><SUIStateBaseFakeField>0</SUIStateBaseFakeField>
       <ReactionForward href="/UI/PortLauncher.(ARSendGameMessage).xdb#xpointer(/ARSendGameMessage)"/>
@@ -367,6 +399,10 @@ def launcher_buttons(game_dir, edition="toe"):
     members["UI/PortLauncher.(ARSendGameMessage).xdb"] = b'''<ARSendGameMessage>
       <ClassTypeID>352859136</ClassTypeID><EventName>port_launcher</EventName><IntParam>0</IntParam>
       </ARSendGameMessage>'''
+    members["UI/PortSkipHints.(UISDirectRunReaction).xdb"] = members[
+        "UI/PortLauncher.(UISDirectRunReaction).xdb"].replace(b"PortLauncher", b"PortSkipHints")
+    members["UI/PortSkipHints.(ARSendGameMessage).xdb"] = members[
+        "UI/PortLauncher.(ARSendGameMessage).xdb"].replace(b"port_launcher", b"port_skip_hints")
     # One more category needs one more row above the original menu buttons.
     menu_rows = ("MenuPanel.(WindowSimple).xdb", "Template.(WindowMSButton).xdb",
                  "Back.(WindowMSButton).xdb")

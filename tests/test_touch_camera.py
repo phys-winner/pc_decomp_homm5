@@ -106,8 +106,10 @@ static uint32_t void_call_guest_this(uint32_t va,uint32_t self,int n,const uint3
     if(va==0x618170) {
         assert(self==0x10000&&!n&&!args&&!MEM32(self+0x294));
         ++town_initializations;MEM32(self+0x294)=1;
+        MEM32(self+0xA4)=0x20000;
         MEM32(self+0x374)=town_init_failure==1?0:0x22000;
         memcpy(GPTR(0x40000),town_initial_pose,40);
+        memcpy(GPTR(self+0x3A0),town_initial_pose,40);
         if(town_init_failure==2)current_top=0;
         if(town_init_failure==3)MEM32(self+0xA0)=0xA004;
         if(town_init_failure==4)MEM32(self+0x220)=0x24004;
@@ -290,6 +292,7 @@ int main(void) {
     assert(fabsf(installed[0]-40/powf(1.25f,2))<.0001f&&installed[7]==990&&installed[8]==1960);
     assert(convert_calls==converts+4&&set_calls==sets+2);
     for(int i=1;i<7;++i) assert(installed[i]==adventure[i]);
+    MEM32(0x103B8)=0x21000; /* Distinct screen classes share fixture storage. */
     MEM32(0x10000)=0xE1DA84;
     assert(void_touch_camera(0x10000,1,600,400,0,0,1,-0.2f));
     assert(fabsf(installed[2]-(0.5f+0.4f))<.00001f&&installed[0]==40&&convert_calls==converts+6);
@@ -351,6 +354,33 @@ int main(void) {
     assert(fabsf(installed[1]-(-0.6f-0.15f))<.00001f);
     for(int i=0;i<10;++i) if(i!=1) assert(installed[i]==town_pose[i]);
     assert(void_touch_camera_tilt(0x10000,2,-10000)&&installed[1]==-0.05f&&town_sets==towns+2);
+    /* A render tap interrupts flyup once; reset uses the native saved pose, not an animated sample. */
+    towns=town_sets;
+    memcpy(GPTR(0x103A0),town_pose,40);
+    assert(!void_touch_town_interrupt(0x10000));
+    assert(void_touch_town_camera_home(0x10000)&&town_sets==towns+1&&!memcmp(installed,town_pose,40));
+    put_float(0x103A4,NAN);
+    assert(!void_touch_town_camera_home(0x10000)&&town_sets==towns+1);
+    memcpy(GPTR(0x103A0),town_pose,40);
+    MEM32(0x10294)=0;MEM32(0x10374)=0;
+    int initializations=town_initializations;
+    assert(void_touch_town_interrupt(0x10000)&&town_initializations==initializations+1);
+    assert(!void_touch_town_interrupt(0x10000)&&town_initializations==initializations+1);
+    assert(void_touch_town_camera_home(0x10000)&&!memcmp(installed,town_initial_pose,40));
+    town_busy=1;assert(!void_touch_town_camera_home(0x10000));town_busy=0;
+    /* Three-finger Home may be the first town interaction. The animated
+       director is not a CCamera and the native default cache is empty until
+       TownManualInit replaces it; Home must prepare before reading either. */
+    MEM32(0x10294)=0;MEM32(0x10374)=0;MEM32(0x100A4)=0x23000;
+    MEM32(0x23000)=0x33000;MEM32(0x33054)=0x410050;
+    memset(GPTR(0x103A0),0,40);
+    float unreadable_director_pose[10];
+    assert(!void_touch_camera_pose(0x10000,2,unreadable_director_pose,0,0));
+    towns=town_sets;initializations=town_initializations;
+    assert(void_touch_town_camera_home(0x10000)&&town_sets==towns+1);
+    assert(town_initializations==initializations+1&&MEM32(0x10294)==1&&MEM32(0x100A4)==0x20000);
+    assert(!memcmp(installed,town_initial_pose,40)&&!memcmp(GPTR(0x103A0),town_initial_pose,40));
+    MEM32(0x103B8)=0x21000; /* The fixture reuses storage for distinct native screen classes. */
     /* The battle's home pose: read it, then glide (not immediate) back to it. */
     float home[10];MEM32(0x10000)=0xE1DA84;memcpy(GPTR(0x40000),adventure,40);
     assert(void_touch_camera_pose(0x10000,1,home,0,0)&&!memcmp(home,adventure,40));

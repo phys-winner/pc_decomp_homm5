@@ -81,7 +81,7 @@ static unsigned char memory[0x20000];
 #define MEM8(a) memory[a]
 static uint32_t scratch=0x18000,screen=0x1000,pick=0x4000;
 static uint64_t touch_frame=10;
-static struct {uint32_t screen,root,row,icon,left,right;uint64_t frame;} choice;
+static struct {uint32_t screen,root,row,icon,left,right;uint64_t frame;float swipe_x;} choice;
 static struct {uint32_t screen,root;int kind,active,panning,held,pressed,committed,retiring;float start_x,start_y;uint64_t release_frame;} gesture;
 static unsigned down,up,shown,hide,hover;static float clicked_x;
 static uint32_t read32(uint32_t p){return p<sizeof memory-4?MEM32(p):0;}
@@ -94,6 +94,7 @@ static int same_screen(void){return screen==gesture.screen;}
 static uint32_t ui_pick(uint32_t s,float x,float y){assert(s==screen);(void)x;(void)y;return pick;}
 static uint32_t void_call_guest(uint32_t f,int n,const uint32_t *a,int pops){assert(f==CAST_VA&&n==5&&!pops&&a[3]==RTTI_WINDOW);return a[0];}
 static uint32_t logical_point(float x,float y){MEMF(scratch)=x;MEMF(scratch+4)=y;return scratch;}
+static void void_input_screen_size(int *w,int *h){*w=1920;*h=1080;}
 static uint32_t ui_point_call(uint32_t s,unsigned method,uint32_t point,uint32_t button){
  assert(s==screen&&point==scratch);if(method==0x18){++down;clicked_x=MEMF(point);assert(button==1);}
  else if(method==0x1c){++up;assert(button==1);}else{assert(method==0x24);++hover;}return 0;
@@ -116,7 +117,14 @@ int main(void){
  touch_frame+=2;choice_pump();assert(MEMF(scratch)==127.5f&&MEMF(scratch+4)==127.5f);
  assert(choice_begin(125,125)&&hide==1);assert(choice_end(225,125)&&down==2&&clicked_x==67.5f);
  assert(choice_end(130,250)&&down==2);gesture.held=1;assert(choice_end(25,125)&&down==2);
- screen=0x1100;choice_pump();assert(!choice.icon&&hide==1);
+ gesture.held=0;assert(choice_begin(125,125));
+ choice_swipe(-140,125);assert(down==5&&up==5);
+ choice_swipe(-140,125);assert(down==5); /* An unchanged move never repeats a step. */
+ assert(choice_end(-140,125)&&down==5); /* Release never duplicates the last step. */
+ assert(choice_begin(125,125));choice_swipe(-140,125);assert(down==8);
+ choice_swipe(125,125);assert(down==8); /* Neutral point cannot start a vertical gesture. */
+ choice_swipe(215,125);assert(down==12&&clicked_x==67.5f); /* Reversal uses remaining travel. */
+ unsigned hidden=hide;screen=0x1100;choice_pump();assert(!choice.icon&&hide==hidden);
  screen=gesture.screen;pick=0;assert(!choice_begin(0,0));
  puts("PASS scenario choices: both swipe directions, active frame, persistent tooltip centre, vertical/held guards and screen lifetime");return 0;
 }

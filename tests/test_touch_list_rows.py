@@ -29,7 +29,9 @@ typedef struct {uint32_t ecx,esp;} void_regs;
 static void void_regs_save(void_regs *r){r->ecx=g_ecx;r->esp=g_esp;}
 static void void_regs_load(const void_regs *r){g_ecx=r->ecx;g_esp=r->esp;}
 static int reordered,laid_out,resized;
-static int void_dispatch_find(uint32_t address){return address==0x1040;}
+static void bool_method(void){}
+static void_fn void_dispatch_find(uint32_t address){return address==0x1040?bool_method:NULL;}
+static void void_dispatch_add(uint32_t address,void_fn method){(void)address;(void)method;assert(!"no Update interface in this fixture");}
 static uint32_t void_call_guest_this(uint32_t address,uint32_t self,int n,const uint32_t *args){
  (void)args;assert(!n);
  if(address==0x1040){assert(self==0xc0f8);return 0xDEADBE00u;} /* Native bool writes only AL. */
@@ -38,6 +40,7 @@ static uint32_t void_call_guest_this(uint32_t address,uint32_t self,int n,const 
 }
 static void native_layout(void){assert(g_ecx==0x1000);++laid_out;MEMF(0xb0a8)=39;g_ecx=0xbeef;g_esp+=4;}
 #include "rows_actual.h"
+static void scale_refresh_window(uint32_t window,unsigned depth,unsigned *remaining){(void)window;(void)depth;(void)remaining;}
 int main(void){
  MEM32(0x115c)=0x2000;MEM32(0x20a4)=0x8000;MEM32(0x20a8)=0x8004;MEM32(0x8000)=0x3000;
  MEM32(0x3140)=0x4000;MEM8(0x4070)=1;MEMF(0x40a8)=21;

@@ -124,6 +124,7 @@ static int spellbook_kind(uint32_t screen)
 #ifdef VOID_ANDROID_APP
 void void_android_return_to_launcher(void);
 void void_android_gamepad_help(void);
+void void_android_touch_hint(int id);
 void void_android_switch_game(void);
 int void_android_take_game_switch(void);
 static void_fn original_game_message, original_exit_confirm;
@@ -143,9 +144,12 @@ static void port_game_message(void)
                   !memcmp(GPTR(begin), "port_gamepad", 12);
     int switch_game = db && end - begin == 16 && void_vm_readable(begin, 16) &&
                       !memcmp(GPTR(begin), "port_switch_game", 16);
+    int skip_hints = db && end - begin == 15 && void_vm_readable(begin, 15) &&
+                     !memcmp(GPTR(begin), "port_skip_hints", 15);
     void_regs_load(&saved);
-    if (gamepad || switch_game) {
-        if (switch_game) void_android_switch_game();
+    if (gamepad || switch_game || skip_hints) {
+        if (skip_hints) void_android_touch_hint(0);
+        else if (switch_game) void_android_switch_game();
         else void_android_gamepad_help();
         g_eax = (g_eax & ~255u) | 1u;
         g_esp += 16;
@@ -179,7 +183,8 @@ static void port_launcher_visibility(uint32_t window, unsigned depth, int visibl
     if (!void_dispatch_find(getter)) return;
     uint32_t placement = void_call_guest_this(getter, window, 0, NULL);
     uint32_t begin = read32(placement + 0x58), end = read32(placement + 0x5C);
-    int button = end - begin == 19 && void_vm_readable(begin, 19) && !memcmp(GPTR(begin), "PortOptionsLauncher", 19);
+    int button = (end - begin == 19 && void_vm_readable(begin, 19) && !memcmp(GPTR(begin), "PortOptionsLauncher", 19)) ||
+                 (end - begin == 13 && void_vm_readable(begin, 13) && !memcmp(GPTR(begin), "PortSkipHints", 13));
     if (button && void_vm_readable(placement + 0x70, 1)) {
         /* Children store CWindow; SetVisible belongs to its virtual IWindow base. */
         uint32_t vb = read32(window + 0x10), interface = vb ? window + 0x10 + read32(vb + 8) : 0;
@@ -326,13 +331,62 @@ static void touch_cursor_software_draw(void)
     original_cursor_draw();
 }
 
+static uint32_t window_placement(uint32_t window);
+
+static int touch_cursor_prediction(uint32_t owner, float *x, float *y)
+{
+    if (gesture.kind != SCREEN_COMBAT || gesture.ui || !gesture.combat_aim ||
+        gesture.aiming || gesture.placement || !scratch || !void_vm_writable(scratch + 432, 16)) return 0;
+    int placed = 0;
+    void_regs saved;
+    void_regs_save(&saved);
+    if (!same_screen()) goto restore;
+    uint32_t prediction = read32(gesture.screen + 0x4C0), base = virtual_base(prediction, 8);
+    if (!base || !void_dispatch_find(0x00D119FCu)) goto restore;
+    const uint32_t cast[] = {base, 0, 0x00F2DAF4u, 0x00F2DA88u, 0};
+    uint32_t window = void_call_guest(0x00D119FCu, 5, cast, 0), placement = window_placement(window);
+    uint32_t name = read32(placement + 0x58), end = read32(placement + 0x5C);
+    if (!placement || !void_vm_readable(window + 0x64, 8) || !MEM8(placement + 0x70) ||
+        end - name != 17 || !void_vm_readable(name, 17) || memcmp(GPTR(name), "cursor_prediction", 17)) goto restore;
+    uint32_t rectangle = read32(read32(owner) + 0x10), output = scratch + 432;
+    if (!void_dispatch_find(rectangle) || void_call_guest_this(rectangle, owner, 1, &output) != output) goto restore;
+    float rect[4]; memcpy(rect, GPTR(output), sizeof rect);
+    for (unsigned i = 0; i < 4; ++i) if (!isfinite(rect[i])) goto restore;
+    int width, height; void_input_screen_size(&width, &height);
+    float canvas_w = MEMF(0x00F74BE0u), canvas_h = MEMF(0x00F74BE4u);
+    float left = MEMF(window + 0x64), top = MEMF(window + 0x68), text_w = MEMF(placement + 0xA4);
+    if (width <= 0 || height <= 0 || !isfinite(canvas_w) || !isfinite(canvas_h) ||
+        canvas_w <= 0 || canvas_h <= 0 || !isfinite(left) || !isfinite(top) ||
+        !isfinite(text_w) || text_w <= 0 || text_w > canvas_w ||
+        rect[2] <= rect[0] || rect[3] <= rect[1]) goto restore;
+    uint32_t point = logical_point(*x, *y);
+    if (!point) goto restore;
+    /* Move only the rendered native icon; prediction and picking retain the actual touch. */
+    float draw_x = *x + (left + text_w * .5f - MEMF(point)) * width / canvas_w - (rect[0] + rect[2]) * .5f;
+    float draw_y = *y + (top - 4 - MEMF(point + 4)) * height / canvas_h - rect[3];
+    if (isfinite(draw_x) && isfinite(draw_y)) { *x += draw_x; *y += draw_y; placed = 1; }
+restore:
+    void_regs_load(&saved);
+    return placed;
+}
+
 static void touch_cursor_draw(void)
 {
-    if (touch_mode && gesture.active && !gesture.cancelled && void_port_touch_cursor() &&
+    if (touch_mode && gesture.active && !gesture.cancelled &&
         touch_cursor_x >= 0 && touch_cursor_y >= 0 &&
         (gesture.ui || !gesture.panning || gesture.combat_aim) && void_vm_writable(0x00FE6DA0u, 8)) {
+        float previous_x = MEMF(0x00FE6DA0u), previous_y = MEMF(0x00FE6DA4u);
         MEMF(0x00FE6DA0u) = touch_cursor_x; MEMF(0x00FE6DA4u) = touch_cursor_y;
-        touch_cursor_software_draw(); return;
+        float x = touch_cursor_x, y = touch_cursor_y;
+        int prediction = touch_cursor_prediction(g_ecx, &x, &y);
+        /* Damage predictions always show their action; the option controls other cursors. */
+        if (prediction || void_port_touch_cursor()) {
+            MEMF(0x00FE6DA0u) = x; MEMF(0x00FE6DA4u) = y;
+            touch_cursor_software_draw();
+            MEMF(0x00FE6DA0u) = touch_cursor_x; MEMF(0x00FE6DA4u) = touch_cursor_y;
+            return;
+        }
+        MEMF(0x00FE6DA0u) = previous_x; MEMF(0x00FE6DA4u) = previous_y;
     }
     uint32_t x, y; uint64_t moved;
     int physical = void_input_pointer(&x, &y, &moved);
@@ -361,7 +415,7 @@ static uint32_t object_method(uint32_t object, unsigned offset);
  * holds it without a finger, and each later tap switches card and effects. A touch elsewhere ends it: on
  * another portrait that one is selected, beside an open card the touch only closes the card. */
 static struct { uint32_t screen, root, controller, unit; float x, y; int card, mode, retries; uint64_t frame; } atb;
-static struct { uint32_t screen, root, row, icon, left, right; uint64_t frame; } choice;
+static struct { uint32_t screen, root, row, icon, left, right; uint64_t frame; float swipe_x; } choice;
 
 static int tooltip_held(void)
 {
@@ -2066,6 +2120,7 @@ static int choice_begin(float x, float y)
             choice_clear();
             choice.screen = gesture.screen; choice.root = gesture.root; choice.row = row;
             choice.icon = icon; choice.left = left; choice.right = right; choice.frame = touch_frame;
+            choice.swipe_x = x;
             choice_frame(icon, 1);
             return 1;
         }
@@ -2094,19 +2149,30 @@ static void choice_pump(void)
     else choice_clear();
 }
 
+static void choice_swipe(float x, float y)
+{
+    if (!choice.icon || choice.screen != gesture.screen || !same_screen() || gesture.held) return;
+    float dx = x - gesture.start_x, dy = y - gesture.start_y;
+    int width, height;
+    void_input_screen_size(&width, &height);
+    float step = fmaxf(24, .08f * (float)(width < height ? width : height));
+    if (!gesture.panning || fabsf(dx) <= fabsf(dy) || !isfinite(x) || !isfinite(y)) return;
+    for (unsigned count = 0; count < 32 && fabsf(x - choice.swipe_x) >= step && same_screen(); ++count) {
+        int next = x < choice.swipe_x;
+        uint32_t point = choice_point(next ? choice.right : choice.left);
+        if (!point) break;
+        ui_point_call(gesture.screen, 0x24, point, 0);
+        if (same_screen()) ui_point_call(gesture.screen, 0x18, point, 1);
+        if (same_screen()) ui_point_call(gesture.screen, 0x1C, point, 1);
+        choice.swipe_x += next ? -step : step;
+        VLOG("[touch] scenario choice %08X direction=%d", choice.icon, next ? 1 : -1);
+    }
+}
+
 static int choice_end(float x, float y)
 {
     if (!choice.icon || choice.screen != gesture.screen || !same_screen()) return 0;
-    float dx = x - gesture.start_x, dy = y - gesture.start_y;
-    if (gesture.panning && !gesture.held && fabsf(dx) > fabsf(dy) && fabsf(dx) >= 24) {
-        uint32_t point = choice_point(dx < 0 ? choice.right : choice.left);
-        if (point) {
-            ui_point_call(gesture.screen, 0x24, point, 0);
-            if (same_screen()) ui_point_call(gesture.screen, 0x18, point, 1);
-            if (same_screen()) ui_point_call(gesture.screen, 0x1C, point, 1);
-            VLOG("[touch] scenario choice %08X direction=%d", choice.icon, dx < 0 ? 1 : -1);
-        }
-    }
+    choice_swipe(x, y);
     choice.frame = touch_frame;
     gesture.held = gesture.pressed = 0;
     gesture.committed = gesture.retiring = 1;
@@ -2232,7 +2298,7 @@ static void ui_event(const void_touch_event *event)
         break;
     case TOUCH_PAN: {
         gesture.panning = 1;
-        if (choice.icon) break;
+        if (choice.icon) { choice_swipe(event->x, event->y); break; }
         if (gesture.ghost_energy && !gesture.held) {
             ghost_point(event->x, event->y, 0);
             ui_hover(event->x, event->y);
@@ -2386,9 +2452,33 @@ static void startup_pump(void)
     void_android_load_ready();
 }
 
+#ifdef VOID_ANDROID_APP
+static void touch_hint_pump(void)
+{
+    static unsigned hint_requested;
+    uint32_t hint_screen = current_screen();
+    int hint_kind = screen_kind(hint_screen);
+    unsigned hints = hint_kind == SCREEN_MENU ? 0 : 1u << 4;
+    if (hint_kind == SCREEN_ADVENTURE) {
+        uint32_t controller = read32(hint_screen + 0x5F4);
+        if (void_port_console_enabled()) hints |= 1u << 2;
+        if (controller && read32(controller + 0x44) == 3) hints |= 1u << 3;
+        if (controller && read32(controller + 0x44) == 5) hints |= 1u << 1;
+    } else if (hint_kind == SCREEN_COMBAT && read32(hint_screen + 0x2E0) != 0x1000 &&
+               (read32(hint_screen + 0x394) || read32(hint_screen + 0x388) || read32(hint_screen + 0x38C))) hints |= 1u << 1;
+    for (int id = 1; id <= 4; ++id) if ((hints & ~hint_requested) & (1u << id)) {
+        hint_requested |= 1u << id;
+        void_android_touch_hint(id);
+    }
+}
+#endif
+
 void void_touch_ui_pump(void)
 {
     console_open_pump();
+#ifdef VOID_ANDROID_APP
+    touch_hint_pump();
+#endif
     if (pointer_text.pending && touch_frame > pointer_text.frame) {
         pointer_text.pending = 0;
         uint32_t screen = current_screen();
@@ -2859,19 +2949,25 @@ static void placement_trace(const char *what, float x, float y)
 /* The battle camera as the battle began: its arena camera set has no
  * separate "default position" action, so the first touch of a battle
  * screen records it. */
-static struct { uint32_t screen, controller; int valid; float pose[10]; } combat_home;
+static struct { uint32_t screen, controller, placement; int valid, deployment; float pose[10]; } combat_home;
 
 static void combat_home_capture(void)
 {
     if (gesture.kind != SCREEN_COMBAT) return;
-    if (combat_home.valid && combat_home.screen == gesture.screen && combat_home.controller == gesture.controller) return;
+    int deployment = read32(gesture.screen + 0x2E0) == 0x1000;
+    uint32_t placement = deployment ? read32(read32(gesture.screen + 0x488) + 0x24) : 0;
+    if (combat_home.valid && combat_home.screen == gesture.screen && combat_home.controller == gesture.controller &&
+        combat_home.placement == placement && combat_home.deployment == deployment) return;
     combat_home.valid = void_touch_camera_pose(gesture.screen, 1, combat_home.pose, 0, 0);
     combat_home.screen = gesture.screen;
     combat_home.controller = gesture.controller;
+    combat_home.placement = placement;
+    combat_home.deployment = deployment;
 }
 
 static void combat_camera_home(void)
 {
+    combat_home_capture();
     if (!combat_home.valid || combat_home.screen != gesture.screen || combat_home.controller != gesture.controller) return;
     float pose[10];
     memcpy(pose, combat_home.pose, sizeof pose);
@@ -2883,18 +2979,14 @@ static void combat_camera_home(void)
 static void adventure_camera_home(void)
 {
     float pose[10];
-    if (!void_vm_readable(0x00F339F4u, 8) ||
+    if (!void_vm_readable(0x00F339F0u, 20) ||
         !void_touch_camera_pose(gesture.screen, 0, pose, 0, 0)) return;
-    /* The original default-camera action reads these angles; keep the current zoom and anchor. */
+    /* Match the native Home action, preserving the current world anchor. */
+    pose[0] = MEMF(0x00F339F0u);
     pose[1] = MEMF(0x00F339F4u);
     pose[2] = MEMF(0x00F339F8u);
+    pose[4] = MEMF(0x00F33A00u);
     void_touch_camera_pose(gesture.screen, 0, pose, 1, 1);
-}
-
-static int camera_world(void)
-{
-    return !gesture.ui && !gesture.aiming && !gesture.placement &&
-           (gesture.kind == SCREEN_ADVENTURE || gesture.kind == SCREEN_COMBAT);
 }
 
 static void adventure_cancel(void)
@@ -3215,6 +3307,7 @@ void void_touch_engine_event(const void_touch_event *event)
             gesture.placement = 1;
         }
         if (gesture.placement) gesture.aiming = 1;
+        combat_home_capture();
         gesture.active = 1;
         if (!publish_point(event->x, event->y)) { gesture.active = 0; return; }
         touch_mode = 1;
@@ -3227,7 +3320,6 @@ void void_touch_engine_event(const void_touch_event *event)
             if (gesture.kind == SCREEN_ADVENTURE) adventure_point(event->x, event->y, 0);
             else combat_point(event->x, event->y, 0);
         } else if (gesture.kind == SCREEN_COMBAT) {
-            combat_home_capture();
             gesture.combat_aim = 1;
             combat_point(event->x, event->y, 0);
             /* Pressed on the acting stack (+2F4 under the cursor, +2AC acting) that can shoot (+1E0). */
@@ -3248,6 +3340,22 @@ void void_touch_engine_event(const void_touch_event *event)
         return;
     }
     int kind = event->kind;
+    if (kind == TOUCH_TWO_FINGER_TAP && same_screen()) {
+        /* Cancellation belongs to the active command, even when the chord starts over HUD. */
+        int armed = target_armed();
+        if (armed || (gesture.kind == SCREEN_ADVENTURE && adventure_stop())) {
+            if (gesture.ui) ui_release(1);
+            if (armed) {
+                if (gesture.kind == SCREEN_ADVENTURE) adventure_cancel();
+                else if (gesture.kind == SCREEN_COMBAT) combat_cancel();
+            }
+            combat_card_end();
+            gesture.committed = gesture.cancelled = 1;
+            gesture.combat_aim = 0;
+            publish_point(-1, -1);
+            return;
+        }
+    }
     if (gesture.card && (kind == TOUCH_TWO_FINGER_BEGIN || kind == TOUCH_TRANSFORM || kind == TOUCH_TILT ||
                          kind == TOUCH_TWO_FINGER_CANCEL || kind == TOUCH_TWO_FINGER_TAP)) {
         /* The card holds the view still: a drifting second finger is no camera gesture. */
@@ -3273,9 +3381,10 @@ void void_touch_engine_event(const void_touch_event *event)
     /* Fingers added on the selected portrait's open card change nothing (its taps switch it). */
     if (gesture.atb && atb.card && (kind == TOUCH_SECOND_BEGIN || kind == TOUCH_SECOND_TAP || kind == TOUCH_SECOND_HOLD)) return;
     if (kind == TOUCH_THREE_FINGER_TAP) {
-        if (same_screen() && camera_world() && !gesture.cancelled) {
+        if (same_screen()) {
             if (gesture.kind == SCREEN_ADVENTURE) adventure_camera_home();
-            else combat_camera_home();
+            else if (gesture.kind == SCREEN_COMBAT) combat_camera_home();
+            else if (gesture.kind == SCREEN_TOWN) void_touch_town_camera_home(gesture.screen);
         }
         /* A chord over UI or a targeting mode is consumed, never a click. */
         if (gesture.ui && same_screen()) {
@@ -3468,7 +3577,8 @@ void void_touch_engine_event(const void_touch_event *event)
             else if (gesture.kind == SCREEN_COMBAT) {
                 if (kind != TOUCH_DOUBLE_TAP || !combat_double(event->x, event->y))
                     combat_point(event->x, event->y, 1);
-            } else if (gesture.kind == SCREEN_TOWN) town_activate(event->x, event->y);
+            } else if (gesture.kind == SCREEN_TOWN && !void_touch_town_interrupt(gesture.screen))
+                town_activate(event->x, event->y);
             if (gesture.placement) placement_trace("drop", event->x, event->y);
             gesture.committed = 1;
         } else if (gesture.placement) {

@@ -59,6 +59,8 @@ int void_touch_camera(uint32_t screen, int kind, float x, float y,
 int void_touch_camera_tilt(uint32_t screen, int kind, float dy);
 /* The camera pose (ten CameraPos floats); set moves the operator's target. */
 int void_touch_camera_pose(uint32_t screen, int kind, float pose[10], int set, int immediate);
+int void_touch_town_interrupt(uint32_t screen);
+int void_touch_town_camera_home(uint32_t screen);
 void void_touch_camera_init(void);
 void void_touch_combat_frame(uint32_t screen, float width, float height, float hud_top, float top, float bottom);
 void void_touch_adventure_frame(uint32_t screen, float height, float top, float bottom);

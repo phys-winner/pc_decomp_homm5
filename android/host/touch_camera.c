@@ -217,6 +217,21 @@ int void_touch_camera_pose(uint32_t screen, int kind, float pose[10], int set_po
     return 1;
 }
 
+int void_touch_town_interrupt(uint32_t screen)
+{
+    return void_vm_readable(screen, 0x298) && !MEM32(screen + 0x294) && camera_town_prepare(screen);
+}
+
+int void_touch_town_camera_home(uint32_t screen)
+{
+    if (!camera_town_prepare(screen) || !void_vm_readable(screen + 0x3A0, 40)) return 0;
+    /* The native town manual initializer keeps its original CameraPos here. */
+    float pose[10];
+    memcpy(pose, GPTR(screen + 0x3A0), sizeof pose);
+    if (!isfinite(pose[0]) || pose[0] <= 0) return 0;
+    return void_touch_camera_pose(screen, 2, pose, 1, 1);
+}
+
 /* Use the original placement cells, including empty cells and their terrain heights. */
 enum { DEPLOY_ZONE_AXIS_LIMIT = 64, DEPLOY_ZONE_POINTS = 1024 };
 static struct {

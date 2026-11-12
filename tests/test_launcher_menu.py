@@ -30,7 +30,8 @@ static uint32_t read32(uint32_t a) {return void_vm_readable(a,4)?MEM32(a):0;}
 static uint32_t mock_screen=0x1000, mock_db=0x2000;
 static uint32_t current_screen(void) {return mock_screen;}
 static int originals,confirms,returns,accepts,messages,clones;
-static int helps,switches,switch_request;
+static int helps,switches,switch_request,skips;
+void void_android_touch_hint(int id) {assert(id==0);skips++;}
 void void_android_switch_game(void) {switches++;}
 int void_android_take_game_switch(void) {int n=switch_request;switch_request=0;return n;}
 void void_android_gamepad_help(void) {helps++;}
@@ -63,6 +64,7 @@ int main(void) {
     click("other",0);assert(originals==1&&!messages&&!confirms&&!returns);
     click("port_gamepad",0);assert(helps==1&&originals==1&&!messages&&!returns&&g_eax==0xFF01);
     click("port_switch_game",0);assert(switches==1&&!messages&&!returns&&g_eax==0xFF01);
+    click("port_skip_hints",0);assert(skips==1&&!messages&&!returns&&g_eax==0xFF01);
     port_menu_pump();assert(!messages); /* Closing the Android dialog has no exit side effect. */
     MEM32(mock_screen)=0xBEEF;switch_request=1;port_menu_pump();
     assert(messages==1&&returns==1&&switch_confirm_pending&&!confirms&&!switch_request);
@@ -79,6 +81,9 @@ int main(void) {
     MEM32(0x5000)=0x6000;MEM32(0x6008)=0x1234;MEM32(0x5020)=0x7000;
     MEM32(0x5010)=0xD000;MEM32(0xD008)=0x80;MEM32(0x5090)=0xE000;MEM32(0xE044)=0x5678;
     MEM32(0x7058)=0x8000;MEM32(0x705C)=0x8013;memcpy(GPTR(0x8000),"PortOptionsLauncher",19);
+    port_launcher_visibility(0x5000,0,1);assert(MEM8(0x7070));
+    port_launcher_visibility(0x5000,0,0);assert(!MEM8(0x7070));
+    MEM32(0x705C)=0x800D;memcpy(GPTR(0x8000),"PortSkipHints",13);
     port_launcher_visibility(0x5000,0,1);assert(MEM8(0x7070));
     port_launcher_visibility(0x5000,0,0);assert(!MEM8(0x7070));
     MEM32(0x705C)=0x8000;MEM8(0x7070)=1;MEM32(0x50A4)=0x5000;MEM32(0x50A8)=0x5004;

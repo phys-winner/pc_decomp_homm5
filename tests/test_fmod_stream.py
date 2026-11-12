@@ -49,6 +49,9 @@ static uint64_t void_monotonic_ns(void) { return clock_ns; }
 static uint64_t void_audio_pause_state(void) { return pause_state; }
 static uint64_t void_lock_wait_ns(void) { return lock_wait_ns; }
 #define ARG(i) MEM32(g_esp+4u+4u*(i))
+typedef void (*void_fn)(void);
+static void_fn void_dispatch_find(uint32_t address) {(void)address;return NULL;}
+static void void_dispatch_add(uint32_t address,void_fn fn) {(void)address;(void)fn;assert(0);}
 /* NATIVE */
 
 /* Stubs are the original worker's external host/decoder boundaries.  The
@@ -439,7 +442,8 @@ int main(void) {
     def test_override_copies_only_definitions_and_preserves_dispatch(self):
         with tempfile.TemporaryDirectory(dir=ROOT / "build") as tmp, patch.object(BUILDER, "OUT", Path(tmp)), \
                 patch.object(BUILDER, "direct_jump_tables", side_effect=lambda text, image: text), \
-                patch.object(BUILDER, "module_image", return_value=None):
+                patch.object(BUILDER, "module_image", return_value=None), \
+                patch("native_routes.apply_native_routes", side_effect=lambda text, *args, **kwargs: (text, [], [])):
             seen = set()
             for filename in ("fmod_0013.c", "fmod_0014.c", "fmod_0015.c", "recomp_dispatch.c"):
                 source = ROOT / "generated/fmod-x86" / filename

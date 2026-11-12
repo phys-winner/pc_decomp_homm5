@@ -16,12 +16,12 @@ HARNESS = r'''
 #include "touch.h"
 enum {SCREEN_MENU,SCREEN_ADVENTURE,SCREEN_COMBAT,SCREEN_TOWN};
 static struct {int kind,ui,aiming,placement,committed,combat_aim,cancelled;uint32_t screen;} gesture;
-static int orders,doubles,homes,blocked,shortcut,announcements,placements,aborts,cancels,reserve=-1;
+static int orders,doubles,homes,blocked,shortcut,announcements,placements,aborts,cancels,interrupted,reserve=-1;
 static int same_screen(void) {return 1;}
-static int camera_world(void) {return !gesture.ui&&!gesture.aiming&&!gesture.placement&&
- (gesture.kind==SCREEN_ADVENTURE||gesture.kind==SCREEN_COMBAT);}
 static void adventure_camera_home(void) {assert(gesture.kind==SCREEN_ADVENTURE);++homes;}
 static void combat_camera_home(void) {assert(gesture.kind==SCREEN_COMBAT);++homes;}
+int void_touch_town_camera_home(uint32_t screen) {assert(screen==gesture.screen&&gesture.kind==SCREEN_TOWN);++homes;return 1;}
+int void_touch_town_interrupt(uint32_t screen) {assert(screen==gesture.screen);return interrupted;}
 static void publish_point(float x,float y) {assert(x==-1&&y==-1);}
 static void ui_event(const void_touch_event *e) {assert(e->kind==TOUCH_ABORT);++aborts;}
 static int adventure_announcement(float x,float y,int commit) {(void)x;(void)y;(void)commit;return announcements;}
@@ -42,7 +42,7 @@ static void placement_trace(const char *what,float x,float y) {(void)what;assert
 #include "dispatch.h"
 static void reset(int kind) {
  memset(&gesture,0,sizeof gesture);gesture.kind=kind;gesture.screen=0x1000;
- orders=doubles=homes=blocked=shortcut=announcements=placements=aborts=cancels=0;reserve=-1;
+ orders=doubles=homes=blocked=shortcut=announcements=placements=aborts=cancels=interrupted=0;reserve=-1;
 }
 int main(void) {
  (void)placement_reserve_slot;(void)placement_trace;
@@ -57,9 +57,9 @@ int main(void) {
   reset(kind);gesture.aiming=1;tap_dispatch(&tap);assert(orders==1);
   reset(kind);home_dispatch(&home);assert(homes==1&&!orders&&gesture.cancelled&&gesture.committed);
   tap_dispatch(&end);assert(!orders);
-  reset(kind);gesture.ui=1;home_dispatch(&home);assert(!homes&&!orders&&aborts==1&&gesture.cancelled);
-  reset(kind);gesture.aiming=1;home_dispatch(&home);assert(!homes&&!orders&&gesture.cancelled);
-  reset(kind);gesture.cancelled=1;home_dispatch(&home);assert(!homes&&!orders);
+  reset(kind);gesture.ui=1;home_dispatch(&home);assert(homes==1&&!orders&&aborts==1&&gesture.cancelled);
+  reset(kind);gesture.aiming=1;home_dispatch(&home);assert(homes==1&&!orders&&gesture.cancelled);
+  reset(kind);gesture.cancelled=1;home_dispatch(&home);assert(homes==1&&!orders);
  }
  reset(SCREEN_ADVENTURE);tap_dispatch(&tap);assert(orders==1);tap_dispatch(&end);
  gesture.committed=0;tap_dispatch(&dbl);assert(orders==2&&doubles==1);tap_dispatch(&end);assert(orders==2);
@@ -72,6 +72,9 @@ int main(void) {
  reset(SCREEN_COMBAT);gesture.placement=1;blocked=1;reserve=2;tap_dispatch(&tap);
  assert(placements==1&&!cancels&&gesture.cancelled&&!orders);
  reset(SCREEN_TOWN);tap_dispatch(&tap);assert(orders==1);
+ reset(SCREEN_TOWN);interrupted=1;tap_dispatch(&tap);assert(!orders&&gesture.committed);
+ reset(SCREEN_TOWN);gesture.ui=1;home_dispatch(&home);assert(homes==1&&aborts==1&&!orders);
+ reset(SCREEN_COMBAT);gesture.placement=gesture.aiming=1;home_dispatch(&home);assert(homes==1&&!orders&&!placements);
  reset(SCREEN_MENU);home_dispatch(&home);assert(!homes&&!orders&&gesture.cancelled);
  puts("PASS actual per-edition tap dispatch: immediate single/double, no release replay, chord home and UI/aim guards");
  return 0;

@@ -463,6 +463,46 @@ def directsound_headers():
 
 
 class SoundStreamingTest(unittest.TestCase):
+    def test_aaudio_reduces_default_queue_and_retunes_normal_output(self):
+        source = (ROOT / "android/host/android_main.c").read_text(encoding="utf8")
+        globals_ = source[source.index("static AAudioStream *stream;"):source.index("static void audio_close_stream(")]
+        functions = "\n".join(function(source, signature) for signature in (
+            "static void audio_close_stream(", "static void audio_close_failed(",
+            "static uint32_t audio_write_frames(", "uint32_t void_audio_output("))
+        harness = AAUDIO_HARNESS[:AAUDIO_HARNESS.index("int main(void) {")] + r'''
+int main(void) {
+    int16_t frames[960]={0};
+    hardware_size=hardware_capacity=1920;
+    reset_script(frames);void_audio_output(frames,480);
+    assert(audio_normal_output && stream->mode==AAUDIO_PERFORMANCE_MODE_NONE);
+    assert(stream->size==960 && buffer_changes==1);
+    /* A busy device may need its original cushion; grow only on new xruns. */
+    stream->xruns=1;reset_script(frames);void_audio_output(frames,480);
+    assert(stream->size==1440 && buffer_changes==2);
+    reset_script(frames);void_audio_output(frames,480);
+    assert(stream->size==1440 && buffer_changes==2);
+    stream->xruns=2;reset_script(frames);void_audio_output(frames,480);
+    assert(stream->size==1920 && buffer_changes==3);
+    for(int i=3;i<8;i++) {stream->xruns=i;reset_script(frames);void_audio_output(frames,480);}
+    assert(stream && opens==1 && !closes && !fallback_reports);
+    /* A route can impose a minimum or reject resizing without losing PCM. */
+    pthread_mutex_lock(&audio_lock);audio_close_stream();pthread_mutex_unlock(&audio_lock);
+    hardware_burst=512;hardware_size=hardware_capacity=2048;
+    reset_script(frames);void_audio_output(frames,480);
+    assert(stream->size==1024 && accepted_count==960);
+    pthread_mutex_lock(&audio_lock);audio_close_stream();pthread_mutex_unlock(&audio_lock);
+    hardware_burst=96;hardware_size=hardware_capacity=1920;buffer_error=-899;
+    reset_script(frames);void_audio_output(frames,480);
+    assert(stream->size==1920 && accepted_count==960 && !audio_dropped_frames && !lock_depth);
+    puts("PASS AAudio queue latency: reduce default active buffer, normal-route xrun growth, burst rounding and rejected tuning");
+    return 0;
+}
+'''
+        for legacy in (False, True):
+            compile_probe("aaudio-normal-latency" + ("-legacy" if legacy else ""),
+                          ("#define HOMM5_LEGACY_UI 1\n" if legacy else "") + harness,
+                          {"android_audio.h": globals_ + functions})
+
     def test_aaudio_recovers_underruns_even_when_every_write_succeeds(self):
         source = (ROOT / "android/host/android_main.c").read_text(encoding="utf8")
         globals_ = source[source.index("static AAudioStream *stream;"):source.index("static void audio_close_stream(")]

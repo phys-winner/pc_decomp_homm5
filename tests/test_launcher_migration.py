@@ -129,7 +129,7 @@ public final class Assets {
         self.assertLess(migrated, completed)
         self.assertLess(completed, initialize.index("initializing = false;"))
         self.assertLess(completed, initialize.index(selection))
-        self.assertIn("if (selected == initial && useMigratedSelection)", initialize)
+        self.assertIn("if (selected == initial && useMigratedSelection && !playRequestedPending)", initialize)
         self.assertLess(initialize.index(selection), initialize.index("launchWhenReady()"))
         self.assertIn("if (initializing ||", function(activity, "    private boolean launchWhenReady()"))
         self.assertIn("!initializing", function(activity, "    private boolean idle()"))

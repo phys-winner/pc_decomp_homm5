@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import struct
 import sys
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -118,11 +119,22 @@ class CrashLog(unittest.TestCase):
             self.assertIn(needle, session)
 
     def test_legacy_copies_share_the_crash_log_behaviour(self):
-        from port_patches import legacy_ui_branch
-        for name in ("core.c", "main.c"):
-            source = (ROOT / "android/host" / name).read_bytes().replace(b"\r\n", b"\n")
-            self.assertNotIn(b"HOMM5_LEGACY_UI", source)
-            self.assertEqual(legacy_ui_branch(source, True), source)
+        from port_patches import adapt_host_source
+        from test_d3d_lifecycle import function
+        with tempfile.TemporaryDirectory() as output:
+            for name in ("core.c", "main.c"):
+                path = ROOT / "android/host" / name
+                source = path.read_text(encoding="utf-8")
+                for edition in ("toe", "vanilla", "hof"):
+                    with self.subTest(source=name, edition=edition):
+                        adapted, _ = adapt_host_source(path, output, edition)
+                        actual = adapted.read_text(encoding="utf-8")
+                        if name == "main.c":
+                            for signature in ("int void_game_main(", "void void_process_exit("):
+                                self.assertEqual(function(actual, signature), function(source, signature))
+                        else:
+                            self.assertNotIn("HOMM5_LEGACY_UI", source)
+                            self.assertEqual(actual, source)
         core = (ROOT / "android/host/core.c").read_bytes()
         for needle in (b"log_in_signal", b"previous_actions", b"log_guest_stack", b'fopen(path, "a")'):
             self.assertIn(needle, core)

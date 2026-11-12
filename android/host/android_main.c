@@ -521,6 +521,22 @@ void void_android_split_hint(int visible)
     if (attached) (*jvm)->DetachCurrentThread(jvm);
 }
 
+void void_android_touch_hint(int id)
+{
+    if (!jvm || !activity) return;
+    JNIEnv *env = NULL;
+    int attached = (*jvm)->GetEnv(jvm, (void **)&env, JNI_VERSION_1_6) == JNI_EDETACHED;
+    if (attached && (*jvm)->AttachCurrentThread(jvm, &env, NULL) != JNI_OK) return;
+    if (!env) return;
+    jmethodID callback = (*env)->GetStaticMethodID(env, (jclass)activity, "showTouchHint", "(I)V");
+    if (callback) (*env)->CallStaticVoidMethod(env, (jclass)activity, callback, (jint)id);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        void_log("[touch] hint callback failed");
+    }
+    if (attached) (*jvm)->DetachCurrentThread(jvm);
+}
+
 void void_android_text_focus(int enabled, uint32_t generation)
 {
     if (!jvm || !activity) return;
@@ -603,11 +619,8 @@ static uint64_t audio_short_writes, audio_dropped_frames, audio_errors;
 static unsigned audio_zero_chunks;
 static int32_t audio_last_xruns;
 static unsigned audio_bad_chunks;
-/* Normal (server-mixed) output from the start: a turn-based game gains nothing
- * audible from low latency, while every low-latency MMAP stream tested
- * underran (Pixel Bluetooth stall, Pixel successful-write xruns, P smart under
- * load and after lifecycle rounds) and normal output kept ~40 ms on the server
- * side. The low-latency recovery below stays for a build that starts with 0. */
+/* Keep the server-mixed route that survives the tested MMAP stalls; tune its
+ * active queue too, rather than inheriting the device's maximum buffer. */
 static int audio_normal_output = 1;
 
 static void audio_close_stream(void)
@@ -684,7 +697,7 @@ uint32_t void_audio_output(const int16_t *frames, uint32_t count)
                 int32_t burst = AAudioStream_getFramesPerBurst(stream);
                 int32_t target = burst > 0 ? (int32_t)(((int64_t)960 + burst - 1) / burst * burst) : 960;
                 int32_t before = AAudioStream_getBufferSizeInFrames(stream);
-                if (before < target) AAudioStream_setBufferSizeInFrames(stream, target);
+                if (before != target) AAudioStream_setBufferSizeInFrames(stream, target);
                 void_log("[audio] output: burst %d, capacity %d, buffer %d -> %d frames, normal %d", (int)burst,
                     (int)AAudioStream_getBufferCapacityInFrames(stream), (int)before,
                     (int)AAudioStream_getBufferSizeInFrames(stream), audio_normal_output);
@@ -713,7 +726,7 @@ uint32_t void_audio_output(const int16_t *frames, uint32_t count)
         void_log("[audio] low latency stream stalled for 3 chunks; using normal output until process exit");
         audio_close_stream();
     }
-    if (stream && !audio_normal_output) {
+    if (stream) {
         int32_t xruns = AAudioStream_getXRunCount(stream);
         if (xruns > audio_last_xruns) {
             int32_t size = AAudioStream_getBufferSizeInFrames(stream);
@@ -728,7 +741,7 @@ uint32_t void_audio_output(const int16_t *frames, uint32_t count)
             if (grown > size) {
                 audio_bad_chunks = 0;
                 void_log("[audio] underruns %d: buffer %d -> %d frames", (int)xruns, (int)size, (int)grown);
-            } else if (++audio_bad_chunks == 3) {
+            } else if (!audio_normal_output && ++audio_bad_chunks == 3) {
                 audio_normal_output = 1;
                 ++audio_errors;
                 void_log("[audio] low latency underruns persist at buffer limit; using normal output until process exit");

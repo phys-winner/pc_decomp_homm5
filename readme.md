@@ -3,7 +3,7 @@
 Heroes of Might and Magic V, Hammers of Fate and Tribes of the East on Android ARM64 through static
 x86 recompilation, with native touch controls and a Direct3D 9 to OpenGL ES bridge.
 
-**Current version: 0.5.1-dev.** All three engines use ThinLTO and their own device-trained PGO profiles.
+**Current version: 0.6-dev.** All three engines use ThinLTO and their own device-trained PGO profiles.
 This is an experimental port for sideloading.
 The original game's menus, adventure maps, towns, battles, sound and saves run
 through a local Win32 compatibility host. The game and eight DLLs are translated
@@ -61,6 +61,9 @@ prepared DLLs. Town music uses the original resources and pause settings.
 
 - Original menus, profile creation, scenario loading, adventure maps, towns,
   battles, saving and loading have been exercised during development.
+- Heroes sheltered in a Sanctuary are excluded from quick combat in all three
+  editions, preventing a stalled AI turn in the reproduced Inferno campaign case.
+  The player's Quick Combat setting and eligibility elsewhere are preserved.
 - Touch input supports selection, movement, camera gestures, tooltips,
   spell targeting, troop and artifact transfers, and the Android keyboard.
 - Additional game settings control render scale, interface scale, frame limit,
@@ -418,7 +421,7 @@ receipts are `build/deploy-receipt[-vanilla|-hof].json`.
 | Drag the map | Move the camera |
 | Two fingers | Move, zoom and rotate the camera |
 | Two nearby fingers moving vertically together | Tilt the camera, including in battle |
-| Brief simultaneous tap with three fingers on the field | Restore camera tilt and rotation; in battle, also restore its position |
+| Brief simultaneous tap with three fingers anywhere in the game view | Restore the original camera in adventure, battle, troop deployment and town, including over the interface |
 | Hold an interface element | Show its tooltip |
 | Swipe left or right on a scenario's hero, faction, bonus, team or player-state icon | Cycle through the scenario's allowed choices. The active icon stays highlighted with its name and tooltip; heroes also show their specialization description |
 | While aiming in battle, rest a second finger | Show the details card of the creature under the first finger at once; lift the second finger to hide it and keep aiming. Lifting the first finger while the second rests gives no order |
@@ -427,13 +430,15 @@ receipts are `build/deploy-receipt[-vanilla|-hof].json`.
 | Hold a map or town object, or the battle initiative bar | Show its tooltip and details card; each second-finger tap on a held initiative bar portrait switches its card once |
 | Double tap a creature portrait on the initiative bar | Issue the original attack action through the portrait |
 | Drag your active shooter onto an enemy in battle | Melee attack instead of a shot, like Ctrl+click on the PC |
-| Brief simultaneous tap with two fingers on the adventure map | Stop the moving hero or cancel an aim |
+| Brief simultaneous tap with two fingers anywhere in the game view | Cancel a selected spell or creature ability; on the adventure map, stop the moving hero |
 | Double tap the minimap, or tap it with two fingers | Toggle the highlighting of objects, like holding Alt on the PC; the camera stays. A single tap on the minimap moves the camera after a short pause (0.4 s) |
 | Swipe left or right across the spellbook | Next or previous page |
 | Swipe up or down across the spellbook | Previous or next bookmark (school); the orcish book of ToE switches its page. A tap that misses a bookmark by a little takes the nearest one |
 | Drag a stack during troop deployment | Move it between the field and the reserve slots; the dragged portrait stays centred under the finger |
 | Hold a deployment reserve portrait and tap the reserve bar with a second finger | Split one creature into the next free reserve slot per tap. Hold the second finger on a destination slot to open the original army split dialog |
 | Swipe from a dropdown, move to an item and release | Select that item; a second finger cancels |
+| Swipe horizontally across a scenario hero, faction or bonus selector | Step through several choices without lifting the finger; reverse the swipe to step back |
+| Tap the town render during its camera flyby | Skip the flyby without selecting a building |
 | Swipe on a slider | Move its value from where it is; a tap or hold does not move it |
 | Swipe a list | Scroll |
 | Drag a troop stack into the visible split zones | Release over Quick split to split it in half; hold over Split one to detach the first unit after 1 second and another every 0.5 seconds, with progress shown. A free army slot is required |
@@ -444,6 +449,12 @@ receipts are `build/deploy-receipt[-vanilla|-hof].json`.
 
 While a creature card is shown, the battle camera stays still: a moving second
 finger does not turn it.
+
+The first use of targeting, hero movement, the camera or the enabled console shows a brief
+touch-control tip. Each type appears once per device across all three editions. The
+**Пропустить все подсказки** button in **Настройки → Дополнительные** skips them together.
+These markers are shared in the app's private files and survive APK updates; clearing
+application data resets them.
 
 In all three editions, dragging a stack also shows how to open the quantity dialog: keep the
 stack held and hold a free slot with another finger. **Подсказки деления отрядов**
@@ -456,8 +467,10 @@ and fits inside the viewport on narrow screens.
 The main menu's **Управление** guide explains troop splitting, redistribution,
 collection and transfers, along with touch and gamepad controls. Cursor offset
 and visibility are under **Настройки → Дополнительные → Управление**. Offsets
-apply to selection, holding and dragging; actions use the visible cursor's
-position. The offset tapers smoothly near screen edges so every point remains
+apply to selection, holding and dragging. During a battle damage preview, the
+attack or shot icon appears above the damage and retaliation text; the forecast
+identifies the selected target. This icon is shown even when other touch cursors
+are disabled. The offset tapers smoothly near screen edges so every point remains
 reachable. Camera gestures and physical pointer input retain their own coordinates.
 Field taps are dispatched immediately on release, with no multi-tap wait.
 For the camera reset, place all three fingers within 120 ms and release within
@@ -550,17 +563,40 @@ send `homm5.1.log` (the session that crashed) together with `homm5.log`.
 
 ## Versions and local release files
 
-The current version is `0.5.1-dev` / code `10`. Earlier development builds used
-`0.1-dev`, `0.2-dev`, `0.3-dev`, `0.3.1-dev`, `0.3.2-dev`, `0.4-dev` and `0.5-dev`. The version is stored in
+The current version is `0.6-dev` / code `11`. Earlier development builds used
+`0.1-dev`, `0.2-dev`, `0.3-dev`, `0.3.1-dev`, `0.3.2-dev`, `0.4-dev`, `0.5-dev` and `0.5.1-dev`. The version is stored in
 `android/app/AndroidManifest.xml`; increase `android:versionCode` for every
 subsequent published build. Version `0.3-dev` uses code `5` (the replacement
 build supersedes the earlier code `4` APK); `0.3.1-dev` uses code `6`, and
-`0.3.2-dev` uses code `7`, `0.4-dev` uses code `8`, and `0.5-dev` uses code `9`.
+`0.3.2-dev` uses code `7`, `0.4-dev` uses code `8`, `0.5-dev` uses code `9`, and
+`0.5.1-dev` uses code `10`.
 
-Local release copies use `heroes-v-0.5.1-dev-<sha256-prefix>.apk`, where the suffix
+Local release copies use `heroes-v-0.6-dev-<sha256-prefix>.apk`, where the suffix
 is the first eight characters of the APK's SHA-256, with a companion `.sha256`
 file. The `pub/` directory is ignored. Building and naming an APK does not
 automatically publish it or create a Git tag.
+
+## Changes in 0.6-dev
+
+Changes since 0.5.1-dev, for Heroes V 1.6, Hammers of Fate 2.1 and Tribes of the East 3.1:
+
+- Exclude live heroes sheltered in a Sanctuary from quick combat to prevent the
+  reproduced stalled AI turn, preserving the player's global Quick Combat setting.
+- Cancel spell or ability targeting with a two-finger tap even over the interface;
+  on the adventure map, the same gesture stops the moving hero.
+- Restore the original camera with a three-finger tap in adventure, battle,
+  deployment and town, including over the interface. A town-render tap skips the flyby.
+- Show the native attack or shot icon above the damage forecast even when other
+  touch cursors are disabled.
+- Refresh the font scale of new multiplayer-list rows after filter changes and
+  support continuous, reversible swipes across scenario player choices.
+- Add four brief first-use control tips shared across editions and a
+  **Skip all tips** button in Additional settings.
+- Reduce the default FMOD mixer request from 100 to 50 ms and shorten the AAudio
+  output queue, retaining adaptive buffer growth when underruns occur.
+- Include the shared launcher's queued early Play action and touch-safe deferred
+  rebuilds. Add native, Java and UI regression coverage.
+- Set Android version to `0.6-dev` / code `11`.
 
 ## Changes in 0.5.1-dev
 

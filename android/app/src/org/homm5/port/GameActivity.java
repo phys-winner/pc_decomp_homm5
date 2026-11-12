@@ -129,6 +129,10 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private HorizontalScrollView textPreviewScroll;
     private Surface refreshSurface;
     private SharedPreferences preferences;
+    private int pendingTouchHints;
+    private boolean showingTouchHint;
+    private TextView touchHintView;
+    private FrameLayout touchHintHost;
     private boolean textEditing;
     private int textGeneration;
     private TextConnection textConnection;
@@ -609,6 +613,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         super.onResume();
         resumed = true;
         if (nativeReady) nativePause(false);
+        showNextTouchHint();
         requestHighRefresh();
         if (lanLock != null && !lanLock.isHeld()) lanLock.acquire();
     }
@@ -789,6 +794,88 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private static String cheatText(String english, String russian) {
         String lang = language != null ? language : Locale.getDefault().getLanguage();
         return "ru".equals(lang) || "uk".equals(lang) || "be".equals(lang) ? russian : english;
+    }
+
+    private static String touchHintText(int id) {
+        switch (id) {
+        case 1: return cheatText("To cancel a selected spell or a creature's active ability, briefly tap anywhere with two fingers at the same time.",
+                "Чтобы отменить выбранное заклинание или активный навык существа, коротко коснитесь любого места двумя пальцами одновременно.");
+        case 2: return cheatText("The game console is enabled. Hold the gear button to open or close it (or press ~ on a keyboard). Hold the adventure book button (scenario information) to open the cheats menu.",
+                "Консоль игры включена. Удерживайте кнопку с шестерёнкой, чтобы открыть или закрыть её (или нажмите ~ на клавиатуре). Удерживайте книгу приключений (кнопку информации о сценарии), чтобы открыть меню читов.");
+        case 3: return cheatText("To stop a moving hero, briefly tap anywhere with two fingers at the same time.",
+                "Чтобы остановить движущегося героя, коротко коснитесь любого места двумя пальцами одновременно.");
+        case 4: return cheatText("To restore the original camera view, briefly tap with three fingers at the same time. This also works during troop deployment, in battle and in towns.",
+                "Чтобы вернуть исходный вид камеры, коротко коснитесь экрана тремя пальцами одновременно. Жест также работает при расстановке войск, в бою и в замке.");
+        default: return "";
+        }
+    }
+
+    private static void showTouchHint(int id) {
+        GameActivity activity = currentActivity.get();
+        if (id < 0 || id > 4 || activity == null) return;
+        activity.runOnUiThread(() -> {
+            if (currentActivity.get() != activity || activity.isFinishing() || activity.isDestroyed()) return;
+            if (id == 0) {
+                File marker = new File(activity.getFilesDir(), "touch-hints-skipped");
+                try {
+                    if (!marker.createNewFile() && !marker.isFile()) throw new IOException("Hint marker is not a file");
+                } catch (IOException | SecurityException error) {
+                    android.widget.Toast.makeText(activity, cheatText("Could not save the hint setting.",
+                            "Не удалось сохранить настройку подсказок."), android.widget.Toast.LENGTH_LONG).show();
+                    return;
+                }
+                activity.showNextTouchHint();
+                return;
+            }
+            activity.pendingTouchHints |= 1 << id;
+            activity.showNextTouchHint();
+        });
+    }
+
+    private void showNextTouchHint() {
+        if (new File(getFilesDir(), "touch-hints-skipped").isFile()) {
+            pendingTouchHints = 0;
+            if (touchHintView != null) touchHintHost.removeView(touchHintView);
+            touchHintView = null;
+            touchHintHost = null;
+            showingTouchHint = false;
+            return;
+        }
+        if (showingTouchHint || pendingTouchHints == 0 || !resumed || !nativeReady || game == null
+                || currentActivity.get() != this || isFinishing() || isDestroyed()) return;
+        int id = 0;
+        while (pendingTouchHints != 0) {
+            id = Integer.numberOfTrailingZeros(pendingTouchHints);
+            pendingTouchHints &= ~(1 << id);
+            try {
+                if (new File(getFilesDir(), "touch-hint-" + id + "-shown").createNewFile()) break;
+            } catch (IOException | SecurityException error) {
+                android.util.Log.w("HeroesV", "Could not save touch hint state", error);
+            }
+            id = 0;
+        }
+        if (id == 0) return;
+        TextView hint = new TextView(this);
+        hint.setText(touchHintText(id));
+        hint.setTextColor(Color.WHITE);
+        hint.setTextSize(16);
+        hint.setPadding(dp(16), dp(12), dp(16), dp(12));
+        hint.setBackgroundColor(0xE0202020);
+        hint.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        FrameLayout host = game;
+        FrameLayout.LayoutParams layout = new FrameLayout.LayoutParams(-1, -2, Gravity.TOP);
+        layout.setMargins(dp(24), dp(24), dp(24), 0);
+        host.addView(hint, layout);
+        touchHintView = hint;
+        touchHintHost = host;
+        showingTouchHint = true;
+        handler.postDelayed(() -> {
+            host.removeView(hint);
+            touchHintView = null;
+            touchHintHost = null;
+            showingTouchHint = false;
+            showNextTouchHint();
+        }, 8000);
     }
 
     private static void onCheats(int generation, int state) {
