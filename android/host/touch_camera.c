@@ -2,6 +2,7 @@
 #include "input.h"
 #include "touch.h"
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 /* CameraPos and projection calls are the original H5 engine's interfaces. */
@@ -337,6 +338,161 @@ static struct {
     unsigned valid;
 } deployment_projection;
 
+static struct { uint32_t screen, camera; float matrix[16]; int valid; } combat_projection;
+static struct {
+    uint32_t generation, screen, actor;
+    unsigned count, path_count, quads, arrows;
+    float points[COMBAT_ROUTE_WORLD_POINTS][3];
+} combat_route;
+
+/* Original cell coordinates also place the heroes outside the grid. */
+static int combat_unit_world(uint32_t arena, uint32_t unit, float output[3])
+{
+    uint32_t position = camera_method(unit, 0x40), size_method = camera_method(unit, 0x44);
+    uint32_t cell_position = camera_method(arena, 0x6C);
+    if (!position || !size_method || !cell_position) return 0;
+    if (!camera_scratch) camera_scratch = void_galloc(0x800);
+    if (!camera_scratch || !void_vm_writable(camera_scratch + 0x780, 0x20)) return 0;
+    uint32_t cell = camera_scratch + 0x780, world = cell + 16;
+    if (void_call_guest_this(position, unit, 1, &cell) != cell) return 0;
+    int x = (int32_t)MEM32(cell), y = (int32_t)MEM32(cell + 4);
+    unsigned size = void_call_guest_this(size_method, unit, 0, NULL);
+    if (!size || size > 2 || x < -8 || y < -8 || x >= 64 || y >= 64) return 0;
+    const uint32_t args[] = {world, cell};
+    for (unsigned i = 0; i < 2; ++i) {
+        MEM32(cell) = (uint32_t)(x - (i ? (int)size - 1 : 0));
+        MEM32(cell + 4) = (uint32_t)(y - (i ? (int)size - 1 : 0));
+        if (void_call_guest_this(cell_position, arena, 2, args) != world) return 0;
+        float point[3]; memcpy(point, GPTR(world), sizeof point);
+        for (unsigned axis = 0; axis < 3; ++axis) {
+            if (!isfinite(point[axis])) return 0;
+            if (!i) output[axis] = point[axis] * .5f;
+            else output[axis] += point[axis] * .5f;
+        }
+    }
+    output[2] += .12f;
+    return 1;
+}
+
+/* Capture the original movement vector on the game thread; the render worker projects it. */
+unsigned void_touch_combat_route(uint32_t screen, uint32_t actor, int x, int y,
+        uint32_t generation, int returning, uint32_t action, uint32_t target, float output[COMBAT_ROUTE_FLOATS])
+{
+    if (!generation || !combat_projection.valid || combat_projection.screen != screen ||
+        !void_vm_readable(screen, 0x364) || MEM32(screen + 0xA4) != combat_projection.camera) return 0;
+    if (combat_route.generation != generation || combat_route.screen != screen || combat_route.actor != actor) {
+        combat_route.count = 0;
+        combat_route.path_count = combat_route.quads = combat_route.arrows = 0;
+        uint32_t arena = MEM32(screen + 0x2A0);
+        if (action == 2 || action == 3) {
+            uint32_t command = MEM32(screen + 0x33C);
+            if (!void_vm_readable(command, 0x20) || MEM32(command) != 0x00E8DFE4u ||
+                MEM32(command + 0x10) != actor) return 0;
+            uint32_t begin = MEM32(command + 0x14), end = MEM32(command + 0x18), capacity = MEM32(command + 0x1C);
+            if (!begin || end < begin || capacity < end || (end - begin) % 12 ||
+                (capacity - begin) % 12 || end - begin < 12 || end - begin > COMBAT_ROUTE_MAX_POINTS * 12 ||
+                !void_vm_readable(begin, end - begin)) return 0;
+            unsigned path_count = (end - begin) / 12;
+            memcpy(combat_route.points, GPTR(begin), end - begin);
+            for (unsigned i = 0; i < path_count; ++i) for (unsigned axis = 0; axis < 3; ++axis)
+                if (!isfinite(combat_route.points[i][axis])) return 0;
+            uint32_t size_method = camera_method(actor, 0x44), cell_position = camera_method(arena, 0x6C);
+            if (!size_method || !cell_position) return 0;
+            unsigned size = void_call_guest_this(size_method, actor, 0, NULL);
+            if (!size || size > 2 || x < (int)size - 1 || y < (int)size - 1 || x >= 64 || y >= 64) return 0;
+            if (!camera_scratch) camera_scratch = void_galloc(0x800);
+            if (!camera_scratch || !void_vm_writable(camera_scratch + 0x780, 0x20)) return 0;
+            uint32_t cell = camera_scratch + 0x780, world = cell + 16;
+            const uint32_t args[] = {world, cell};
+            unsigned count = path_count;
+            float anchor[3] = {0}, center_xy[2] = {0};
+            for (unsigned dx = 0; dx < size; ++dx) for (unsigned dy = 0; dy < size; ++dy) {
+                MEM32(cell) = (uint32_t)(x - (int)dx);
+                MEM32(cell + 4) = (uint32_t)(y - (int)dy);
+                if (void_call_guest_this(cell_position, arena, 2, args) != world) return 0;
+                float center[3]; memcpy(center, GPTR(world), sizeof center);
+                for (unsigned axis = 0; axis < 3; ++axis) if (!isfinite(center[axis])) return 0;
+                if (!dx && !dy) memcpy(anchor, center, sizeof anchor);
+                for (unsigned axis = 0; axis < 2; ++axis) center_xy[axis] += center[axis] / (float)(size * size);
+                static const float corners[4][2] = {{-1.09f,-1.09f},{1.09f,-1.09f},{1.09f,1.09f},{-1.09f,1.09f}};
+                for (unsigned corner = 0; corner < 4; ++corner) {
+                    combat_route.points[count][0] = center[0] + corners[corner][0];
+                    combat_route.points[count][1] = center[1] + corners[corner][1];
+                    combat_route.points[count++][2] = center[2] + .05f;
+                }
+            }
+            if (void_verbose) {
+                uint32_t position = camera_method(actor, 0x40), flying = camera_method(actor, 0x190);
+                int sx = -1, sy = -1, flight = -1;
+                if (position && void_call_guest_this(position, actor, 1, &cell) == cell) {
+                    sx = (int32_t)MEM32(cell); sy = (int32_t)MEM32(cell + 4);
+                }
+                if (flying) flight = (int)(void_call_guest_this(flying, actor, 0, NULL) & 0xFFu);
+                char detail[1536]; unsigned used = 0, shown = 0, limit = path_count < 32 ? path_count : 32;
+                detail[0] = 0;
+                for (unsigned i = 0; i < limit; ++i) {
+                    const float *p = combat_route.points[i];
+                    int written = snprintf(detail + used, sizeof detail - used, "%s(%.3f,%.3f,%.3f)",
+                                           i ? ";" : "", p[0], p[1], p[2]);
+                    if (written < 0 || (unsigned)written >= sizeof detail - used) { detail[used] = 0; break; }
+                    used += (unsigned)written; ++shown;
+                }
+                const float *last = combat_route.points[path_count - 1];
+                VLOG("[touch] combat-route actor=%08X command=%08X revision=%u source=%d,%d destination=%d,%d flying=%d points=%u shown=%u last=(%.3f,%.3f,%.3f) ground=(%.3f,%.3f,%.3f) delta_z=%.3f path=%s",
+                     actor, command, generation, sx, sy, x, y, flight, path_count, shown,
+                     last[0], last[1], last[2], anchor[0], anchor[1], anchor[2], last[2] - anchor[2], detail);
+            }
+            /* Large creatures use the far cell as their anchor; draw through their footprint's centre. */
+            for (unsigned i = 0; i < path_count; ++i) {
+                for (unsigned axis = 0; axis < 2; ++axis) combat_route.points[i][axis] += center_xy[axis] - anchor[axis];
+                combat_route.points[i][2] += .08f;
+            }
+            combat_route.count = count;
+            combat_route.path_count = path_count;
+            combat_route.quads = size * size;
+        }
+        if (action != 2 && target && target != actor) {
+            unsigned start = combat_route.count;
+            float *origin = combat_route.points[start];
+            int valid = 1;
+            if (combat_route.path_count) memcpy(origin, combat_route.points[combat_route.path_count - 1], 3*sizeof(float));
+            else valid = combat_unit_world(arena, actor, origin);
+            uint32_t targets[COMBAT_ROUTE_MAX_TARGETS] = {target};
+            unsigned targets_count = 1;
+            /* The original forecast already lists every melee victim, including hydra/cerberus attacks. */
+            if (action == 3) {
+                uint32_t begin = MEM32(screen + 0x358), end = MEM32(screen + 0x35C), capacity = MEM32(screen + 0x360);
+                if (begin && end >= begin && capacity >= end && !((end - begin) % 4) &&
+                    end - begin <= COMBAT_ROUTE_MAX_TARGETS*4 && void_vm_readable(begin, end - begin)) {
+                    for (uint32_t at = begin; at < end && targets_count < COMBAT_ROUTE_MAX_TARGETS; at += 4) {
+                        uint32_t unit = MEM32(at);
+                        unsigned i = 0;
+                        while (i < targets_count && targets[i] != unit) ++i;
+                        if (unit && unit != actor && i == targets_count) targets[targets_count++] = unit;
+                    }
+                }
+            }
+            for (unsigned i = 0; valid && i < targets_count; ++i) {
+                if (combat_unit_world(arena, targets[i], combat_route.points[start + 1 + combat_route.arrows]))
+                    ++combat_route.arrows;
+            }
+            if (combat_route.arrows) combat_route.count += 1 + combat_route.arrows;
+        }
+        combat_route.screen = screen; combat_route.actor = actor;
+        combat_route.generation = generation;
+        if (void_verbose && action != 2)
+            VLOG("[touch] combat-preview action=%u target=%08X path=%u arrows=%u", action, target, combat_route.path_count, combat_route.arrows);
+    }
+    for (unsigned i = 0; i < 16; ++i) if (!isfinite(combat_projection.matrix[i])) return 0;
+    output[0] = combat_route.path_count ? (returning ? 2.0f : 1.0f) : 0.0f;
+    output[1] = (float)combat_route.path_count;
+    output[2] = (float)combat_route.quads;
+    output[3] = (float)combat_route.arrows;
+    memcpy(output + 4, combat_projection.matrix, 16 * sizeof(float));
+    memcpy(output + 20, combat_route.points, 3 * combat_route.count * sizeof(float));
+    return combat_route.count ? 20 + 3 * combat_route.count : 0;
+}
+
 static struct {
     uint32_t camera, screen, phase;
     float height, ratio, centre;
@@ -391,6 +547,12 @@ static void camera_projection(void)
     }
     float applied_centre = MEMF(camera + 0x60) - centre;
     original_projection();
+    combat_projection.valid = 0;
+    if (framing.phase != 3 && void_vm_readable(output, 0x404) && MEM32(output + 0x400) == 2) {
+        memcpy(combat_projection.matrix, GPTR(output + 0x100), sizeof combat_projection.matrix);
+        combat_projection.camera = camera; combat_projection.screen = framing.screen;
+        combat_projection.valid = 1;
+    }
     deployment_projection.valid = 0;
     if (hud && framing.phase && framing.phase != 3 && void_vm_readable(output, 0x404) &&
         MEM32(output + 0x400) == 2) {
@@ -431,6 +593,7 @@ void void_touch_adventure_frame(uint32_t screen, float height, float top, float 
 void void_touch_combat_frame(uint32_t screen, float width, float height, float hud_top, float top, float bottom)
 {
     if (!screen) {
+        combat_projection.valid = 0;
         framing.camera = 0;
         deployment_zone_reset(); deployment_projection.valid = 0;
         return;

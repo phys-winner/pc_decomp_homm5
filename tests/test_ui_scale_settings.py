@@ -35,6 +35,14 @@ public class PortSettingsCheck {
         Editor putFloat(String key,float value) {pending.put(key,value);return this;}
         void apply() {owner.values.putAll(pending);owner.applies++;}
     }
+    static class CombatOverlay {
+        float uiScale=1;int updates;
+        void setUiScale(float value) {uiScale=value;updates++;}
+    }
+    private CombatOverlay combatOverlay=new CombatOverlay();
+    private final ArrayDeque<Runnable> uiTasks=new ArrayDeque<>();
+    void runOnUiThread(Runnable task) {uiTasks.add(task);}
+    void flushUi() {while(!uiTasks.isEmpty()) uiTasks.remove().run();}
     private final SharedPreferences preferences=new SharedPreferences();
     private static WeakReference<PortSettingsCheck> currentActivity=new WeakReference<>(null);
     static float nativeUi,nativeRender,nativeCamera;
@@ -62,6 +70,8 @@ public class PortSettingsCheck {
         /* port_settings.c's indices: 0 UI, 1 render, 2 camera. */
         onPortSetting(0,1.25f);onPortSetting(1,.6f);onPortSetting(2,2f);
         assert check.preferences.values.equals(saved(1.25f,.6f,2f))&&check.preferences.applies==3;
+        assert check.combatOverlay.updates==0&&check.uiTasks.size()==1;
+        check.flushUi();assert check.combatOverlay.uiScale==1.25f&&check.combatOverlay.updates==1;
         onPortSetting(3,.7f);onPortSetting(-1,.7f);onPortSetting(0,Float.NaN);onPortSetting(1,Float.POSITIVE_INFINITY);
         assert check.preferences.values.equals(saved(1.25f,.6f,2f))&&check.preferences.applies==3;
         /* The next start seeds what the game last reported. */
@@ -73,6 +83,12 @@ public class PortSettingsCheck {
         PortSettingsCheck next=new PortSettingsCheck();currentActivity=new WeakReference<>(next);
         onPortSetting(2,.5f);
         assert next.preferences.values.get("camera_sensitivity").equals(.5f)&&check.preferences.values.get("camera_sensitivity").equals(2f);
+        /* An Activity replaced before queued UI work runs must not change its old overlay. */
+        currentActivity=new WeakReference<>(check);onPortSetting(0,1.75f);
+        currentActivity=new WeakReference<>(next);check.flushUi();
+        assert check.combatOverlay.uiScale==1.25f&&check.combatOverlay.updates==1;
+        next.combatOverlay=null;onPortSetting(0,1.5f);next.flushUi();
+        assert next.preferences.values.get("ui_scale").equals(1.5f);
         System.out.println("PASS actual Activity port settings: onPortSetting persists ui/render/camera by native index, ignores unknown/non-finite/no Activity; startup seeds saved values, defaults 1 and type fallback");
     }
 }
@@ -313,7 +329,7 @@ class PortSettingsTest(unittest.TestCase):
                          ["port_render_scale", "port_ui_scale", "port_fps_limit",
                           "port_world_filter", "port_ui_filter", "port_sharpness", "port_camera_sensitivity",
                           "port_cursor_offset_x", "port_cursor_offset_y", "port_touch_cursor", "port_lan_vpn", "port_console",
-                          "port_split_hints", "port_split_zones"])
+                          "port_split_hints", "port_split_zones", "port_combat_confirm", "port_attack_hints", "port_combat_route"])
         kinds = {o.findtext("ID"): o.findtext("Type") for o in categories[2].findall(".//Options/Item")}
         self.assertEqual((kinds["port_render_scale"], kinds["port_ui_scale"], kinds["port_fps_limit"]),
                          ("OPTION_SCROLLER", "OPTION_SCROLLER", "OPTION_COMBO_BOX"))
@@ -323,10 +339,23 @@ class PortSettingsTest(unittest.TestCase):
         option = next(o for o in port_ui.OPTIONS if o[0] == "port_combat_fit")
         self.assertEqual((option[7], option[8]), ((0.0, 1.0), 1))
         self.assertNotIn("UI/Consts/GameOptions/Port_port_combat_fit/Name.txt", port_ui.texts())
-        for name in ("port_split_hints", "port_split_zones"):
+        for name in ("port_split_hints", "port_split_zones", "port_combat_route"):
             item = categories[2].find(f".//Options/Item[ID='{name}']")
             self.assertEqual((item.findtext("Type"), item.findtext("GlobalVar1"), item.findtext("DefaultValue1")),
                              ("OPTION_CHECK_BOX", name, "1"))
+        for name in ("port_combat_confirm", "port_attack_hints"):
+            item = categories[2].find(f".//Options/Item[ID='{name}']")
+            self.assertEqual((item.findtext("Type"), item.findtext("GlobalVar1"), item.findtext("DefaultValue1")),
+                             ("OPTION_CHECK_BOX", name, "0"))
+        # Native battle mode disables page zero as a unit; all battlefield toggles must stay on page one.
+        controls = categories[2].find("Pages/Item[ID='port_controls']/Options")
+        labels = {"port_combat_confirm": "Подтверждение приказов", "port_attack_hints": "Подсказки особых атак",
+                  "port_combat_route": "Путь и направление атаки"}
+        self.assertEqual([item.findtext("ID") for item in list(controls)[-3:]], list(labels))
+        for name, label in labels.items():
+            self.assertIsNotNone(controls.find(f"Item[ID='{name}']"))
+            self.assertEqual(port_ui.texts()[f"UI/Consts/GameOptions/Port_{name}/Name.txt"].decode("utf16"), label)
+            self.assertGreater(len(port_ui.texts()[f"UI/Consts/GameOptions/Port_{name}/Tooltip.txt"].decode("utf16")), len(label))
         rates = categories[2].find(".//Options/Item[ID='port_fps_limit']")
         self.assertEqual((rates.findtext("ItemsGlobalVar"), rates.findtext("UseItemNameAsValue"), rates.findtext("GlobalVar1")),
                          ("port_fps_items", "true", "port_fps_choice"))
@@ -350,6 +379,28 @@ class PortSettingsTest(unittest.TestCase):
             self.assertEqual(len(button.find("GameMessageReactions")), 0)
             self.assertIn("PortLauncher.(UISDirectRunReaction)", button.find("ButtonStates/Item/CommandsOnEnterState/Commands/Item").get("href"))
         self.assertEqual(port_ui.texts()["UI/Consts/GameOptions/PortAdditional.txt"].decode("utf16"), "Дополнительные")
+
+    def test_battle_controls_fit_above_native_menu_buttons(self):
+        from editions import game_directory
+        for edition in ('toe', 'vanilla', 'hof'):
+            with self.subTest(edition=edition):
+                game = game_directory(edition)
+                def resource(name):
+                    return ET.fromstring(port_ui.source_resource(game, 'UI/GameOptions/' + name, edition)[0])
+                tree = ET.fromstring(port_ui.patch_uiconsts(port_ui.source_resource(game, port_ui.UICONSTS, edition)[0], edition))
+                pages = tree.find("GameOptions/Categories/Item[ID='port_additional']/Pages")
+                self.assertEqual([page.findtext('ID') for page in pages], ['port_video', 'port_controls'])
+                controls = pages[1].findall('Options/Item')
+                heights = {
+                    'OPTION_SCROLLER': int(resource('Templates/ScrollBar/ScrollBarPanel.(WindowSimple).xdb').findtext('Placement/Size/First/y')),
+                    'OPTION_CHECK_BOX': int(resource('Templates/CheckBox/CheckBoxPanel.(WindowSimple).xdb').findtext('Placement/Size/First/y')),
+                }
+                top = int(resource('PageCont.(WindowScrollableContainer).xdb').findtext('Placement/LowerMargin/First/y'))
+                bottom = top + sum(heights[item.findtext('Type')] for item in controls)
+                buttons = port_ui.launcher_buttons(game, edition)
+                for name in ('PortOptionsLauncher', 'PortSkipHints'):
+                    button = ET.fromstring(buttons[f'UI/{name}.(WindowMSButton).xdb'])
+                    self.assertLessEqual(bottom, int(button.findtext('Placement/Position/First/y')))
 
     def test_original_and_vanilla_category_spacing_keep_the_replay_anchor(self):
         from editions import game_directory
@@ -386,6 +437,91 @@ class PortSettingsTest(unittest.TestCase):
         subprocess.run([str(JAVA / "javac.exe"), "--release", "8", "-encoding", "UTF-8", "-d", str(out), str(fixture)], check=True)
         subprocess.run([str(JAVA / "java.exe"), "-ea", "-cp", str(out), "PortSettingsCheck"], check=True)
 
+    def test_cold_start_initializes_preferences_before_overlay_and_native_seeds_all_editions(self):
+        app = ROOT / "android/app/src/org/homm5/port"
+        source = (app / "GameActivity.java").read_text(encoding="utf8")
+        start = function(source, "    private void startGame(")
+        # Execute the real initialization/read statements in source order, starting with the
+        # production null fields. The older seed-only fixture initializes preferences eagerly.
+        statements = [line.strip() for line in start.splitlines() if
+                      "combatOverlay = new CombatOverlay(" in line or
+                      "preferences = getSharedPreferences(" in line or "savedFloat(" in line]
+        self.assertTrue(all(line.endswith(";") for line in statements), statements)
+        self.assertEqual(sum("savedFloat(" in line for line in statements), start.count("savedFloat("))
+        self.assertEqual(sum("preferences = getSharedPreferences(" in line for line in statements), 1)
+        overlay_seed = next(line for line in statements if "combatOverlay.setUiScale(savedFloat(" in line)
+        mutant = [line for line in statements if line != overlay_seed]
+        constructor = next(i for i, line in enumerate(mutant) if "combatOverlay = new CombatOverlay(" in line)
+        mutant.insert(constructor + 1, overlay_seed)
+        fields = "\n".join(re.findall(r"(?m)^    private (?:SharedPreferences preferences|CombatOverlay combatOverlay);$", source))
+        self.assertEqual(len(fields.splitlines()), 2)
+        methods = function(source, "    private float savedFloat(") + function(source, "    protected String gameEdition(")
+        harness = r'''
+package org.homm5.port;
+import java.util.function.IntConsumer;
+public class GameActivity {
+    static final int MODE_PRIVATE=0;
+    /* FIELDS */
+    static final class SharedPreferences {
+        final String name;final float scale;
+        SharedPreferences(String name) {
+            this.name=name;
+            scale=name.equals("port_settings")?1.25f:name.equals("port_settings-vanilla")?.75f:1.75f;
+        }
+        float getFloat(String key,float fallback) {
+            return key.equals("ui_scale")?scale:key.equals("render_scale")?.6f:key.equals("camera_sensitivity")?2:fallback;
+        }
+    }
+    static final class CombatOverlay {
+        float scale;int updates;
+        CombatOverlay(Object activity,boolean russian,IntConsumer action) {assert activity!=null&&action!=null;}
+        void setUiScale(float value) {scale=value;++updates;}
+    }
+    int opened,nativeCalls;float nativeUi,nativeRender,nativeCamera;
+    SharedPreferences getSharedPreferences(String name,int mode) {assert mode==MODE_PRIVATE;++opened;return new SharedPreferences(name);}
+    String cheatText(String en,String ru) {return en;}
+    static void nativeCombatConfirm(int generation) {throw new AssertionError("startup must not confirm an order");}
+    void nativeUiScale(float value) {nativeUi=value;++nativeCalls;}
+    void nativeRenderScale(float value) {nativeRender=value;++nativeCalls;}
+    void nativeCameraSensitivity(float value) {nativeCamera=value;++nativeCalls;}
+    /* METHODS */
+    private void startGame() { /* STARTUP */ }
+    private void prematureOverlaySeed() { /* MUTANT */ }
+    static void check(GameActivity activity,int edition,boolean broken) {
+        assert activity.preferences==null&&activity.combatOverlay==null&&activity.opened==0;
+        if(broken) {
+            try {activity.prematureOverlaySeed();throw new AssertionError("premature seed did not reproduce cold-start failure");}
+            catch(NullPointerException expected) {
+                assert expected.getStackTrace()[0].getMethodName().equals("savedFloat");
+                assert activity.opened==0&&activity.nativeCalls==0;
+            }
+            return;
+        }
+        activity.startGame();
+        String[] names={"port_settings","port_settings-vanilla","port_settings-hof"};
+        float[] scales={1.25f,.75f,1.75f};
+        assert activity.opened==1&&activity.preferences.name.equals(names[edition]);
+        assert activity.combatOverlay.updates==1&&activity.combatOverlay.scale==scales[edition];
+        assert activity.nativeCalls==3&&activity.nativeUi==scales[edition]&&activity.nativeRender==.6f&&activity.nativeCamera==2;
+    }
+    public static void main(String[] args) {
+        check(new GameActivity(),0,false);check(new VanillaGameActivity(),1,false);check(new HofGameActivity(),2,false);
+        check(new GameActivity(),0,true);check(new VanillaGameActivity(),1,true);check(new HofGameActivity(),2,true);
+        System.out.println("PASS actual shared cold-start ordering: null initial preferences, all-edition subclasses/profile names, overlay/native seeds, premature-read NPE negative control");
+    }
+}
+'''
+        out = ROOT / "build/tests/combat-overlay-cold-start"
+        out.mkdir(parents=True, exist_ok=True)
+        fixture = out / "GameActivity.java"
+        fixture.write_text(harness.replace("/* FIELDS */", fields).replace("/* METHODS */", methods)
+                           .replace("/* STARTUP */", "\n".join(statements))
+                           .replace("/* MUTANT */", "\n".join(mutant)), encoding="utf8")
+        actual = [app / name for name in ("Games.java", "VanillaGameActivity.java", "HofGameActivity.java")]
+        subprocess.run([str(JAVA / "javac.exe"), "--release", "8", "-encoding", "UTF-8", "-d", str(out),
+                        str(fixture), *map(str, actual)], check=True)
+        subprocess.run([str(JAVA / "java.exe"), "-ea", "-cp", str(out), "org.homm5.port.GameActivity"], check=True)
+
     def test_native_registration_and_pump(self):
         import json
         import port_patches
@@ -404,7 +540,7 @@ class PortSettingsTest(unittest.TestCase):
             source = source.replace(f'#include "{name}"\n', "")
         options = {option[1]: option for option in port_ui.OPTIONS}
         names = ("port_ui_scale", "port_render_scale", "port_camera_sensitivity", "port_fps_limit", "port_cursor_offset_x", "port_cursor_offset_y", "port_touch_cursor")
-        self.assertEqual(set(options), set(names) | {"port_lan_vpn", "port_console", "port_world_filter", "port_ui_filter", "port_sharpness", "port_combat_fit", "port_split_hints", "port_split_zones"})
+        self.assertEqual(set(options), set(names) | {"port_lan_vpn", "port_console", "port_world_filter", "port_ui_filter", "port_sharpness", "port_combat_fit", "port_split_hints", "port_split_zones", "port_combat_confirm", "port_attack_hints", "port_combat_route"})
         rows, counts = [], []
         for name in names:
             values = options[name][7]
@@ -412,8 +548,8 @@ class PortSettingsTest(unittest.TestCase):
             rows.append("{" + ",".join(f"{value!r}f" for value in values) + "}")
             counts.append(str(len(values)))
         harness = NATIVE_HARNESS.replace("/* OPTION_VALUES */", ",".join(rows)).replace("/* OPTION_COUNTS */", ",".join(counts))
-        harness = harness.replace("/* SPLIT_NAMES */", ', "port_split_hints", "port_split_zones"')
-        harness = harness.replace("/* SPLIT_DEFAULTS */", ', "1", "1"')
+        harness = harness.replace("/* SPLIT_NAMES */", ', "port_split_hints", "port_split_zones", "port_combat_confirm", "port_attack_hints", "port_combat_route"')
+        harness = harness.replace("/* SPLIT_DEFAULTS */", ', "1", "1", "0", "0", "1"')
         checks = ''
         for name in ("hints", "zones"):
             index = "PORT_SPLIT_" + name.upper()
@@ -421,6 +557,19 @@ class PortSettingsTest(unittest.TestCase):
             checks += f'MEMF(port_storage+4*{index})=0;assert(!void_port_split_{name}());\n'
             checks += f'MEMF(port_storage+4*{index})=NAN;assert(void_port_split_{name}());\n'
             checks += f'MEMF(port_storage+4*{index})=1;\n'
+        self.assertEqual(options["port_combat_route"][7:9], ((0.0, 1.0), 1))
+        checks += 'assert(void_port_combat_route());\n'
+        for value, enabled in ((0, False), (-1, False), ("NAN", True), ("0.49f", False), ("0.5f", True), (2, True)):
+            checks += f'MEMF(port_storage+4*PORT_COMBAT_ROUTE)={value};assert({"" if enabled else "!"}void_port_combat_route());\n'
+        checks += 'MEMF(port_storage+4*PORT_COMBAT_ROUTE)=1;\n'
+        for name in ("combat_confirm", "attack_hints"):
+            index = "PORT_" + name.upper()
+            default = 0
+            self.assertEqual(options["port_" + name][7:9], ((0.0, 1.0), default))
+            checks += f'assert({"" if default else "!"}void_port_{name}());\n'
+            for value, enabled in ((0, False), (1, True), (-1, False), ("NAN", bool(default)), ("0.49f", False), ("0.5f", True)):
+                checks += f'MEMF(port_storage+4*{index})={value};assert({"" if enabled else "!"}void_port_{name}());\n'
+            checks += f'MEMF(port_storage+4*{index})=0;\n'
         harness = harness.replace("/* SPLIT_CHECKS */", checks)
         for toe in ("008791F0", "00499700", "00499630", "00C11400"):
             if edition != "toe":

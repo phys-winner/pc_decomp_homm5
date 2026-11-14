@@ -401,19 +401,3 @@ void sub_1102BC0B(void)
         previous.streams[i].state = after.states[i]; previous.streams[i].time_ns = now_ns;
     }
 }
-
-/* FSOUND_Init doubles the request; 50 ms keeps headroom for a late mixer worker. */
-static void_fn original_buffer_size;
-
-static void fmod_buffer_size(void)
-{
-    if (void_vm_writable(g_esp, 8) && ARG(0) == 100) MEM32(g_esp + 4) = 50;
-    original_buffer_size();
-}
-
-void void_fmod_latency_init(void)
-{
-    if (original_buffer_size) return;
-    original_buffer_size = void_dispatch_find(0x11021F16u);
-    if (original_buffer_size) void_dispatch_add(0x11021F16u, fmod_buffer_size);
-}

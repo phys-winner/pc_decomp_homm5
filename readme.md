@@ -3,7 +3,7 @@
 Heroes of Might and Magic V, Hammers of Fate and Tribes of the East on Android ARM64 through static
 x86 recompilation, with native touch controls and a Direct3D 9 to OpenGL ES bridge.
 
-**Current version: 0.6-dev.** All three engines use ThinLTO and their own device-trained PGO profiles.
+**Current version: 0.7-dev.** All three engines use ThinLTO and their own device-trained PGO profiles.
 This is an experimental port for sideloading.
 The original game's menus, adventure maps, towns, battles, sound and saves run
 through a local Win32 compatibility host. The game and eight DLLs are translated
@@ -429,7 +429,7 @@ receipts are `build/deploy-receipt[-vanilla|-hof].json`.
 | Tap a portrait on the battle initiative bar, then tap it again after a pause | The first tap selects the portrait (it stays highlighted); the second shows the creature's details card, which stays open without holding; each further tap on the portrait switches between the card and the effects; a touch elsewhere closes it |
 | Hold a map or town object, or the battle initiative bar | Show its tooltip and details card; each second-finger tap on a held initiative bar portrait switches its card once |
 | Double tap a creature portrait on the initiative bar | Issue the original attack action through the portrait |
-| Drag your active shooter onto an enemy in battle | Melee attack instead of a shot, like Ctrl+click on the PC |
+| Drag your active shooter onto an enemy in battle | Melee attack instead of a shot, like Ctrl+click on the PC; for a creature with Strike and Return, the same gesture disables the return |
 | Brief simultaneous tap with two fingers anywhere in the game view | Cancel a selected spell or creature ability; on the adventure map, stop the moving hero |
 | Double tap the minimap, or tap it with two fingers | Toggle the highlighting of objects, like holding Alt on the PC; the camera stays. A single tap on the minimap moves the camera after a short pause (0.4 s) |
 | Swipe left or right across the spellbook | Next or previous page |
@@ -444,11 +444,44 @@ receipts are `build/deploy-receipt[-vanilla|-hof].json`.
 | Drag a troop stack into the visible split zones | Release over Quick split to split it in half; hold over Split one to detach the first unit after 1 second and another every 0.5 seconds, with progress shown. A free army slot is required |
 | Drag troops or artifacts | Transfer between slots, empty slots included; a tap on a stack and then a tap on a slot does the same |
 | Hold a stack and tap any army slot with a second finger; or drag a stack onto an army portrait | Split one creature off per tap, open the split dialog by holding the second finger, collect or distribute a creature type on its own portrait, move stacks to the other army — in towns, hero screens and the caravan, raise-the-dead, joining-creatures, garrison and creature-exchange windows |
-| Aim a selected ability, then release | Confirm the target |
+| Aim a selected ability, then release | Choose the target; issue the order immediately unless battle confirmation is enabled |
 | Second finger while aiming | Cancel targeting (in battles: a quick two-finger touch or moving the second finger) |
 
 While a creature card is shown, the battle camera stays still: a moving second
 finger does not turn it.
+
+Additional settings are also available from the battle menu in all three editions.
+**Путь и направление атаки** is on by default: while choosing a move or
+melee attack, destination cells and an animated dashed route show where the unit
+will stand. The line follows the original order's cell-by-cell route, including bends
+and obstacle detours; flying units retain the game's own flight path. Strike and Return
+uses two separated lines moving in opposite directions along that same route.
+Solid arrows with a dark outline show the melee strike from its final position to every troop in the
+original damage forecast, including Cerberus and Hydra attacks. Shots and direct
+hero strikes use one arrow to the selected target, including area-damage shooters.
+The route setting works independently of confirmation. The game renderer draws the
+route and destination cells in its own frame. Projection and line preparation run on
+the existing render thread using a copied path and camera matrix; no Android animation
+layer is used.
+
+**Подтверждение приказов** is off by default. When enabled, battlefield gestures
+choose an order and the **Подтвердить** button above the action dial on the right
+issues it. Its position follows the interface scale. Movement, attacks, shots,
+targeted spells and spells without a target require confirmation; Wait and Defend
+keep their separate buttons. The original attack direction, affected units and damage
+forecast remain available while choosing an order. Choosing another point replaces
+the pending order; a changed turn, target or battle cancels it.
+The touch damage forecast stays at one position on the left when attack direction changes.
+The duel hero list scrolls with vertical swipes while preserving the selected hero.
+
+**Подсказки особых атак**, off by default, explains the drag gesture
+only when the active unit has a reachable, legal target for melee or an attack without
+returning. A background worker searches a copied native movement grid; the game polls
+its result without waiting and keeps the original target-validation rules. Stale results
+are discarded when the battle or turn changes. Camera movement and target selection
+reuse the cached result, including no target. No target search runs while tips are disabled.
+Tap the tip to hide it for that turn. The first player-controlled troop turn after
+deployment shows a one-time tip explaining the confirmation setting.
 
 The first use of targeting, hero movement, the camera or the enabled console shows a brief
 touch-control tip. Each type appears once per device across all three editions. The
@@ -472,7 +505,8 @@ attack or shot icon appears above the damage and retaliation text; the forecast
 identifies the selected target. This icon is shown even when other touch cursors
 are disabled. The offset tapers smoothly near screen edges so every point remains
 reachable. Camera gestures and physical pointer input retain their own coordinates.
-Field taps are dispatched immediately on release, with no multi-tap wait.
+With battle confirmation disabled, field taps are dispatched immediately on release,
+with no multi-tap wait.
 For the camera reset, place all three fingers within 120 ms and release within
 300 ms, moving each finger no more than 16 dp. Three sequential taps do not reset
 the camera. When **Консоль игры** is enabled, hold the in-game gear button to
@@ -563,18 +597,39 @@ send `homm5.1.log` (the session that crashed) together with `homm5.log`.
 
 ## Versions and local release files
 
-The current version is `0.6-dev` / code `11`. Earlier development builds used
-`0.1-dev`, `0.2-dev`, `0.3-dev`, `0.3.1-dev`, `0.3.2-dev`, `0.4-dev`, `0.5-dev` and `0.5.1-dev`. The version is stored in
+The current version is `0.7-dev` / code `12`. Earlier development builds used
+`0.1-dev`, `0.2-dev`, `0.3-dev`, `0.3.1-dev`, `0.3.2-dev`, `0.4-dev`, `0.5-dev`, `0.5.1-dev` and `0.6-dev`. The version is stored in
 `android/app/AndroidManifest.xml`; increase `android:versionCode` for every
 subsequent published build. Version `0.3-dev` uses code `5` (the replacement
 build supersedes the earlier code `4` APK); `0.3.1-dev` uses code `6`, and
 `0.3.2-dev` uses code `7`, `0.4-dev` uses code `8`, `0.5-dev` uses code `9`, and
-`0.5.1-dev` uses code `10`.
+`0.5.1-dev` uses code `10`, and `0.6-dev` uses code `11`.
 
-Local release copies use `heroes-v-0.6-dev-<sha256-prefix>.apk`, where the suffix
+Local release copies use `heroes-v-0.7-dev-<sha256-prefix>.apk`, where the suffix
 is the first eight characters of the APK's SHA-256, with a companion `.sha256`
 file. The `pub/` directory is ignored. Building and naming an APK does not
 automatically publish it or create a Git tag.
+
+## Changes in 0.7-dev
+
+Changes since 0.6-dev, for all three editions:
+
+- Preserve populated save lists when loading dialogs fit to the screen after UI scaling.
+- Restore the original FMOD stream buffer request to avoid repeated audio on refill delays.
+- Deleted save rows stay hidden while the original list finishes removing them.
+- Additional settings can be opened during battle in all three editions.
+- Independent battle route previews (on by default), optional order confirmation,
+  and alternative-attack tips (off by default). The first player troop turn explains where
+  to enable confirmation. Strike and Return can be disabled by dragging from the
+  active unit, with separate outgoing and returning route lines when it remains enabled.
+- Route previews follow the original prepared movement command, including obstacle
+  turns, terrain height and flight paths. Projection and drawing run on the render worker.
+- Alternative-attack hints require a reachable legal target. A background worker
+  searches a bounded battlefield snapshot; final validation stays on the game thread.
+- Outlined arrows show every melee victim, including Cerberus and Hydra attacks;
+  shots and direct hero strikes show one direction. The damage forecast stays at
+  one position on the left, and the duel hero list supports vertical swipes.
+- Set Android version to `0.7-dev` / code `12`.
 
 ## Changes in 0.6-dev
 

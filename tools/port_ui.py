@@ -86,6 +86,17 @@ OPTIONS = (
      "Первый воин отделяется через 1 секунду, следующие — каждые 0,5 секунды. "
      "При отключении зон деление вторым пальцем остаётся доступным.",
      "Выкл.", "Вкл.", (0.0, 1.0), 1),
+    ("port_combat_confirm", "port_combat_confirm", "port_split_zones",
+     "Подтверждение приказов",
+     "Касания и жесты выбирают перемещение, атаку или цель заклинания без расходования хода. "
+     "Выбранное действие выполняется отдельной кнопкой подтверждения. "
+     "Ожидание и защита своими кнопками выполняются сразу.",
+     "Выкл.", "Вкл.", (0.0, 1.0), 0),
+    ("port_attack_hints", "port_attack_hints", "port_combat_confirm",
+     "Подсказки особых атак",
+     "Показывать подсказку жеста от своего отряда для рукопашной атаки стрелка "
+     "или атаки без возвращения. Касание подсказки скрывает её до следующего подходящего хода.",
+     "Выкл.", "Вкл.", (0.0, 1.0), 0),
     ("port_combat_fit", "port_combat_fit", "port_ui_scale",
      "Вмещать поле боя",
      "Отдалять боевую камеру и расширять обзор, чтобы поле боя помещалось на экране. "
@@ -103,6 +114,12 @@ OPTIONS = (
      "Резкость FSR",
      "Интенсивность адаптивной резкости RCAS после масштабирования игры. Ноль отключает резкость.",
      "0%", "100%", (0.0, 0.25, 0.5, 0.75, 1.0), 1),
+    ("port_combat_route", "port_combat_route", "port_attack_hints",
+     "Путь и направление атаки",
+     "Показывать конечные клетки и движущийся пунктир при выборе действия в бою. "
+     "Для атаки с возвращением показываются два встречных направления. "
+     "Работает независимо от подтверждения действий.",
+     "Выкл.", "Вкл.", (0.0, 1.0), 1),
 )
 
 # Native numeric comboboxes store an item index; fractional scales need scrollers.
@@ -110,6 +127,7 @@ OPTIONS = (
 KINDS = {"port_fps_limit": "rates",
          "port_touch_cursor": "check", "port_lan_vpn": "check", "port_console": "check", "port_combat_fit": "check",
          "port_split_hints": "check", "port_split_zones": "check",
+         "port_combat_confirm": "check", "port_attack_hints": "check", "port_combat_route": "check",
          "port_world_filter": "combo", "port_ui_filter": "combo"}
 COMBO_TEMPLATE = "UI/GameOptions/Templates/ComboBox/Combo.(WindowComboBox).xdb"
 
@@ -194,6 +212,8 @@ def patch_uiconsts(data, edition="toe"):
       <TooltipFileRef href="Consts/GameOptions/PortAdditionalTooltip.txt"/>
       <Pages>'''
     # The native template lays out two pages; the network switch closes the controls page.
+    # The original battle menu disables its whole first page, including an input blocker.
+    # Battlefield controls belong to the second page so render restrictions stay intact.
     graphics = {"port_render_scale", "port_ui_scale", "port_fps_limit", "port_world_filter", "port_ui_filter", "port_sharpness", "port_combat_fit"}
     pages = [("port_video", "PortVideo", [o for o in edition_options if o[0] in graphics]),
              ("port_controls", "PortControls", [o for o in edition_options if o[0] not in graphics])]

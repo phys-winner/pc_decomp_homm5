@@ -69,7 +69,7 @@ static uint32_t scale_screen_root(uint32_t screen)
 /* 1.6/2.1 keep a mutable canvas getter, but their coordinate conversions
    still load fixed constants. Checked generated patches use that same canvas.
    Their IScreen has no ToE Reposition virtual method: reproduce its geometry
-   through the original parent-rectangle layout and invalidation calls. */
+   through the original parent-rectangle layout and child binding calls. */
 void void_touch_legacy_root_rect(uint32_t root, uint32_t destination)
 {
     if (!void_vm_writable(destination, 16)) return;
@@ -98,7 +98,6 @@ void void_touch_legacy_relayout(void)
             if (root) {
                 void_touch_legacy_root_rect(root, viewport_scratch);
                 void_call_guest_this(0x00487990u, root, 1, &viewport_scratch);
-                void_call_guest_this(0x00A504B0u, root + 0x14, 0, NULL);
                 void_call_guest_this(0x00488220u, root - 0xF8, 0, NULL);
             }
         }
@@ -127,11 +126,13 @@ static int scale_viewport_apply(void)
     if (!viewport_scratch) viewport_scratch = void_galloc(16);
     if (!viewport_scratch || !void_vm_writable(viewport_scratch, 16)) return 0;
     memcpy(GPTR(viewport_scratch), viewport.rect, sizeof viewport.rect);
-    /* Exactly 488330's native geometry/invalidation sequence; resource anchors stay intact. */
+    /* Legacy resource invalidation clears populated lists; their geometry setter already reflows children. */
     void_call_guest_this(0x00487990u, viewport.root, 1, &viewport_scratch);
     if (scale_current_screen() != viewport.screen || scale_screen_root(viewport.screen) != viewport.root) return 0;
+#ifndef HOMM5_LEGACY_UI
     void_call_guest_this(0x00A504B0u, viewport.root + 0x14, 0, NULL);
     if (scale_current_screen() != viewport.screen || scale_screen_root(viewport.screen) != viewport.root) return 0;
+#endif
     void_call_guest_this(0x00488220u, viewport.root - 0xF8, 0, NULL);
     if (scale_current_screen() != viewport.screen || scale_screen_root(viewport.screen) != viewport.root) return 0;
     viewport.actual_x = MEMF(viewport.root - 0xF8 + 0x64);
@@ -535,6 +536,17 @@ static void scale_list_update(void)
     --depth;
 }
 
+/* Native RemoveChild hides a row before deferring its unlink during event traversal. */
+static int scale_pending_removal(uint32_t parent, uint32_t child)
+{
+    uint32_t begin = scale_read32(parent + 0x78), end = scale_read32(parent + 0x7C);
+    if (!begin || end < begin || (end - begin) % 4 || end - begin > 16384 ||
+        !void_vm_readable(begin, end - begin)) return 0;
+    for (uint32_t at = begin; at < end; at += 4)
+        if (MEM32(at) == child) return 1;
+    return 0;
+}
+
 /* Scrollable text rows must grow with wrapped columns before the native list places the next row. */
 static int scale_text_rows(uint32_t list)
 {
@@ -542,7 +554,9 @@ static int scale_text_rows(uint32_t list)
     if (!begin || end < begin || (end - begin) % 4 || end - begin > 16384 || !void_vm_readable(begin, end - begin)) return 0;
     int changed = 0;
     for (uint32_t at = begin; at < end; at += 4) {
-        uint32_t row = MEM32(at), placement = scale_placement(row);
+        uint32_t row = MEM32(at);
+        if (scale_pending_removal(holder, row)) continue;
+        uint32_t placement = scale_placement(row);
         uint32_t a = scale_read32(row + 0xA4), b = scale_read32(row + 0xA8);
         if (!placement || !MEM8(placement + 0x70) || !a || b <= a || (b - a) % 4 || b - a > 128 ||
             !void_vm_readable(a, b - a)) continue;
@@ -627,7 +641,8 @@ static void scale_refresh_window(uint32_t window, unsigned depth, unsigned *rema
             (end - begin) / 4 > 4096 || i >= (end - begin) / 4 ||
             !void_vm_readable(begin, end - begin)) break;
         uint32_t child = MEM32(begin + i * 4);
-        if (child != window) scale_refresh_window(child, depth + 1, remaining);
+        if (child != window && !scale_pending_removal(window, child))
+            scale_refresh_window(child, depth + 1, remaining);
     }
     if (table == 0x00E94034u && original_list_layout) {
         void_regs saved;
@@ -834,8 +849,10 @@ void void_touch_loading_frame(uint32_t screen)
     memcpy(GPTR(viewport_scratch), rect, sizeof rect);
     void_call_guest_this(0x00487990u, root, 1, &viewport_scratch);
     if (!loading_same(screen, root, hwnd, width, height)) goto done;
+#ifndef HOMM5_LEGACY_UI
     void_call_guest_this(0x00A504B0u, root + 0x14, 0, NULL);
     if (!loading_same(screen, root, hwnd, width, height)) goto done;
+#endif
     void_call_guest_this(0x00488220u, root - 0xF8, 0, NULL);
     if (!loading_same(screen, root, hwnd, width, height)) goto done;
     unsigned remaining = 4096;

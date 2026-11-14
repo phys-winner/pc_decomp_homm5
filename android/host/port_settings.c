@@ -10,6 +10,9 @@
  *   port_touch_cursor        0 or 1      draw the cursor during finger contact
  *   port_lan_vpn             0 or 1      LAN discovery to listed VPN peers, network.c
  *   port_combat_fit          0 or 1      fit the battlefield in the visible view (default 1)
+ *   port_combat_confirm      0 or 1      confirm battlefield gestures (default 0)
+ *   port_attack_hints        0 or 1      show alternate attack hints (default 0)
+ *   port_combat_route        0 or 1      show movement paths and attack directions (default 1)
  *
  * The frame rate is a combobox like the original resolution one: string
  * variables port_fps_items ("30;60;...", the display's rates from
@@ -41,17 +44,17 @@ static void void_android_settings_changed(int which, float value) { (void)which;
 
 enum { PORT_UI, PORT_RENDER, PORT_CAMERA, PORT_FPS, PORT_CURSOR_X, PORT_CURSOR_Y, PORT_TOUCH_CURSOR, PORT_LAN_VPN,
        PORT_CONSOLE, PORT_WORLD_FILTER, PORT_UI_FILTER, PORT_SHARPNESS, PORT_COMBAT_FIT,
-       PORT_SPLIT_HINTS, PORT_SPLIT_ZONES,
+       PORT_SPLIT_HINTS, PORT_SPLIT_ZONES, PORT_COMBAT_CONFIRM, PORT_ATTACK_HINTS, PORT_COMBAT_ROUTE,
        PORT_COUNT };
 static const char *const port_names[PORT_COUNT] = {
     "port_ui_scale", "port_render_scale", "port_camera_sensitivity", "port_fps_limit",
     "port_cursor_offset_x", "port_cursor_offset_y", "port_touch_cursor", "port_lan_vpn",
     "port_console", "port_world_filter", "port_ui_filter", "port_sharpness", "port_combat_fit",
-    "port_split_hints", "port_split_zones",
+    "port_split_hints", "port_split_zones", "port_combat_confirm", "port_attack_hints", "port_combat_route",
 };
 static float port_defaults[PORT_COUNT] = { 1.0f, 1.0f, 1.0f, 60.0f, 0.0f, 0.0f, 0.0f, 0.0f,
                                          0.0f, 2.0f, 1.0f, 0.25f, 1.0f
-                                         , 1.0f, 1.0f
+                                         , 1.0f, 1.0f, 0.0f, 0.0f, 1.0f
                                        };
 enum { PORT_TEXT_FPS_ITEMS, PORT_TEXT_FPS_CHOICE, PORT_TEXT_COUNT };
 static const char *const port_text_names[PORT_TEXT_COUNT] = { "port_fps_items", "port_fps_choice" };
@@ -179,6 +182,9 @@ int void_port_console_enabled(void) { return port_value(PORT_CONSOLE, 0.0f, 1.0f
 int void_port_combat_fit(void) { return port_value(PORT_COMBAT_FIT, 0.0f, 1.0f) >= 0.5f; }
 int void_port_split_hints(void) { return port_value(PORT_SPLIT_HINTS, 0.0f, 1.0f) >= 0.5f; }
 int void_port_split_zones(void) { return port_value(PORT_SPLIT_ZONES, 0.0f, 1.0f) >= 0.5f; }
+int void_port_combat_confirm(void) { return port_value(PORT_COMBAT_CONFIRM, 0.0f, 1.0f) >= 0.5f; }
+int void_port_attack_hints(void) { return port_value(PORT_ATTACK_HINTS, 0.0f, 1.0f) >= 0.5f; }
+int void_port_combat_route(void) { return port_value(PORT_COMBAT_ROUTE, 0.0f, 1.0f) >= 0.5f; }
 int void_port_filter(int ui) { return (int)lroundf(port_value(ui ? PORT_UI_FILTER : PORT_WORLD_FILTER, 0.0f, ui ? 3.0f : 2.0f)); }
 float void_port_sharpness(void) { return port_value(PORT_SHARPNESS, 0.0f, 1.0f); }
 

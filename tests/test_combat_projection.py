@@ -6,6 +6,7 @@ import unittest
 
 from test_d3d_lifecycle import function
 from test_static_tls import compile_probe
+from test_touch_camera import ROUTE_PACKET
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -13,7 +14,7 @@ import build_windows
 import prepare_windows_runtime
 
 
-PROBE = r'''
+PROBE = ROUTE_PACKET + "\n" + r'''
 #include <assert.h>
 #include <math.h>
 #include <stdint.h>
@@ -66,7 +67,9 @@ static float void_port_camera_sensitivity(void){return 1;}
 static int option_combat_fit=1;
 static int void_port_combat_fit(void){return option_combat_fit;}
 static void void_lift_trap(uint32_t p,const char *s){(void)p;fprintf(stderr,"%s",s);abort();}
-#define VLOG(...) ((void)0)
+static int void_verbose;
+static void fixture_log(const char *format,...) {(void)format;}
+#define VLOG(...) fixture_log(__VA_ARGS__)
 #include "camera_impl.h"
 static void capture(float w,float h,float fov,float rod,float centre,int patched,float matrix[16]){
  MEM32(0x10000)=0xE1DA84;MEM32(0x100A4)=0x20000;

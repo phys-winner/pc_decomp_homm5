@@ -1,6 +1,7 @@
 /* Touch intent enters below DirectInput: UI owns its windows, the map owns orders. */
 #include "host.h"
 #include "touch.h"
+#include "touch_combat.h"
 #include "input.h"
 #include <math.h>
 #include <string.h>
@@ -25,12 +26,35 @@ typedef struct {
     int card_sticky, card_mode, card_retries;
     uint64_t card_frame;
     int atb;   /* the touch began on the selected initiative portrait and keeps its point */
-    int melee;   /* a drag from the active shooter attacks in melee (Ctrl held, as Ctrl+click) */
+    int melee;   /* a drag from the active stack holds Ctrl: melee shot or strike without return */
     /* A slider dragged from its lever's centre (logical lever, logical finger start). */
     int slider;
     float slider_x, slider_y, slider_fx, slider_fy;
+    uint32_t scroll_slider;
+    float scroll_value;
 } touch_gesture;
 static touch_gesture gesture;
+static struct {
+    uint32_t generation, screen, root, controller, actor, phase, spell, caster, second;
+    uint32_t action, target, cell_x, cell_y, direct_spell, source_book;
+    uint64_t direct_wait_until;
+    float x, y;
+    int ctrl;
+} combat_pending;
+static uint32_t combat_order_revision;
+static uint32_t combat_generation;
+static void combat_pending_clear(void);
+static void combat_pending_pump(void);
+static int combat_pending_valid(void);
+static void combat_confirm(uint32_t generation);
+static void_fn original_combat_direct;
+static int combat_direct_allowed;
+#ifdef VOID_ANDROID_APP
+void void_android_combat_overlay(uint32_t generation, uint32_t hint_epoch, int hint, const float *route, unsigned count);
+#else
+static void void_android_combat_overlay(uint32_t generation, uint32_t hint_epoch, int hint, const float *route, unsigned count)
+{ (void)generation; (void)hint_epoch; (void)hint; (void)route; (void)count; }
+#endif
 static uint32_t scratch;
 static int touch_mode;
 static uint64_t cursor_started_ns;
@@ -201,11 +225,18 @@ static void port_launcher_visibility(uint32_t window, unsigned depth, int visibl
 
 static void port_menu_pump(void)
 {
+    static uint32_t battle_options;
     uint32_t screen = current_screen(), table = read32(screen);
     if (table == 0x00E3DA1Cu) {
         uint32_t root = read32(screen + 0xA0);
+        if (root && battle_options != screen && read32(screen + 0x1BC) == 2) {
+            /* Battle entry skips the categories; expose them without changing its locked options. */
+            const uint32_t menu = UINT32_MAX;
+            void_call_guest_this(0x0075C030u, screen, 1, &menu);
+            battle_options = screen;
+        }
         if (root >= 0xF8) port_launcher_visibility(root - 0xF8, 0, read32(screen + 0x1A0) == 2);
-    }
+    } else if (screen_kind(screen) != SCREEN_MENU) battle_options = 0;
     if (void_android_take_game_switch() && screen && !switch_confirm_pending) {
         void_android_return_to_launcher();
         switch_confirm_pending = 1;
@@ -332,11 +363,52 @@ static void touch_cursor_software_draw(void)
 }
 
 static uint32_t window_placement(uint32_t window);
+static uint32_t object_method(uint32_t object, unsigned offset);
+
+static void_fn original_prediction_position;
+
+static void touch_prediction_position(void)
+{
+    uint32_t stack = g_esp;
+    int current = 0;
+    if (touch_mode && gesture.kind == SCREEN_COMBAT && !gesture.ui && !gesture.placement &&
+        !gesture.cancelled && (gesture.combat_aim || combat_pending.generation) &&
+        virtual_base(read32(gesture.screen + 0x4C0), 8) == g_ecx && void_vm_writable(stack + 4, 8)) {
+        void_regs saved;
+        void_regs_save(&saved);
+        current = same_screen();
+        void_regs_load(&saved);
+    }
+    if (current) {
+        float width = MEMF(0x00F74BE0u), height = MEMF(0x00F74BE4u);
+        if (isfinite(width) && isfinite(height) && width > 0 && height > 0) {
+            uint32_t x = MEM32(stack + 4), y = MEM32(stack + 8);
+            /* Cursor hotspots vary with attack direction; the touch forecast has one HUD anchor. */
+            MEMF(stack + 4) = roundf(width * .055f);
+            MEMF(stack + 8) = roundf(height * .4f);
+            original_prediction_position();
+            MEM32(stack + 4) = x; MEM32(stack + 8) = y;
+            return;
+        }
+    }
+    original_prediction_position();
+}
+
+static void combat_prediction_bind(void)
+{
+    if (original_prediction_position || gesture.kind != SCREEN_COMBAT || !same_screen()) return;
+    uint32_t base = virtual_base(read32(gesture.screen + 0x4C0), 8);
+    uint32_t method = object_method(base, 0x58);
+    if (method) {
+        original_prediction_position = void_dispatch_find(method);
+        if (original_prediction_position) void_dispatch_add(method, touch_prediction_position);
+    }
+}
 
 static int touch_cursor_prediction(uint32_t owner, float *x, float *y)
 {
-    if (gesture.kind != SCREEN_COMBAT || gesture.ui || !gesture.combat_aim ||
-        gesture.aiming || gesture.placement || !scratch || !void_vm_writable(scratch + 432, 16)) return 0;
+    if (gesture.kind != SCREEN_COMBAT || gesture.ui || (!gesture.combat_aim && !combat_pending.generation) ||
+        (gesture.aiming && !combat_pending.generation) || gesture.placement || !scratch || !void_vm_writable(scratch + 432, 16)) return 0;
     int placed = 0;
     void_regs saved;
     void_regs_save(&saved);
@@ -372,7 +444,7 @@ restore:
 
 static void touch_cursor_draw(void)
 {
-    if (touch_mode && gesture.active && !gesture.cancelled &&
+    if (touch_mode && (gesture.active || combat_pending.generation) && !gesture.cancelled &&
         touch_cursor_x >= 0 && touch_cursor_y >= 0 &&
         (gesture.ui || !gesture.panning || gesture.combat_aim) && void_vm_writable(0x00FE6DA0u, 8)) {
         float previous_x = MEMF(0x00FE6DA0u), previous_y = MEMF(0x00FE6DA4u);
@@ -629,6 +701,7 @@ static void text_choose(uint32_t screen, uint32_t provider, float x, float y)
 }
 
 static int choice_named(uint32_t window, const char *name);
+static uint32_t choice_child(uint32_t parent, const char *name);
 
 static int console_entry_visible(uint32_t focused)
 {
@@ -842,11 +915,28 @@ static int ui_scroll(const void_touch_event *event)
         const uint32_t cast[] = {window, 0, 0x00F2DAF4u, 0x00F44B08u, 0};
         uint32_t container = void_call_guest(0x00D119FCu, 5, cast, 0);
         uint32_t scrollbar = read32(container + 0x154);
+        uint32_t listener = container ? container + 0x100 : 0;
+        float unit = 1;
+        if (!container) {
+            const uint32_t window_cast[] = {window, 0, 0x00F2DAF4u, 0x00F2DA88u, 0};
+            uint32_t grid = void_call_guest(0x00D119FCu, 5, window_cast, 0);
+            if (choice_named(grid, "presets_grid")) {
+                scrollbar = choice_child(grid, "table_slider");
+                uint32_t inner = read32(scrollbar + 0x118), row = choice_child(grid, "line_0");
+                uint32_t placement = window_placement(row), steps_method = object_method(scrollbar ? scrollbar + 0xF8 : 0, 0x24);
+                unsigned steps = steps_method ? void_call_guest_this(steps_method, scrollbar + 0xF8, 0, NULL) : 0;
+                float row_height = placement && void_vm_readable(placement + 0xA8, 4) ? MEMF(placement + 0xA8) : 0;
+                if (steps <= 1 || steps > 1024 || !isfinite(row_height) || row_height <= 0) return 1;
+                /* The duel table uses discrete rows and its slider's existing change listener. */
+                listener = read32(inner + 0x138);
+                unit = 100.0f / ((steps - 1) * row_height);
+            }
+        }
         uint32_t slider = scrollbar ? scrollbar + 0xF8 : 0;
         uint32_t get = object_method(slider, 0x10), set = object_method(slider, 0xC);
         uint32_t orient = object_method(slider, 0x18);
-        uint32_t notify = object_method(container ? container + 0x100 : 0, 0);
-        if (container && get && set && orient && notify) {
+        uint32_t notify = object_method(listener, 0);
+        if (scrollbar && get && set && orient && notify) {
             uint32_t point = logical_point(event->x - event->dx, event->y - event->dy);
             if (!point) return 1;
             float before_x = MEMF(point), before_y = MEMF(point + 4);
@@ -855,7 +945,13 @@ static int ui_scroll(const void_touch_event *event)
             float dx = MEMF(point) - before_x, dy = MEMF(point + 4) - before_y;
             int horizontal = (void_call_guest_this(orient, slider, 0, NULL) & 0xFFu) != 0;
             void_call_guest_this(get, slider, 0, NULL);
-            float value = (float)fp_pop_impl(g_st, &g_fp_top) - (horizontal ? dx : dy);
+            float value = (float)fp_pop_impl(g_st, &g_fp_top);
+            if (!container && gesture.scroll_slider == slider) value = gesture.scroll_value;
+            value -= (horizontal ? dx : dy) * unit;
+            if (!container) {
+                gesture.scroll_slider = slider;
+                gesture.scroll_value = value = fmaxf(0, fminf(100, value));
+            }
             uint32_t bits;
             memcpy(&bits, &value, sizeof bits);
             void_call_guest_this(set, slider, 1, &bits);
@@ -863,7 +959,7 @@ static int ui_scroll(const void_touch_event *event)
             value = (float)fp_pop_impl(g_st, &g_fp_top);
             memcpy(&bits, &value, sizeof bits);
             const uint32_t args[] = {bits, scrollbar};
-            void_call_guest_this(notify, container + 0x100, 2, args);
+            void_call_guest_this(notify, listener, 2, args);
             return 1;
         }
         uint32_t parent = object_method(window, 0xD8);
@@ -2464,9 +2560,20 @@ static void touch_hint_pump(void)
         if (void_port_console_enabled()) hints |= 1u << 2;
         if (controller && read32(controller + 0x44) == 3) hints |= 1u << 3;
         if (controller && read32(controller + 0x44) == 5) hints |= 1u << 1;
-    } else if (hint_kind == SCREEN_COMBAT && read32(hint_screen + 0x2E0) != 0x1000 &&
-               (read32(hint_screen + 0x394) || read32(hint_screen + 0x388) || read32(hint_screen + 0x38C))) hints |= 1u << 1;
-    for (int id = 1; id <= 4; ++id) if ((hints & ~hint_requested) & (1u << id)) {
+    } else if (hint_kind == SCREEN_COMBAT) {
+        uint32_t phase = read32(hint_screen + 0x2E0);
+        if (phase != 0x1000 && (read32(hint_screen + 0x394) || read32(hint_screen + 0x388) ||
+                               read32(hint_screen + 0x38C))) hints |= 1u << 1;
+        /* The creature interface and native ownership distinguish a player's troop from heroes and AI turns.
+         * After the first request this branch never calls into the guest again. */
+        if (!(hint_requested & (1u << 5)) && (phase & 0x188u) && !read32(hint_screen + 0x2D4)) {
+            uint32_t active = read32(hint_screen + 0x2AC), base = virtual_base(active, 4);
+            if (base && void_vm_readable(base, 8) && !(MEM8(base + 7) & 0x80u) && object_query(active, 0x6C) &&
+                (void_call_guest_this(0x0053E3D0u, hint_screen, 1, &active) & 0xFFu) &&
+                !(void_call_guest_this(0x0053FBE0u, hint_screen, 1, &active) & 0xFFu)) hints |= 1u << 5;
+        }
+    }
+    for (int id = 1; id <= 5; ++id) if ((hints & ~hint_requested) & (1u << id)) {
         hint_requested |= 1u << id;
         void_android_touch_hint(id);
     }
@@ -2475,6 +2582,7 @@ static void touch_hint_pump(void)
 
 void void_touch_ui_pump(void)
 {
+    combat_pending_pump();
     console_open_pump();
 #ifdef VOID_ANDROID_APP
     touch_hint_pump();
@@ -2514,7 +2622,7 @@ void void_touch_ui_pump(void)
         world_details_request(0);
     }
     if (alt_screen && current_screen() != alt_screen) alt_latch(0);
-    if (ctrl_held && !gesture.active) ctrl_latch(0);
+    if (ctrl_held && !gesture.active && !combat_pending.generation) ctrl_latch(0);
     /* A held finger hovers like the resting mouse: UI tooltips, and the world
        information its screen's tooltip controller hands to the UI root. */
     if (gesture.active && gesture.held && (gesture.ui || gesture.world_hover) && !gesture.cancelled) {
@@ -2549,6 +2657,7 @@ static void placement_cancel(uint32_t placement)
 
 static void combat_cancel(void)
 {
+    combat_pending_clear();
     if (gesture.placement) {
         uint32_t placement = read32(gesture.screen + 0x488);
         placement_cancel(placement);
@@ -2610,11 +2719,94 @@ static int combat_prepare(float x, float y, int diagnostics)
     return same_screen();
 }
 
+static void combat_pending_stage(uint32_t screen, float x, float y)
+{
+    if (++combat_generation > 0xFFFFFFu) combat_generation = 1;
+    combat_pending.generation = combat_generation;
+    combat_pending.screen = screen;
+    combat_pending.root = read32(screen + 0xA0);
+    combat_pending.controller = read32(screen + 0x2B4);
+    combat_pending.actor = read32(screen + 0x2AC);
+    combat_pending.phase = read32(screen + 0x2E0);
+    combat_pending.spell = read32(screen + 0x394);
+    combat_pending.caster = read32(screen + 0x388);
+    combat_pending.second = read32(screen + 0x38C);
+    combat_pending.action = read32(screen + 0x31C);
+    combat_pending.target = read32(screen + 0x324);
+    combat_pending.cell_x = read32(screen + 0x32C);
+    combat_pending.cell_y = read32(screen + 0x330);
+    combat_pending.x = x; combat_pending.y = y;
+    combat_pending.ctrl = ctrl_held;
+    combat_pending.direct_spell = 0;
+    combat_pending.source_book = 0;
+    combat_pending.direct_wait_until = 0;
+}
+
+/* Both native callers have already armed a valid targetless spell. Leave its owned
+ * references on the combat screen until confirmation; the book closes normally. */
+static void combat_direct_commit(void)
+{
+    if (combat_direct_allowed || !touch_mode || !void_port_combat_confirm()) {
+        original_combat_direct();
+        return;
+    }
+    uint32_t screen = g_ecx;
+    void_regs saved;
+    void_regs_save(&saved);
+    uint32_t top = current_screen(), actor = read32(screen + 0x2AC), caster = read32(screen + 0x388);
+    uint32_t base = virtual_base(actor, 4), caster_base = virtual_base(caster, 4);
+    int book = spellbook_kind(top);
+    int stage = screen_kind(screen) == SCREEN_COMBAT && (top == screen || book) &&
+        read32(screen + 0xA0) && read32(screen + 0x2B4) && (read32(screen + 0x2E0) & 0x188u) &&
+        read32(screen + 0x394) && base && void_vm_readable(base, 8) && !(MEM8(base + 7) & 0x80u) &&
+        caster_base && void_vm_readable(caster_base, 8) && !(MEM8(caster_base + 7) & 0x80u);
+    if (stage) {
+        combat_pending_stage(screen, -1, -1);
+        combat_pending.direct_spell = combat_pending.spell;
+        combat_pending.action = 0;
+        combat_pending.ctrl = 0;
+        combat_pending.source_book = book ? top : 0;
+        combat_pending.direct_wait_until = void_perf_now_ns() + UINT64_C(5000000000);
+    }
+    void_regs_load(&saved);
+    if (!stage) { original_combat_direct(); return; }
+    g_eax = 0;
+    g_esp += 4; /* Original thiscall has no stack arguments. */
+}
+
+/* Generated direct callers use this late-routed wrapper; their original bodies
+ * and the original dispatch entry remain available for native fallback/PGO. */
+void void_touch_combat_direct_dispatch(void)
+{
+    void_resolve(0x00542420u)();
+}
+
 static void combat_point(float x, float y, int commit)
 {
     if (x < 0 || y < 0 || x > 32767 || y > 32767) return;
     if (!combat_prepare(x, y, commit)) return;
+    combat_prediction_bind();
+    if (!++combat_order_revision) ++combat_order_revision;
     if (!refresh_target_mode()) return;
+    if (commit == 2) {
+        uint32_t screen = gesture.screen;
+        if (!combat_pending_valid() || read32(screen + 0x31C) != combat_pending.action ||
+            read32(screen + 0x324) != combat_pending.target ||
+            read32(screen + 0x32C) != combat_pending.cell_x || read32(screen + 0x330) != combat_pending.cell_y) {
+            combat_pending_clear();
+            return;
+        }
+        combat_pending_clear();
+    }
+    if (commit == 1 && void_port_combat_confirm() && !gesture.placement &&
+        read32(gesture.screen + 0x31C) != 10) {
+        combat_pending_clear();
+        uint32_t command = read32(gesture.screen + 0x33C);
+        if (command && !(read32(command + 4) & 0x80000000u) && read32(gesture.screen + 0x2D4) == 0) {
+            combat_pending_stage(gesture.screen, x, y);
+        }
+        commit = 0;
+    }
     if (!commit) {
         void_call_guest_this(0x005498C0u, gesture.screen, 0, NULL);
         return;
@@ -2632,6 +2824,213 @@ static void combat_point(float x, float y, int commit)
          x, y, read32(gesture.screen + 0x2E0), result, read32(gesture.screen + 0x2D4), read32(gesture.screen + 0x31C),
          read32(gesture.screen + 0x33C), read32(gesture.screen + 0x2AC), read32(gesture.screen + 0x394),
          read32(gesture.screen + 0x388), read32(gesture.screen + 0x38C));
+}
+
+/* Native Ctrl selects melee for a shooter and suppresses ability 55's return leg. */
+static int combat_alternative(uint32_t actor)
+{
+    uint32_t base = virtual_base(actor, 4);
+    if (!base || !void_vm_readable(base, 8) || (MEM8(base + 7) & 0x80u)) return 0;
+    uint32_t shoots = object_method(actor, 0x1E0), has_ability = object_method(actor, 0x28C);
+    int result = shoots && (void_call_guest_this(shoots, actor, 0, NULL) & 0xFFu) ? 1 : 0;
+    const uint32_t strike_and_return = 55;
+    if (has_ability && (void_call_guest_this(has_ability, actor, 1, &strike_and_return) & 0xFFu)) result |= 2;
+    return result;
+}
+
+#include "touch_combat_query.inc"
+
+static void combat_pending_clear(void)
+{
+    combat_pending.generation = 0;
+}
+
+/* -1 is stale, 0 waits for the original book to close, 1 is ready on its battle. */
+static int combat_direct_pending_state(void)
+{
+    uint32_t screen = combat_pending.screen, actor = combat_pending.actor, caster = combat_pending.caster;
+    uint32_t phase = read32(screen + 0x2E0);
+    uint32_t base = virtual_base(actor, 4), caster_base = virtual_base(caster, 4);
+    /* The next native frame changes idle 0x80 to armed 8 (or 0x100 for a second
+     * target). The hook runs before that update; owned spell references identify it. */
+    if (!combat_pending.generation || !void_port_combat_confirm() || screen_kind(screen) != SCREEN_COMBAT ||
+        read32(screen + 0xA0) != combat_pending.root || read32(screen + 0x2B4) != combat_pending.controller ||
+        read32(screen + 0x2AC) != actor ||
+        (phase != combat_pending.phase && phase != (combat_pending.second ? 0x100u : 8u)) ||
+        !(phase & 0x188u) || read32(screen + 0x394) != combat_pending.spell ||
+        read32(screen + 0x388) != caster || read32(screen + 0x38C) != combat_pending.second ||
+        !base || !void_vm_readable(base, 8) || (MEM8(base + 7) & 0x80u) ||
+        !caster_base || !void_vm_readable(caster_base, 8) || (MEM8(caster_base + 7) & 0x80u)) return -1;
+    uint32_t top = current_screen();
+    if (top == screen && !read32(combat_pending.root + 8) && !read32(screen + 0x2D4)) return 1;
+    if (combat_pending.source_book && void_perf_now_ns() < combat_pending.direct_wait_until &&
+        (top == screen || (top == combat_pending.source_book && spellbook_kind(top)))) return 0;
+    return -1;
+}
+
+static int combat_pending_valid(void)
+{
+    if (combat_pending.direct_spell) return !gesture.active && combat_direct_pending_state() == 1;
+    uint32_t screen = combat_pending.screen;
+    return combat_pending.generation && void_port_combat_confirm() && !gesture.active &&
+        same_screen() && screen == gesture.screen && gesture.root == combat_pending.root &&
+        gesture.controller == combat_pending.controller && !read32(gesture.root + 8) &&
+        read32(screen + 0x2D4) == 0 && read32(screen + 0x2AC) == combat_pending.actor &&
+        read32(screen + 0x2E0) == combat_pending.phase && (combat_pending.phase & 0x188u) &&
+        read32(screen + 0x394) == combat_pending.spell && read32(screen + 0x388) == combat_pending.caster &&
+        read32(screen + 0x38C) == combat_pending.second;
+}
+
+static void combat_confirm(uint32_t generation)
+{
+    if (!generation || generation != combat_pending.generation) return;
+    if (combat_pending_valid()) {
+        ctrl_latch(combat_pending.ctrl);
+        if (combat_pending.direct_spell) {
+            uint32_t screen = combat_pending.screen;
+            combat_pending_clear();
+            combat_direct_allowed = 1;
+            void_call_guest_this(0x00542420u, screen, 0, NULL);
+            combat_direct_allowed = 0;
+        } else {
+            publish_point(combat_pending.x, combat_pending.y);
+            combat_point(combat_pending.x, combat_pending.y, 2);
+        }
+    }
+    combat_pending_clear();
+    ctrl_latch(0);
+    publish_point(-1, -1);
+}
+
+static void combat_pending_pump(void)
+{
+    static uint32_t hint_screen, hint_actor, hint_phase, hint_epoch, hint_arena, hint_controller;
+    static int alternatives, hint_enabled, available = -1, grid_state;
+    static uint32_t grid_ticket;
+    static void_touch_battle_grid hint_grid;
+    static uint32_t sent_generation, sent_epoch;
+    static int sent_hint;
+    static unsigned sent_count;
+    static float sent_route[COMBAT_ROUTE_FLOATS];
+    static uint64_t next_route_ns;
+    static uint32_t route_screen, route_actor, route_cell_x, route_cell_y, route_serial;
+    static uint32_t route_revision, route_action, route_target;
+    static int route_returning, route_visible;
+    int direct_visible = 0;
+    if (combat_pending.generation && !gesture.active) {
+        if (combat_pending.direct_spell) {
+            int state = combat_direct_pending_state();
+            if (state < 0) combat_pending_clear();
+            else if (state > 0) { combat_pending.source_book = 0; direct_visible = 1; }
+            ctrl_latch(0);
+            publish_point(-1, -1);
+        } else if (!combat_pending_valid()) {
+            combat_pending_clear();
+            ctrl_latch(0);
+            publish_point(-1, -1);
+        } else {
+            ctrl_latch(combat_pending.ctrl);
+            publish_point(combat_pending.x, combat_pending.y);
+        }
+    }
+    int hints = void_port_attack_hints(), hint = 0;
+    int route_wanted = void_port_combat_route() && (combat_pending.generation ||
+        (gesture.active && gesture.kind == SCREEN_COMBAT && !gesture.ui && !gesture.placement &&
+         !gesture.cancelled && !gesture.info && !gesture.card && !gesture.inspecting &&
+         (gesture.combat_aim || gesture.aiming) && same_screen() && !read32(gesture.root + 8)));
+    if (hints || hint_enabled || route_wanted) {
+        uint32_t screen = current_screen(), actor = 0, phase = 0, arena = 0, controller = 0;
+        if (screen_kind(screen) == SCREEN_COMBAT) {
+            actor = read32(screen + 0x2AC); phase = read32(screen + 0x2E0);
+            arena = read32(screen + 0x2A0); controller = read32(screen + 0x2B4);
+        }
+        if (screen != hint_screen || actor != hint_actor || phase != hint_phase || hints != hint_enabled ||
+            arena != hint_arena || controller != hint_controller) {
+            hint_screen = screen; hint_actor = actor; hint_phase = phase; hint_enabled = hints;
+            hint_arena = arena; hint_controller = controller; available = -1;
+            grid_state = 0;
+            if (!++grid_ticket) ++grid_ticket;
+            void_touch_battle_cancel();
+            alternatives = actor && (phase & 0x188u) ? combat_alternative(actor) : 0;
+            if (alternatives && (!(void_call_guest_this(0x0053E3D0u, screen, 1, &actor) & 0xFFu) ||
+                (void_call_guest_this(0x0053FBE0u, screen, 1, &actor) & 0xFFu))) alternatives = 0;
+            if (++hint_epoch > 0xFFFFFFu) hint_epoch = 1;
+        }
+        uint32_t root = read32(screen + 0xA0), base = virtual_base(actor, 4);
+        if (hints && alternatives && phase == 0x80 && arena && controller && root && !read32(root + 8) &&
+            !read32(screen + 0x2D4) && !read32(screen + 0x394) && !read32(screen + 0x388) &&
+            !read32(screen + 0x38C) && base && void_vm_readable(base, 8) && !(MEM8(base + 7) & 0x80u)) {
+            /* Cache negative results too; camera/target changes never repeat pathfinding. */
+            if (available < 0) {
+                if (!grid_state) {
+                    uint64_t start = void_perf_now_ns();
+                    if (combat_grid_capture(screen, actor, &hint_grid)) grid_state = 1;
+                    else available = 0;
+                    VLOG("[touch] battle-grid ticket=%u actor=%08X captured=%d capture_us=%llu", grid_ticket,
+                         actor, grid_state != 0, (unsigned long long)((void_perf_now_ns() - start) / 1000));
+                }
+                if (grid_state == 1) {
+                    int submitted = void_touch_battle_submit(grid_ticket, &hint_grid);
+                    if (submitted > 0) grid_state = 2;
+                    else if (submitted < 0) { available = 0; grid_state = 3; }
+                }
+                if (grid_state == 2) {
+                    int ready = void_touch_battle_poll(grid_ticket, &hint_grid);
+                    if (ready) {
+                        uint64_t start = void_perf_now_ns();
+                        available = ready > 0 ? combat_alternative_available_grid(screen, actor, alternatives, &hint_grid) : 0;
+                        grid_state = 3;
+                        VLOG("[touch] alternative-hint actor=%08X capabilities=%d available=%d query_us=%llu",
+                             actor, alternatives, available, (unsigned long long)((void_perf_now_ns() - start) / 1000));
+                    }
+                }
+            }
+            if (available >= 0) hint = available;
+        }
+    }
+    unsigned count = 0;
+    float route[COMBAT_ROUTE_FLOATS];
+    uint64_t now = void_perf_now_ns();
+    uint32_t screen = gesture.screen, actor = 0, cell_x = 0, cell_y = 0, action = 0, target = 0;
+    if (route_wanted) {
+        if (combat_pending.generation) {
+            screen = combat_pending.screen; actor = combat_pending.actor;
+            action = combat_pending.action; cell_x = combat_pending.cell_x; cell_y = combat_pending.cell_y;
+            target = combat_pending.target;
+        } else if (!read32(screen + 0x2D4) && (read32(screen + 0x2E0) & 0x188u)) {
+            uint32_t command = read32(screen + 0x33C);
+            if (command && !(read32(command + 4) & 0x80000000u)) {
+                actor = read32(screen + 0x2AC); action = read32(screen + 0x31C); target = read32(screen + 0x324);
+                cell_x = read32(screen + 0x32C); cell_y = read32(screen + 0x330);
+            }
+        }
+    }
+    if (actor && (action == 2 || action == 3 || action == 4 || action == 5 || action == 9)) {
+        int returning = action == 3 && (alternatives & 2) && !(combat_pending.generation ? combat_pending.ctrl : ctrl_held);
+        int changed = !route_visible || screen != route_screen || actor != route_actor ||
+            cell_x != route_cell_x || cell_y != route_cell_y || returning != route_returning ||
+            combat_order_revision != route_revision || action != route_action || target != route_target;
+        if (changed) {
+            route_screen = screen; route_actor = actor; route_cell_x = cell_x; route_cell_y = cell_y;
+            route_returning = returning; route_revision = combat_order_revision;
+            route_action = action; route_target = target;
+            if (!++route_serial) ++route_serial;
+        }
+        if (!changed && now < next_route_ns) {
+            count = sent_count; memcpy(route, sent_route, count * sizeof(float));
+        } else {
+            count = void_touch_combat_route(screen, actor, (int32_t)cell_x, (int32_t)cell_y, route_serial, returning, action, target, route);
+            next_route_ns = now + UINT64_C(50000000);
+        }
+        route_visible = 1;
+    } else route_visible = 0;
+    uint32_t visible_generation = combat_pending.direct_spell && !direct_visible ? 0 : combat_pending.generation;
+    if (sent_generation != visible_generation || sent_epoch != hint_epoch || sent_hint != hint ||
+        sent_count != count || (count && memcmp(route, sent_route, count * sizeof(float)))) {
+        sent_generation = visible_generation; sent_epoch = hint_epoch; sent_hint = hint; sent_count = count;
+        if (count) memcpy(sent_route, route, count * sizeof(float));
+        void_android_combat_overlay(sent_generation, sent_epoch, hint, route, count);
+    }
 }
 
 static int combat_double(float x, float y)
@@ -3128,6 +3527,10 @@ static void adventure_double(float x, float y)
 
 void void_touch_engine_init(void)
 {
+    if (!original_combat_direct) {
+        original_combat_direct = void_dispatch_find(0x00542420u);
+        if (original_combat_direct) void_dispatch_add(0x00542420u, combat_direct_commit);
+    }
 #ifdef VOID_ANDROID_APP
     if (!original_game_message) {
         original_game_message = void_dispatch_find(0x00B29970u);
@@ -3137,6 +3540,7 @@ void void_touch_engine_init(void)
     }
 #endif
     memset(&gesture, 0, sizeof gesture);
+    memset(&combat_pending, 0, sizeof combat_pending);
     memset(&console_open_request, 0, sizeof console_open_request);
     memset(&cheat_target, 0, sizeof cheat_target);
     memset(&text_target, 0, sizeof text_target);
@@ -3189,6 +3593,7 @@ void void_touch_engine_event(const void_touch_event *event)
     if (!event || !isfinite(event->x) || !isfinite(event->y) ||
         !isfinite(event->dx) || !isfinite(event->dy) || !isfinite(event->scale) ||
         !isfinite(event->rotation)) return;
+    if (event->kind == TOUCH_COMBAT_CONFIRM) { combat_confirm((uint32_t)event->dx); return; }
     if (event->kind == TOUCH_CHEAT_ACTION) { cheats_action(event); return; }
     void_touch_event shifted = *event;
     if (event->kind != TOUCH_ABORT && event->kind != TOUCH_POINTER && event->kind != TOUCH_POINTER_CLICK &&
@@ -3244,11 +3649,14 @@ void void_touch_engine_event(const void_touch_event *event)
         return;
     }
     if (event->kind==TOUCH_ABORT) {
+        combat_pending_clear();
         split_zone_hide();
         choice_clear();
         memset(&army_batch,0,sizeof army_batch);
     }
     if (event->kind == TOUCH_BEGIN) {
+        combat_pending_clear();
+        ctrl_latch(0);
         split_zone_hide();
         pointer_text.pending = 0;
         memset(&army_batch,0,sizeof army_batch);
@@ -3322,10 +3730,8 @@ void void_touch_engine_event(const void_touch_event *event)
         } else if (gesture.kind == SCREEN_COMBAT) {
             gesture.combat_aim = 1;
             combat_point(event->x, event->y, 0);
-            /* Pressed on the acting stack (+2F4 under the cursor, +2AC acting) that can shoot (+1E0). */
-            uint32_t acting = read32(gesture.screen + 0x2AC), shoots = acting ? object_method(acting, 0x1E0) : 0;
-            gesture.melee = acting && read32(gesture.screen + 0x2F4) == acting && shoots &&
-                            (void_call_guest_this(shoots, acting, 0, NULL) & 0xFFu);
+            uint32_t acting = read32(gesture.screen + 0x2AC);
+            gesture.melee = acting && read32(gesture.screen + 0x2F4) == acting && combat_alternative(acting);
         }
         if (gesture.placement) placement_trace("down", event->x, event->y);
         return;
@@ -3524,7 +3930,7 @@ void void_touch_engine_event(const void_touch_event *event)
                                event->dy);
     } else if (kind == TOUCH_PAN && combat_world()) {
         gesture.combat_aim = 1;
-        if (gesture.melee) ctrl_latch(1);   /* dragged off the shooter: its melee attack, as Ctrl+click */
+        if (gesture.melee) ctrl_latch(1);   /* native alternative attack, as Ctrl+click */
         combat_point(event->x, event->y, 0);
     } else if (kind == TOUCH_PAN || kind == TOUCH_TRANSFORM) {
         if (gesture.placement) placement_point(event->x, event->y, 1);
@@ -3593,11 +3999,11 @@ void void_touch_engine_event(const void_touch_event *event)
         }
     }
     if (kind == TOUCH_END) {
-        ctrl_latch(0);
+        if (!combat_pending.generation) ctrl_latch(0);
         combat_card_end();
         if (gesture.world_hover && same_screen()) ui_hover(-1, -1);   /* the information leaves with the finger */
         gesture.world_hover = 0;
         gesture.active = 0;
-        if (!gesture.retiring && !drag_owner.helper) publish_point(-1, -1);
+        if (!gesture.retiring && !drag_owner.helper && !combat_pending.generation) publish_point(-1, -1);
     }
 }

@@ -81,7 +81,10 @@ static uint32_t void_call_guest(uint32_t va,int n,const uint32_t*a,int pops){
  assert(va==0x66A4D0&&n==1&&a&&!a[0]);++registered_layouts;return 0;
 }
 #ifdef HOMM5_LEGACY_UI
+#define INVALIDATES 0
 static void void_touch_legacy_relayout(void){++registered_layouts;}
+#else
+#define INVALIDATES 1
 #endif
 static void scale_refresh_text(void){++texts;}
 static void void_touch_combat_frame(uint32_t s,float w,float h,float hud,float a,float b){(void)s;(void)w;(void)h;(void)hud;(void)a;(void)b;}
@@ -98,7 +101,7 @@ static uint32_t void_call_guest_this(uint32_t va,uint32_t self,int n,const uint3
   if(race==1)MEM32(loading_screen+0xA0)=0x26000;
   if(race==4)void_touch_loading_frame(loading_screen);
  }else if(va==0xA504B0){assert(phase==1&&self==last_root+0x14&&!n&&!a);phase=2;++invalidates;if(race==2)fixture_hwnd=2;}
- else {assert(va==0x488220&&phase==2&&self==last_root-0xF8&&!n&&!a);phase=3;++children;}
+ else {assert(va==0x488220&&phase==1+INVALIDATES&&self==last_root-0xF8&&!n&&!a);phase=3;++children;if(race==2)fixture_hwnd=2;}
  clobber();return 0;
 }
 static void scale_refresh_window(uint32_t root,unsigned depth,unsigned*remaining){
@@ -135,9 +138,9 @@ int main(void){
  reset(2);MEM32(0x6000)=0x6100;MEM32(0x6100)=0x6000;
  assert(!scale_screen_root(loading_screen)); /* Ordinary fitting still requires an idle auxiliary list. */
  frame();near(MEMF(0xF74BE0),1366);near(MEMF(0xF74BE4),768);
- assert(layouts==1&&invalidates==1&&children==1&&last_root==0x25000&&scale_percent==200);
+ assert(layouts==1&&invalidates==INVALIDATES&&children==1&&last_root==0x25000&&scale_percent==200);
  near(root_rect[2],1366);near(root_rect[3],768);
- for(int i=0;i<12;i++)frame();assert(layouts==1&&invalidates==1&&children==1);
+ for(int i=0;i<12;i++)frame();assert(layouts==1&&invalidates==INVALIDATES&&children==1);
  /* Equal global canvas is insufficient: a deferred explicit root must be laid out later. */
  reset(2);MEMF(0xF74BE0)=1366;MEMF(0xF74BE4)=768;MEM32(loading_screen+0xA0)=0;frame();assert(!layouts);
  root_ready(0x25000);frame();assert(layouts==1);root_ready(0x26000);frame();assert(layouts==2&&last_root==0x26000);
@@ -149,9 +152,9 @@ int main(void){
  for(int fault=1;fault<=3;fault++){
   reset(2);race=fault;frame();int before=layouts;
   race=0;fixture_hwnd=1;root_ready(0x25000);MEMF(0xF74BE0)=1366;MEMF(0xF74BE4)=768;frame();
-  assert(layouts==before+1&&invalidates>=1&&children>=1);frame();assert(layouts==before+1);
+  assert(layouts==before+1&&invalidates>=INVALIDATES&&children>=1);frame();assert(layouts==before+1);
  }
- reset(1.25f);race=4;frame();assert(layouts==1&&invalidates==1&&children==1&&scale_percent==125);
+ reset(1.25f);race=4;frame();assert(layouts==1&&invalidates==INVALIDATES&&children==1&&scale_percent==125);
  reset(2);fixture_hwnd=0;frame();assert(!layouts);fixture_hwnd=1;owner_thread=8;frame();assert(!layouts);owner_thread=7;
  missing_method=0xA504B0;frame();assert(!layouts);missing_method=0;allocation_fail=1;frame();assert(!layouts);
  allocation_fail=0;frame();assert(layouts==1);
@@ -164,7 +167,7 @@ SEAM_MAIN = r'''
 static int service_calls;
 static void /* SERVICE */(void){
  assert(g_esp==0x7f000&&machine.esi==0x30000&&g_fp_top==7);
- near(MEMF(0xF74BE0),1366);assert(layouts==1&&invalidates==1&&children==1);
+ near(MEMF(0xF74BE0),1366);assert(layouts==1&&invalidates==INVALIDATES&&children==1);
  ++service_calls;
 }
 #define RECOMP_FLAGS_OUT() do{machine.flag_k=caller.flag_k;machine.flag_a=caller.flag_a;machine.flag_b=caller.flag_b;machine.flag_cf=caller.flag_cf;}while(0)

@@ -373,19 +373,18 @@ static int scale_fits(uint32_t r,int a,float w,float h,float bw,float bh,int req
                 fixture = fixture.replace('ui_dispatch=0;pump();ui_dispatch=1;', '')
                 fixture = fixture.replace('#include "touch_render_impl.h"',
                     'void void_touch_legacy_resize(uint32_t width,uint32_t height);\n#include "touch_render_impl.h"', 1)
-                # The real legacy relayout visits one root through layout/invalidate/children/next.
+                # The real legacy relayout visits one root through layout/children/next.
                 callbacks = r'''
 static int legacy_resize_active,legacy_layout_phase;
 static uint32_t void_call_guest_this(uint32_t va,uint32_t self,int n,const uint32_t *args){
- unsigned phase=(unsigned)legacy_layout_phase++%4;
+ unsigned phase=(unsigned)legacy_layout_phase++%3;
  assert(!gesture_active);
  if(phase==0){
   assert(va==0x487990&&self==0x24000&&n==1&&args&&args[0]==viewport_scratch);
   float *rect=(float *)GPTR(args[0]);
   assert(rect[0]==0&&rect[1]==0&&rect[2]==MEMF(0xF74BE0)&&rect[3]==MEMF(0xF74BE4));
   if(legacy_resize_active)++ui_resizes;else ++scale_layouts;
- }else if(phase==1)assert(va==0xA504B0&&self==0x24014&&!n&&!args);
- else if(phase==2)assert(va==0x488220&&self==0x24000-0xF8&&!n&&!args);
+ }else if(phase==1)assert(va==0x488220&&self==0x24000-0xF8&&!n&&!args);
  else {assert(va==0x8384D0&&self==0x20000&&!n&&!args);return 0;}
  return 0;
 }

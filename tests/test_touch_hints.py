@@ -56,8 +56,8 @@ public class TouchHintsCheck {
  File getFilesDir(){return files;} boolean isFinishing(){return finishing;} boolean isDestroyed(){return destroyed;}
  void runOnUiThread(Runnable task){if(deferUi)ui.add(task);else task.run();}
  int dp(int value){return value;}
- static int shown(){int count=0;for(int id=1;id<=4;id++)if(new File(files,"touch-hint-"+id+"-shown").isFile())count++;return count;}
- static void resetShown(){for(int id=1;id<=4;id++)new File(files,"touch-hint-"+id+"-shown").delete();}
+ static int shown(){int count=0;for(int id=1;id<=5;id++)if(new File(files,"touch-hint-"+id+"-shown").isFile())count++;return count;}
+ static void resetShown(){for(int id=1;id<=5;id++)new File(files,"touch-hint-"+id+"-shown").delete();}
  /* ACTUAL */
  public static void main(String[] args) throws Exception {
   files=new File(args[0]);assert files.isDirectory();
@@ -68,25 +68,27 @@ public class TouchHintsCheck {
    assert touchHintText(2).contains(lang.equals("en")?"scenario information":"информации о сценарии");
    assert touchHintText(3).contains(lang.equals("en")?"moving hero":"движущегося героя");
    assert touchHintText(4).contains(lang.equals("en")?"three fingers":"тремя пальцами");
+   assert touchHintText(5).contains(lang.equals("en")?"enable or disable":"включить или выключить");
+   assert touchHintText(5).contains(lang.equals("en")?"Additional settings":"дополнительных настройках");
   }
   language="en";assert touchHintText(-1).isEmpty()&&touchHintText(9).isEmpty();
   TouchHintsCheck a=new TouchHintsCheck("toe");
-  showTouchHint(-1);showTouchHint(5);assert a.game.children.isEmpty()&&a.pendingTouchHints==0;
-  showTouchHint(2);showTouchHint(4);showTouchHint(1);showTouchHint(3);showTouchHint(2);showTouchHint(4);
+  showTouchHint(-1);showTouchHint(6);assert a.game.children.isEmpty()&&a.pendingTouchHints==0;
+  showTouchHint(2);showTouchHint(4);showTouchHint(1);showTouchHint(3);showTouchHint(2);showTouchHint(4);showTouchHint(5);
   assert a.game.children.size()==1&&a.handler.tasks.size()==1&&shown()==1;
   assert a.touchHintView.text.equals(touchHintText(2))&&!a.touchHintView.clickable;
   assert a.touchHintView.liveRegion==View.ACCESSIBILITY_LIVE_REGION_POLITE;
-  for(int id:new int[]{1,3,4}) {
+  for(int id:new int[]{1,3,4,5}) {
    a.handler.next();assert a.game.children.size()==1&&a.touchHintView.text.equals(touchHintText(id));
   }
   a.handler.next();assert a.game.children.isEmpty()&&!a.showingTouchHint&&a.pendingTouchHints==0;
-  for(int id=1;id<=4;id++)showTouchHint(id);
-  assert a.game.children.isEmpty()&&a.handler.tasks.isEmpty()&&shown()==4;
+  for(int id=1;id<=5;id++)showTouchHint(id);
+  assert a.game.children.isEmpty()&&a.handler.tasks.isEmpty()&&shown()==5;
   TouchHintsCheck restart=new TouchHintsCheck("toe");showTouchHint(1);assert restart.game.children.isEmpty();
   // Showing a type in one edition consumes it for every other edition and process too.
   for(String edition:new String[]{"toe","vanilla","hof"}) {
    TouchHintsCheck editionActivity=new TouchHintsCheck(edition);
-   for(int id=1;id<=4;id++)showTouchHint(id);
+   for(int id=1;id<=5;id++)showTouchHint(id);
    assert editionActivity.game.children.isEmpty()&&editionActivity.pendingTouchHints==0;
   }
   resetShown();
@@ -109,7 +111,7 @@ public class TouchHintsCheck {
   // Each engine process consults the common marker even with its own cached preferences.
   for(String edition:new String[]{"toe","vanilla","hof"}) {
    TouchHintsCheck editionActivity=new TouchHintsCheck(edition);
-   for(int id=1;id<=4;id++)showTouchHint(id);
+   for(int id=1;id<=5;id++)showTouchHint(id);
    assert editionActivity.pendingTouchHints==0&&editionActivity.game.children.isEmpty();
    showTouchHint(0);assert android.widget.Toast.errors==0;
   }

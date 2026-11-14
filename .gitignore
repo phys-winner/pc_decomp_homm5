@@ -24,6 +24,9 @@
 !/android/**/*.h
 !/android/host/d3d9_thread.inc
 !/android/host/d3d9_thread_check.inc
+!/android/host/d3d9_combat_route.inc
+!/android/host/touch_combat_path.inc
+!/android/host/touch_combat_query.inc
 !/android/**/*.java
 !/android/**/*.xml
 !/android/gog/CMakeLists.txt

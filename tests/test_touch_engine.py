@@ -7,6 +7,7 @@ HARNESS = r'''
 #include <assert.h>
 #include <math.h>
 #include <stdint.h>
+#include "touch_combat.h"
 #include <stdio.h>
 #include <string.h>
 static unsigned char memory[0x1100000];
@@ -26,6 +27,7 @@ static int double_object, same_selection, owned, town_visible, town_views, town_
 static int announcement_visible, announcement_probes, announcement_actions, announcement_changes_screen;
 static int picked_active, cast_available, combat_shortcuts, shortcut_effect, clear_target_during_prepare, combat_pick_changes_screen;
 static int context_ctors, context_dtors, cast_changes_screen;
+static int context_action=2, change_actor_during_resolve, change_cell_during_resolve;
 static int book_type, book_picks, book_actions, book_wm_consumed, book_pick_changes_screen, book_pick_closes;
 static int book_missing_picker, book_missing_action, book_probes, book_swipes;
 static uint32_t book_descriptor, book_probe_descriptor, last_book_swipe;
@@ -44,10 +46,13 @@ static double g_st[8];
 static int g_fp_top, list_available, mock_horizontal, scroll_sets, scroll_notifies;
 static float scroll_value;
 static double fp_pop_impl(double *st, int *depth) { double value=st[0]; memmove(st,st+1,7*sizeof *st); st[7]=0; --*depth; return value; }
-static uint32_t g_eax, g_esp, g_edx, g_ecx;
-typedef struct {uint32_t eax,esp,edx,ecx;} void_regs;
-static void void_regs_save(void_regs *r){*r=(void_regs){g_eax,g_esp,g_edx,g_ecx};}
-static void void_regs_load(const void_regs *r){g_eax=r->eax;g_esp=r->esp;g_edx=r->edx;g_ecx=r->ecx;}
+static uint32_t g_eax, g_esp, g_edx, g_ecx, g_ebx, g_esi, g_edi;
+typedef struct {uint32_t eax,esp,edx,ecx,ebx,esi,edi;} void_regs;
+static void void_regs_save(void_regs *r){*r=(void_regs){g_eax,g_esp,g_edx,g_ecx,g_ebx,g_esi,g_edi};}
+static void void_regs_load(const void_regs *r){g_eax=r->eax;g_esp=r->esp;g_edx=r->edx;g_ecx=r->ecx;g_ebx=r->ebx;g_esi=r->esi;g_edi=r->edi;}
+int void_touch_battle_submit(uint32_t ticket, const void_touch_battle_grid *grid) {(void)ticket;(void)grid;assert(0);return -1;}
+int void_touch_battle_poll(uint32_t ticket, void_touch_battle_grid *grid) {(void)ticket;(void)grid;assert(0);return 0;}
+void void_touch_battle_cancel(void) {}
 static uint64_t mock_now_ns = 1000000000ull;
 static int physical_seen;
 static uint32_t physical_x=500, physical_y=250;
@@ -62,6 +67,11 @@ static float cursor_offset_x,cursor_offset_y;
 static int show_touch_cursor;
 float void_port_cursor_offset(int vertical) {return vertical?cursor_offset_y:cursor_offset_x;}
 int void_port_touch_cursor(void) {return show_touch_cursor;}
+static int confirm_combat, attack_hints;
+int void_port_combat_confirm(void) {return confirm_combat;}
+int void_port_combat_route(void) {return 1;}
+int void_port_attack_hints(void) {return attack_hints;}
+unsigned void_touch_combat_route(uint32_t s,uint32_t a,int x,int y,uint32_t g,int r,uint32_t action,uint32_t target,float *out) {(void)s;(void)a;(void)x;(void)y;(void)g;(void)r;(void)action;(void)target;(void)out;return 0;}
 static int console_enabled, gear_hit, console_focus, console_visible, console_screen_focus;
 int void_port_console_enabled(void) {return console_enabled;}
 static int split_hints = 1, split_zones_enabled = 1;
@@ -98,8 +108,11 @@ static void_fn void_dispatch_find(uint32_t va) {
     if ((book_missing_picker && (va==0x683450 || va==0x67BAB0)) || (book_missing_action && va==0x493ED0)) return NULL;
     return va==0x836440 ? original_draw : va ? dummy : NULL;
 }
+static void_fn void_resolve(uint32_t va) {
+    void_fn fn = void_dispatch_find(va); assert(fn); return fn;
+}
 static void void_dispatch_add(uint32_t va, void_fn fn) {
-    assert(fn);if(va==0x836440)cursor_draw_hook=fn;else assert(va==0x835C90);
+    assert(fn);if(va==0x836440)cursor_draw_hook=fn;else assert(va==0x835C90||va==0x542420);
 }
 void void_touch_camera_init(void) {}
 int void_touch_ui_pan(uint32_t screen,float dx,float dy) {assert(screen==0x4000 && isfinite(dx+dy));++ui_pans;return 1;}
@@ -310,6 +323,9 @@ static uint32_t void_call_guest_this(uint32_t va, uint32_t self, int n, const ui
         assert(self==0x4000 && n==2 && args[0]==0x42EC && args[1]==0x42F4);
         assert(MEM32(0x432C)==17 && MEM32(0x4330)==23 && MEM32(0x4320)==0x8200);
         MEM32(0x433C)=0x8300;
+        MEM32(0x431C)=(uint32_t)context_action;
+        if(change_actor_during_resolve)MEM32(0x42AC)=0x8210;
+        if(change_cell_during_resolve)MEM32(0x432C)++;
         if(clear_target_during_prepare) MEM32(0x4394)=MEM32(0x4388)=MEM32(0x438C)=0;
         ++evaluations; return 0;
     }
@@ -317,6 +333,7 @@ static uint32_t void_call_guest_this(uint32_t va, uint32_t self, int n, const ui
         assert(self==0x4000 && n==1 && args[0]==0x10140);
         uint32_t packed=MEM32(args[0]+0x24);
         assert(MEM32(0x433C)==0x8300);
+        if(MEM32(0x431C)==10){MEM32(0x438C)=0x8400;return 0;}
         if((packed&0x7FFF)==100 && ((packed>>15)&0x7FFF)==700)
             assert(atb_unit && MEM32(0x42F4)==atb_unit);
         else assert((packed&0x7FFF)>=900 && ((packed>>15)&0x7FFF)>=400);
@@ -418,6 +435,7 @@ int void_touch_town_camera_home(uint32_t screen) {assert(screen==0x4000);++camer
 #include "touch_engine_actual.h"
 static void settle(void) { mock_now_ns += 1000000000ull; void_touch_ui_pump(); }
 static void reset(int kind) {
+    confirm_combat=attack_hints=change_actor_during_resolve=change_cell_during_resolve=0;context_action=2;
     gear_hit=console_focus=console_visible=console_screen_focus=0;MEM32(0xA008)=0;
     MEM32(0x60A4)=MEM32(0x60A8)=0;
     cursor_offset_x=cursor_offset_y=0;show_touch_cursor=0;
@@ -1315,7 +1333,49 @@ int main(void) {
     assert(!text_arms&&!touch_mode);focused_field=0x30000;void_touch_frame_presented();void_touch_ui_pump();
     assert(text_arms==1&&!touch_mode&&void_touch_text_focus(&text_field,&text_kind,&text_epoch));
     assert(text_field==0x30000&&text_kind==1);
-    puts("PASS native touch: UI ownership, book/town/mentor/ghost native actions, persistent inventory pickup/drop/cancel, hold-only tooltips and world information, immediate battlefield orders, three-finger camera home, direct world context and lifecycle guards");
+    /* Confirmation keeps the original preview, replaces it with new taps and sends exactly one order. */
+    reset(2);confirm_combat=1;
+    event(TOUCH_BEGIN,900,400);event(TOUCH_TAP,900,400);event(TOUCH_END,900,400);settle();
+    uint32_t token=combat_pending.generation;assert(token&&!commands&&combat_pending_valid());
+    assert(touch_cursor_x==900&&touch_cursor_y==400);
+    event(TOUCH_BEGIN,950,450);event(TOUCH_DOUBLE_TAP,950,450);event(TOUCH_END,950,450);settle();
+    assert(!commands&&combat_pending.generation!=token);
+    combat_confirm(token);assert(!commands&&combat_pending.generation);
+    token=combat_pending.generation;
+    void_touch_event accept={.kind=TOUCH_COMBAT_CONFIRM,.dx=(float)token,.scale=1};
+    void_touch_engine_event(&accept);assert(commands==1&&!combat_pending.generation&&touch_cursor_x<0);
+    void_touch_engine_event(&accept);assert(commands==1);
+    /* A changed actor, modal owner, phase, settings, screen, spell, or re-resolved cell cannot spend a turn. */
+    for(int changed=0;changed<10;++changed){
+        reset(2);confirm_combat=1;
+        event(TOUCH_BEGIN,900,400);event(TOUCH_TAP,900,400);event(TOUCH_END,900,400);
+        token=combat_pending.generation;assert(token);
+        if(changed==0)MEM32(0x42AC)=0x8210;
+        if(changed==1)MEM32(0x42D4)=1;
+        if(changed==2)MEM32(0x42E0)=0x200;
+        if(changed==3)confirm_combat=0;
+        if(changed==4)mock_screen=0x5000;
+        if(changed==5)MEM32(0x4394)=7;
+        if(changed==6)MEM32(0x6008)=1;
+        if(changed==7)change_actor_during_resolve=1;
+        if(changed==8)change_cell_during_resolve=1;
+        if(changed==9)event(TOUCH_ABORT,0,0);
+        combat_confirm(token);assert(!commands&&!combat_pending.generation);
+        MEM32(0x6008)=0;
+    }
+    /* A targeted spell waits too; choosing the first of two targets is not an order. */
+    reset(2);confirm_combat=1;MEM32(0x4394)=42;
+    event(TOUCH_BEGIN,900,400);event(TOUCH_TAP,900,400);event(TOUCH_END,900,400);
+    assert(!commands&&combat_pending.generation);combat_confirm(combat_pending.generation);assert(commands==1);
+    reset(2);confirm_combat=1;context_action=10;MEM32(0x4394)=42;
+    event(TOUCH_BEGIN,900,400);event(TOUCH_TAP,900,400);event(TOUCH_END,900,400);
+    assert(!commands&&!combat_pending.generation&&MEM32(0x438C)==0x8400);
+    /* Ctrl survives release for alternative attacks, and is released after confirmation or abort. */
+    reset(2);confirm_combat=1;
+    event(TOUCH_BEGIN,900,400);ctrl_latch(1);event(TOUCH_TAP,900,400);event(TOUCH_END,900,400);settle();
+    assert(combat_pending.ctrl&&ctrl_held&&!commands);combat_confirm(combat_pending.generation);
+    assert(commands==1&&!ctrl_held);
+    puts("PASS native touch: ownership, original actions, confirmation/replacement/exactly-once, expired targets, spells, two-target selection, alternative attack and lifecycle guards");
     return 0;
 }
 '''
@@ -1329,6 +1389,8 @@ class TouchEngineTest(unittest.TestCase):
             "touch_engine_actual.h": source,
             "touch.h": (ROOT / "android/host/touch.h").read_text(encoding="utf-8"),
             "input.h": (ROOT / "android/host/input.h").read_text(encoding="utf-8"),
+            "touch_combat.h": (ROOT / "android/host/touch_combat.h").read_text(encoding="utf-8"),
+            "touch_combat_query.inc": (ROOT / "android/host/touch_combat_query.inc").read_text(encoding="utf-8"),
         })
 
 

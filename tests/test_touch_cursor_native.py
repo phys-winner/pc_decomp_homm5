@@ -34,6 +34,7 @@ enum {SCREEN_COMBAT=2};
 static uint64_t cursor_started_ns=1;
 static float touch_cursor_x=230,touch_cursor_y=170;
 static struct {int active,cancelled,ui,panning,combat_aim,kind,aiming,placement;uint32_t screen;} gesture;
+static struct {uint32_t generation;} combat_pending;
 typedef struct {uint32_t ecx,eax,esp;} void_regs;
 static void void_regs_save(void_regs *r) {*r=(void_regs){g_ecx,g_eax,g_esp};}
 static void void_regs_load(const void_regs *r) {g_ecx=r->ecx;g_eax=r->eax;g_esp=r->esp;}
@@ -158,6 +159,13 @@ int main(void) {
     }
     failed_cast=missing_cast=0;
     gesture.ui=gesture.placement=gesture.aiming=0;MEM8(0x9070)=1;MEMF(0x7068)=40;
+    /* Released spell/attack previews retain the real forecast icon until confirmation. */
+    gesture.active=gesture.combat_aim=0;gesture.aiming=1;combat_pending.generation=17;
+    unsigned pending_draws=software_draws,pending_rects=rect_queries;
+    g_ecx=0x3000;g_esp=1000;touch_cursor_draw();
+    assert(software_draws==pending_draws+1&&rect_queries==pending_rects+1);
+    assert(g_ecx==0x3000&&g_esp==1008&&!cursor_software_owner);
+    combat_pending.generation=0;gesture.active=gesture.combat_aim=1;gesture.aiming=0;
     /* Physical-mouse mode never substitutes a prediction icon or queries its rectangle. */
     touch_mode=0;unsigned before_rect=rect_queries,before_software=software_draws,before_hardware=hardware_draws;
     g_ecx=0x3000;g_eax=0xAABBCCDD;g_esp=1000;touch_cursor_draw();

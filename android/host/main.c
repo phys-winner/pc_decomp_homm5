@@ -5,13 +5,13 @@
 #include "host.h"
 #include "input.h"
 #include "touch.h"
+#include "touch_combat.h"
 #include <dirent.h>
 #include <errno.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 int void_modules_start(void);
-void void_fmod_latency_init(void);
 void void_highlight_init(void);   /* highlight.c: the map's object highlight without its per-frame rebuild */
 void void_log_system_info(void);  /* core.c: the device and the engine build */
 
@@ -140,7 +140,6 @@ int void_game_main(const char *game, const char *data, const char *images, int s
         code = void_dispatch_find(entry) ? 0 : 71;
         void_log("[selftest] imports and process TLS initialized; entry %08X, result %d", entry, code);
     } else {
-        void_fmod_latency_init();
         sanctuary_quick_combat_init();
         void_touch_engine_init();
         void_highlight_init();
@@ -150,6 +149,7 @@ int void_game_main(const char *game, const char *data, const char *images, int s
         void_log("[void] H5_Game.exe entry returned %d", code);
     }
     void_machine_leave();
+    void_touch_battle_shutdown();
     void_log_flush();
     return code;
 }

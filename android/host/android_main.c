@@ -16,6 +16,7 @@
 
 int void_game_main(const char *game, const char *data, const char *images, int selftest);
 void void_process_exit(uint32_t code, int run_detach);
+void d3d_gl_combat_route(const float *route, unsigned count);
 
 static ANativeWindow *window;
 static pthread_mutex_t window_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -467,6 +468,41 @@ JNIEXPORT void JNICALL Java_org_homm5_port_GameActivity_nativeCheatAction(JNIEnv
     const void_touch_event event = {.kind = TOUCH_CHEAT_ACTION, .x = (float)action,
         .y = (float)value, .dx = (float)generation, .scale = 1};
     void_touch_enqueue(&event);
+}
+
+JNIEXPORT void JNICALL Java_org_homm5_port_GameActivity_nativeCombatConfirm(JNIEnv *env, jclass type,
+    jint generation)
+{
+    (void)env; (void)type;
+    if (generation < 1 || generation > 0xFFFFFF) return;
+    const void_touch_event event = {.kind = TOUCH_COMBAT_CONFIRM, .dx = (float)generation, .scale = 1};
+    void_touch_enqueue(&event);
+}
+
+void void_android_combat_overlay(uint32_t generation, uint32_t hint_epoch, int hint,
+    const float *route, unsigned count)
+{
+    d3d_gl_combat_route(route, count);
+    static uint32_t sent_generation = UINT32_MAX, sent_epoch;
+    static int sent_hint;
+    if (sent_generation == generation && sent_epoch == hint_epoch && sent_hint == hint) return;
+    if (!jvm || !activity) return;
+    JNIEnv *env = NULL;
+    int attached = (*jvm)->GetEnv(jvm, (void **)&env, JNI_VERSION_1_6) == JNI_EDETACHED;
+    if (attached && (*jvm)->AttachCurrentThread(jvm, &env, NULL) != JNI_OK) return;
+    if (!env) return;
+    jmethodID callback = (*env)->GetStaticMethodID(env, (jclass)activity, "onCombatOverlay", "(III)V");
+    if (callback && !(*env)->ExceptionCheck(env)) {
+        (*env)->CallStaticVoidMethod(env, (jclass)activity, callback, (jint)generation, (jint)hint_epoch, (jint)hint);
+        if (!(*env)->ExceptionCheck(env)) {
+            sent_generation = generation; sent_epoch = hint_epoch; sent_hint = hint;
+        }
+    }
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        void_log("[touch] combat overlay callback failed");
+    }
+    if (attached) (*jvm)->DetachCurrentThread(jvm);
 }
 
 void void_android_cheats(uint32_t generation, int state)

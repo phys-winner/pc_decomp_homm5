@@ -1,4 +1,4 @@
-"""Late routing for admitted manual algorithms; originals keep their PGO names.
+"""Late routing for admitted manual algorithms and runtime command hooks.
 
 Run after call-protocol/x87 transforms, on generated C only. Host fallback
 calls are deliberately outside this transform. No linker wrapping is needed.
@@ -11,6 +11,11 @@ SCENE_ENTRIES = {
     "hof": "sub_004F2C80",
 }
 SCENE_ROUTER = "void_scene_native_dispatch"
+# Both native spellbook/ability callers are direct calls, so a dispatch-table
+# hook alone cannot intercept them. Keep the original table entry and body;
+# the host wrapper resolves the currently installed hook at execution time.
+COMBAT_DIRECT_ENTRIES = {"toe": "sub_00542420", "vanilla": "sub_00514870", "hof": "sub_00529AB0"}
+COMBAT_DIRECT_ROUTER = "void_touch_combat_direct_dispatch"
 ROUTE_GROUPS = {
     "scene": {"source":"scene_native.c", "router":SCENE_ROUTER, "algorithm":"void_scene_native_commands",
               "entries":SCENE_ENTRIES, "contextual":[]},
@@ -128,6 +133,8 @@ def apply_native_routes(text, edition, *, module, dispatch=False, groups=("scene
     if len(set(groups)) != len(groups) or any(name not in ROUTE_GROUPS and name != "leaves" for name in groups):
         raise ValueError("Invalid native route group selection")
     targets={ROUTE_GROUPS[name]["entries"][edition].encode():ROUTE_GROUPS[name]["router"].encode() for name in groups if name != "leaves"}
+    if not dispatch:
+        targets[COMBAT_DIRECT_ENTRIES[edition].encode()] = COMBAT_DIRECT_ROUTER.encode()
     if "leaves" in groups and edition == "toe":
         targets.update({("sub_"+address).encode():("void_leaf_dispatch_"+address).encode() for address in LEAF_ENTRIES})
     observed={original:[] for original in targets}

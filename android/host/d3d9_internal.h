@@ -318,6 +318,7 @@ extern d3d_gl_limits_t d3d_gl_limits;
 int d3d_gl_init(void);
 void d3d_gl_device_destroy(void);
 void d3d_gl_present(d3d_device *dev);
+void d3d_gl_combat_route(const float *route, unsigned count);
 void d3d_gl_frame_pace(void);
 void d3d_gl_bind_targets(d3d_device *dev);
 void d3d_gl_forget_texture(GLuint tex);

@@ -2194,6 +2194,8 @@ static volatile int dump_requested;
 /* Dump the next presented frame (scripted "shot"). */
 void d3d_request_frame_dump(void) { dump_requested = 1; }
 
+#include "d3d9_combat_route.inc"
+
 /* The EGL context/window belongs to the activity; device-owned GL state does not. */
 static void gl_device_destroy(void)
 {
@@ -2202,6 +2204,7 @@ static void gl_device_destroy(void)
     ui_owner = NULL; ui_backbuffer = ui_depth_source = NULL;
     ui_release(&ui_color); ui_release(&ui_depth);
     d3d_filter_reset();
+    combat_route_reset();
     glUseProgram(0);
     d3d_shader_reset();
     d3d_ff_reset();
@@ -2279,6 +2282,7 @@ void sub_00C308B0(void)
 void d3d_gl_device_destroy(void)
 {
     frame_deadline_ns = 0;
+    d3d_gl_combat_route(NULL, 0);
     d3d_rt_sync(run_device_destroy, NULL);
 }
 
@@ -2320,7 +2324,7 @@ void d3d_gl_frame_pace(void)
 static uint64_t present_game_cpu_ns, present_game_wait_ns;
 static d3d_rt_stats_t present_game_stats;
 
-static void gl_present(d3d_device *dev)
+static void gl_present(d3d_device *dev, const combat_route_snapshot *route)
 {
     gpu_profile_end(dev->frame);
     ring_frame_end();
@@ -2419,6 +2423,7 @@ static void gl_present(d3d_device *dev)
         int dw = (int)((float)bb->width * scale), dh = (int)((float)bb->height * scale);
         int dx = (sw - dw) / 2, dy = (sh - dh) / 2;
         glBlitFramebuffer(0, 0, (GLint)bb->width, (GLint)bb->height, dx, dy + dh, dx + dw, dy, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+        combat_route_draw(dev, route, dx, dy, dw, dh);
         /* Present hands off after the swap and frame state are committed. */
         struct timespec swap_start, swap_end;
         clock_gettime(CLOCK_MONOTONIC, &swap_start);
@@ -2439,7 +2444,12 @@ static void gl_present(d3d_device *dev)
     void_perf_frame_end(dev->frame);
 }
 
-typedef struct { uint32_t frame; uint64_t game_cpu_ns, game_wait_ns; d3d_rt_stats_t stats; } present_args;
+typedef struct {
+    uint32_t frame;
+    uint64_t game_cpu_ns, game_wait_ns;
+    d3d_rt_stats_t stats;
+    combat_route_snapshot route;
+} present_args;
 
 static void run_present(void *args)
 {
@@ -2448,7 +2458,7 @@ static void run_present(void *args)
     present_game_cpu_ns = a->game_cpu_ns;
     present_game_wait_ns = a->game_wait_ns;
     present_game_stats = a->stats;
-    gl_present(RDEV);
+    gl_present(RDEV, &a->route);
     d3d_rt_mirror_frame(a->frame + 1);    /* the game counts on to the next frame */
     d3d_rt_frame_done();
 }
@@ -2462,7 +2472,8 @@ void d3d_gl_present(d3d_device *dev)
     if (dev->frame - logged_frame >= 300) { d3d_query_log(dev->frame - logged_frame); logged_frame = dev->frame; }
     struct timespec cpu;
     clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpu);
-    present_args a = { dev->frame, (uint64_t)cpu.tv_sec * 1000000000ull + (uint64_t)cpu.tv_nsec, void_lock_wait_ns(), { 0 } };
+    present_args a = { .frame = dev->frame, .game_cpu_ns = (uint64_t)cpu.tv_sec * 1000000000ull + (uint64_t)cpu.tv_nsec,
+        .game_wait_ns = void_lock_wait_ns(), .route = combat_route_game };
     d3d_rt_stats(&a.stats);
     d3d_rt_sync_state(dev);
     d3d_rt_frame_queued();

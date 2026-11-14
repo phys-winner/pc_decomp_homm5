@@ -91,6 +91,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private static native boolean nativeTextKey(int generation, int key, int count);
     private static native int nativeTextCancel();
     private static native void nativeCheatAction(int generation, int action, int value);
+    private static native void nativeCombatConfirm(int generation);
     /** Startup work done so far (files opened), and whether the first screen is up. */
     private static native int nativeLoadWork();
     private static native boolean nativeLoadReady();
@@ -102,6 +103,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private TouchLayer touch;
     private TroopZones troopZones;
+    private CombatOverlay combatOverlay;
     private HardwareInput hardware;
     private android.app.AlertDialog gamepadHelp;
     private android.app.AlertDialog gameSwitchDialog;
@@ -295,6 +297,8 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         game.addView(touch, new FrameLayout.LayoutParams(-1, -1));
         troopZones = new TroopZones(this);
         game.addView(troopZones, new FrameLayout.LayoutParams(-1, -1));
+        combatOverlay = new CombatOverlay(this, "ru".equals(cheatText("en", "ru")), GameActivity::nativeCombatConfirm);
+        game.addView(combatOverlay, new FrameLayout.LayoutParams(-1, -1));
         PointerIcon invisible = PointerIcon.getSystemIcon(this, PointerIcon.TYPE_NULL);
         game.setPointerIcon(invisible);
         surface.setPointerIcon(invisible);
@@ -340,6 +344,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         File cache = new File(getCacheDir(), Games.cache(gameEdition()));
         cache.mkdirs();
         /* The saved scales seed the game's port variables before it registers them. */
+        combatOverlay.setUiScale(savedFloat("ui_scale", 1));
         nativeUiScale(savedFloat("ui_scale", 1));
         nativeRenderScale(savedFloat("render_scale", 1));
         nativeCameraSensitivity(savedFloat("camera_sensitivity", 1));
@@ -483,6 +488,10 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         if (activity == null || !Float.isFinite(value)) return;
         String key = which == 0 ? "ui_scale" : which == 1 ? "render_scale" : which == 2 ? "camera_sensitivity" : null;
         if (key != null) activity.preferences.edit().putFloat(key, value).apply();
+        if (which == 0) activity.runOnUiThread(() -> {
+            if (currentActivity.get() == activity && activity.combatOverlay != null)
+                activity.combatOverlay.setUiScale(value);
+        });
     }
 
     /* The native exit has saved the profile (android_main.c calls this on the game thread right
@@ -602,6 +611,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     @Override protected void onPause() {
         finishLaunchDimming("pause");
         resumed = false;
+        if (combatOverlay != null) combatOverlay.setRunning(false);
         if (cheatDialog != null) cheatDialog.dismiss();
         releaseAll();
         if (nativeReady) nativePause(true);
@@ -612,6 +622,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     @Override protected void onResume() {
         super.onResume();
         resumed = true;
+        if (combatOverlay != null) combatOverlay.setRunning(true);
         if (nativeReady) nativePause(false);
         showNextTouchHint();
         requestHighRefresh();
@@ -806,13 +817,15 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                 "Чтобы остановить движущегося героя, коротко коснитесь любого места двумя пальцами одновременно.");
         case 4: return cheatText("To restore the original camera view, briefly tap with three fingers at the same time. This also works during troop deployment, in battle and in towns.",
                 "Чтобы вернуть исходный вид камеры, коротко коснитесь экрана тремя пальцами одновременно. Жест также работает при расстановке войск, в бою и в замке.");
+        case 5: return cheatText("You can enable or disable battlefield order confirmation in Additional settings. When enabled, gestures select an action and a separate button confirms it.",
+                "В дополнительных настройках можно включить или выключить подтверждение приказов на поле боя. При включении жесты выбирают действие, а отдельная кнопка подтверждает его.");
         default: return "";
         }
     }
 
     private static void showTouchHint(int id) {
         GameActivity activity = currentActivity.get();
-        if (id < 0 || id > 4 || activity == null) return;
+        if (id < 0 || id > 5 || activity == null) return;
         activity.runOnUiThread(() -> {
             if (currentActivity.get() != activity || activity.isFinishing() || activity.isDestroyed()) return;
             if (id == 0) {
@@ -883,6 +896,15 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         if (activity != null) activity.runOnUiThread(() -> {
             if (currentActivity.get() == activity && activity.resumed && activity.nativeReady
                     && !activity.isFinishing() && !activity.isDestroyed()) activity.showCheats(generation, state);
+        });
+    }
+
+    private static void onCombatOverlay(int generation, int hintEpoch, int hintKind) {
+        GameActivity activity = currentActivity.get();
+        if (activity != null) activity.runOnUiThread(() -> {
+            if (currentActivity.get() == activity && activity.combatOverlay != null
+                    && !activity.isFinishing() && !activity.isDestroyed())
+                activity.combatOverlay.update(generation, hintEpoch, hintKind);
         });
     }
 

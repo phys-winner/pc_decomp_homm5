@@ -16,9 +16,13 @@ enum {
     TOUCH_TWO_FINGER_CANCEL, TOUCH_ABORT,
     TOUCH_SECOND_BEGIN, TOUCH_SECOND_TAP, TOUCH_SECOND_HOLD,
     TOUCH_THREE_FINGER_TAP, TOUCH_TILT, TOUCH_POINTER, TOUCH_PAD_CAMERA, TOUCH_POINTER_CLICK,
-    TOUCH_SECOND_END, TOUCH_FIRST_END, TOUCH_TWO_FINGER_TAP, TOUCH_CONSOLE_TOGGLE, TOUCH_CHEAT_ACTION
+    TOUCH_SECOND_END, TOUCH_FIRST_END, TOUCH_TWO_FINGER_TAP, TOUCH_CONSOLE_TOGGLE, TOUCH_CHEAT_ACTION,
+    TOUCH_COMBAT_CONFIRM
 };
-#define TOUCH_KIND_LAST TOUCH_CHEAT_ACTION
+#define TOUCH_KIND_LAST TOUCH_COMBAT_CONFIRM
+enum { COMBAT_ROUTE_MAX_POINTS = 256, COMBAT_ROUTE_MAX_TARGETS = 32,
+       COMBAT_ROUTE_WORLD_POINTS = COMBAT_ROUTE_MAX_POINTS + 16 + 1 + COMBAT_ROUTE_MAX_TARGETS,
+       COMBAT_ROUTE_FLOATS = 20 + 3 * COMBAT_ROUTE_WORLD_POINTS };
 typedef struct {
     int kind;
     float x, y, dx, dy, scale, rotation;
@@ -63,6 +67,9 @@ int void_touch_town_interrupt(uint32_t screen);
 int void_touch_town_camera_home(uint32_t screen);
 void void_touch_camera_init(void);
 void void_touch_combat_frame(uint32_t screen, float width, float height, float hud_top, float top, float bottom);
+/* Mode, path/quad/arrow counts, camera matrix, world path, quads, arrow origin/targets. */
+unsigned void_touch_combat_route(uint32_t screen, uint32_t actor, int x, int y,
+        uint32_t generation, int returning, uint32_t action, uint32_t target, float output[COMBAT_ROUTE_FLOATS]);
 void void_touch_adventure_frame(uint32_t screen, float height, float top, float bottom);
 
 /* port_settings.c: the port's console variables (game options pages). */
@@ -74,6 +81,9 @@ int void_port_console_enabled(void);
 int void_port_combat_fit(void);
 int void_port_split_hints(void);
 int void_port_split_zones(void);
+int void_port_combat_confirm(void);
+int void_port_attack_hints(void);
+int void_port_combat_route(void);
 int void_port_filter(int ui);
 float void_port_sharpness(void);
 void void_port_settings_pump(void);

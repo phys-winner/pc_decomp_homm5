@@ -50,7 +50,7 @@ void void_touch_enqueue(const void_touch_event *event)
     } else {
         if (event->kind == TOUCH_BEGIN) { touch_dropping = 0; pointer_mode_requested = 0; }
         if (!touch_dropping || event->kind == TOUCH_PAD_CAMERA || event->kind == TOUCH_POINTER_CLICK
-            || event->kind == TOUCH_CHEAT_ACTION
+            || event->kind == TOUCH_CHEAT_ACTION || event->kind == TOUCH_COMBAT_CONFIRM
         ) {
             if (touch_count == TOUCH_QUEUE_CAPACITY) touch_abort_locked(0);
             else {

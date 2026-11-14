@@ -9,7 +9,11 @@
     "touch": [
       "android/host/touch_engine.c",
       "android/host/touch.h",
-      "android/host/touch_queue.c"
+      "android/host/touch_queue.c",
+      "android/host/touch_combat.h",
+      "android/host/touch_combat.c",
+      "android/host/touch_combat_query.inc",
+      "android/host/touch_combat_path.inc"
     ],
     "camera": [
       "android/host/touch_camera.c",
@@ -124,32 +128,32 @@
     ]
   },
   "sources": {
-    "android/app/src/org/homm5/port/GameActivity.java": "87a62fe00112d56811c6a9d1ebb3d03852e18d07ac7dbc137cb32592300b15a1",
+    "android/app/src/org/homm5/port/GameActivity.java": "477f6d407d030202dffab6b091245619f790e973891ef68d3f6d7cfd629eda92",
     "android/app/src/org/homm5/port/Games.java": "8c7f15083a3f2fa177c51e3edf22dea5c5c9239c21fc2daf8e097fd79116142f",
     "android/app/src/org/homm5/port/LauncherHooks.java": "602f10467ca4e36292aa83b6dbe81f7f94430216e86a57d1c2b727804ea75b5f",
     "android/app/src/org/homm5/port/Textures.java": "b162fd061c21dd25eb9d5f9417eaacfa95d5e5310e2af4beb4a1b83e049a5522",
-    "android/host/android_main.c": "1856db4da5182e2040cb02b968cb0054f0a26ab8223db5bc8af33d9afbb0104b",
+    "android/host/android_main.c": "cb6d438fe4592c03808a8fa4f8dd4369759c238abca3f430cad506c1ca69afe6",
     "android/host/cutscene.c": "da9cfd2e11f58534b57d575f515dc78d0503d94ab73492d4bef522e28aaf571d",
     "android/host/d3d9_device.c": "1785334ef4aae558ad50efee3a142f682ef51fd7fbdfededf7f97241618361da",
     "android/host/d3d9_ff.c": "547f8d3eb562988ddaad98fed1da1e1d8c106b28a97f971edc68e18737d2fff1",
-    "android/host/d3d9_gl.c": "b6ca546525bf3a396d2ee33341a1081d1c29d84e794eea5d81a31c48547f32a9",
-    "android/host/d3d9_internal.h": "b0a7bf850e7e39c3dac87d73c6d5de7c9c59afbaa0f0efc1c48bc54682d1858e",
+    "android/host/d3d9_gl.c": "031be56d2a7584bccd08b43fadcbdb83d987dbb024e4b167a0bb6b3f332f4225",
+    "android/host/d3d9_internal.h": "a4499b5712374a04adf4597932e3629b1ffbe674e01bd4c845d1e1f9953b88f3",
     "android/host/d3d9_resource.c": "d41a0bc4aa261b3b411502ea002dc012056aec2fbf99c8d6608edd457078f556",
     "android/host/d3d9_shader.c": "fd05467e16433536a7867d92fea037bf258e19186148b47297bb30dfb08f396e",
     "android/host/dsound.c": "182f157f54c50928e3c2e8a5efc7477ec29b3dd9f07b1d1cdfdbdf5b8865976d",
     "android/host/files.c": "11a17a578f3b3d4f6d15594a6b66c8ed7ca0da6fd56c5b34fe7759c47a5df6e1",
-    "android/host/fmod_stream.c": "63f410bc3356727cdcd99e649885e1b334fa8842aa95e2afb006ea070c7130a5",
+    "android/host/fmod_stream.c": "d3af274c8761c4d73eb35f33e65644d5d3d8f5302bb3ed50657ef5a2afe87c27",
     "android/host/network.c": "588f68e86d4f91287133ff31e2860e636a84c803e51f349bcead6e28dba436e6",
     "android/host/nubi_log.c": "c7e2f9cc9712e0f2f1769eb98bc4bffd45d399630fb3ddc371c5d387d139ef32",
     "android/host/pe.c": "6cb5a776022bf77139ab3905efc0aa89332695bcb0314247f9392b9c06e632fb",
-    "android/host/port_settings.c": "ee483d8f7b9b3d2f9344ae847602327c508bc33b8d0546cc52b183f08b148aef",
+    "android/host/port_settings.c": "dc1c2f05a716731871de4511ad1c1d20efd209ee3086415857167b83159d99fa",
     "android/host/texture_native.c": "2d7f3248ba350af24f0e4a32fe4c13c6854c7c52e5413c0f138a8b16da0f5b17",
-    "android/host/touch.h": "0f85ee9803b239555fe3f6affd58b16c86074b9c0b26507b7f5f500ce9adf28b",
-    "android/host/touch_camera.c": "067dda56e07374bcaa85f5f336dcef748c27792c6af0c91bb6c21e43ebb253d7",
-    "android/host/touch_engine.c": "1fb585ec7d3241c7dcdf9dbd5945b7f9be6e16a87a400d90b8248224b66fbd1f",
-    "android/host/touch_queue.c": "7633c0591c8783f2f7e7b81074ec64e3f2c17ba91da5d5f1d40e4b33de06e921",
+    "android/host/touch.h": "1daf781af399925fe5d91def4d0ce4c01260642fc26a6db9dad837d95440382e",
+    "android/host/touch_camera.c": "15d1d383c649103ea24d664504435f61fd5296c2791b91191c979d50b463a3ca",
+    "android/host/touch_engine.c": "4c4647c4f55426d7077a0a627f9e49131b5971a59fe298669c3f7b2a82fefd36",
+    "android/host/touch_queue.c": "e268d5fa53513c023ac2da5e02910af9f8762a7fd793e10a0c3b7cdf21fb9d61",
     "android/host/touch_render.c": "d4c03de35fe1d4846ca4bcca1f168a239812b3a22d5bb65b764eee371666012e",
-    "android/host/touch_scale.c": "a789b5ab12656303b63e69218b5d90c9d4bbb8aa6e3ef51408027b77f522cd68",
+    "android/host/touch_scale.c": "8782914d3724f8c151e68df24f2d9a35579e2f9208bb827b784392452f406850",
     "android/host/user32.c": "0c65db6ca7334687defee103f66a690dfadfc566298396f4aa1a3d9f872d35ec",
     "android/port.json": "4cd5c3260f140b968d9e82c7a122b04b060b4778f0cefeca6354572300a2f951",
     "android/runtime/recomp_types.h": "5dc55d24ea3d96c8b6514bca881f90e5953dce83257ee7dd986c73d413f41a05",
@@ -162,7 +166,7 @@
     "tools/editions.py": "6e2bfdfad721cfba7f052612eb7d5b5faf40f31e5d3f5c6ffbc4751e8b3b92af",
     "tools/lift_homm5.py": "4df9027a199c145caa065ccc4be9ca65c7bbe23104488cc15fe0d64e076aba62",
     "tools/port_patches.py": "584a86694cc1990013b71245b10552006b7c8a69cd3203f03c62df8f28232a37",
-    "tools/port_ui.py": "39475cc8fad234a2c762515524574e75e59a803bd7e9a56362983979c48c5413",
+    "tools/port_ui.py": "b506443a67e9575ffb4174e7645626e6bcb983ddd3276389bcf2c8e5c2f2258b",
     "tools/profile_defaults.py": "f021a2960897b74b338fc294ca762b0c1c42e11b16e14196e203196076b206dc",
     "android/host/fsr1.h": "1a31c2405f64040fa3818e0724bb458214ef764891ef377ddf21579227a7cfc5",
     "android/host/d3d9_filter.h": "5f5d055ef1a1c3917331021923baad763a4657e2ff41978449a92d153226e68d",
@@ -183,14 +187,20 @@
     "android/host/vector_native.c": "eab9c600a0d2c6f5a01bee7ed99121772841e458b292356e08801d7562836e1c",
     "android/host/skin_native.c": "f78874f18b3086cb87a198e263cee151eb9bd73f29475e9cfd2803379bb4e5cb",
     "android/host/leaves_native.c": "159281d663b744a64c12c5d7ce8c33a44e25c292ea0d4c7291308984777d1b18",
-    "tools/native_routes.py": "db70a75822eb49b544e3fab255e6625c72237a288671615277439d8a643c38b9",
+    "tools/native_routes.py": "33d23f4014af8fba07a746befe103f176ff7f082ad280ec9d3dcde09e219f15e",
     "android/host/curves_native.c": "67e451a45963537abaa885540ac0cfeca00ac472205e62035d864f77d779e3e7",
     "android/host/skin_math_native.c": "5ef7c678d06c47e0e611b6508ce058e085bccb84bbf7f89c1e7f60be593c0026",
     "android/host/object_refs_native.c": "029d622b4ba4dfdeca8826daa5ab8299388bd28aaeceb78cb53607cee262a52a",
     "android/host/native_mode.h": "5662d68a0ff1dd75b51b3deff32a0b02d4d7f31483a87cb7253658217e0f0ecf",
     "android/host/rpc.c": "785b4a59f0d4d0f6251ec1832b50171ae7ee053ac8c466b2ccc4d0c2b61395ee",
     "android/host/host.h": "e1b0ee86160259397c67c7d24d25b77757b483e028760e41e86b60c57550bbed",
-    "android/host/main.c": "102609625b810d8b896c137827023ffcc5f03f35a2c72dbb5aa177a025c186e2"
+    "android/host/main.c": "318e5f8aca1be956f9aa89e8eda48aaf41b2995adc3efd249c0f1bc05d60c8f3",
+    "android/app/src/org/homm5/port/CombatOverlay.java": "c59f856bc9407c01452cf794d0e8432aa967a400c77c796add9728c4f94161bd",
+    "android/host/d3d9_combat_route.inc": "1783ad3a79f008662dc85b91e1c1fb4bde443fa08f5bbc09e132dc7d5d50d508",
+    "android/host/touch_combat.h": "953c5a96c6e3623b94e17497ae45461c227ac1399120440ab34881714b16ed79",
+    "android/host/touch_combat.c": "f3ebf2ea51b11bf98b70fe6a763102ff755b12f78293601ef8641ab137957271",
+    "android/host/touch_combat_query.inc": "b13021778d29a90f463688a60af4853d89ec6fdbc4a50d7dae130de20b9edba1",
+    "android/host/touch_combat_path.inc": "36d0ae43943f604cfb0ace7c27c64de0e93b6963062874837449ed59e366cd60"
   },
   "addresses": {
     "008790B0": "008790B0",
@@ -537,7 +547,12 @@
     "00CBE380": "00CBE380",
     "00CE6750": "00CE6750",
     "00CE6790": "00CE6790",
-    "00CF2A90": "00CF2A90"
+    "00CF2A90": "00CF2A90",
+    "00C53F60": "00C53F60",
+    "00AF4450": "00AF4450",
+    "004E5790": "004E5790",
+    "00B3F2F0": "00B3F2F0",
+    "00C52CC0": "00C52CC0"
   },
   "reference_addresses": {
     "android/host/scene_native.c": [
@@ -912,6 +927,22 @@
       "00D119FC",
       "00F272C0",
       "00F78FC0"
+    ],
+    "android/host/touch_engine.c": [
+      "004E5790",
+      "00879240",
+      "00AF4450",
+      "00B3F2F0",
+      "00C52CC0",
+      "00C53F60"
+    ],
+    "android/host/touch_combat_query.inc": [
+      "004E5790",
+      "00879240",
+      "00AF4450",
+      "00B3F2F0",
+      "00C52CC0",
+      "00C53F60"
     ]
   },
   "layout_patches": {},

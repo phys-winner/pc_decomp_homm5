@@ -1,11 +1,14 @@
 """Exercise the native camera bridge against the engine call/coordinate ABI."""
 from pathlib import Path
+import re
 import unittest
 from test_static_tls import compile_probe
 
 ROOT = Path(__file__).resolve().parents[1]
+ROUTE_PACKET = re.search(r"enum \{ COMBAT_ROUTE_MAX_POINTS =[^;]+;",
+                        (ROOT / "android/host/touch.h").read_text())[0]
 
-HARNESS = r'''
+HARNESS = ROUTE_PACKET + "\n" + r'''
 #include <assert.h>
 #include <math.h>
 #include <stdint.h>
@@ -30,7 +33,9 @@ static float town_initial_pose[10]={500,1.1f,.5f,.1f,35,0,0,33,44,5};
 static float installed[10];
 static void_fn registered;
 #define MEMF(a) (*(float *)GPTR(a))
-#define VLOG(...) ((void)0)
+static int void_verbose;
+static void fixture_log(const char *format,...) {(void)format;}
+#define VLOG(...) fixture_log(__VA_ARGS__)
 /* port_settings.c: the options page's camera sensitivity. */
 static float option_sensitivity=1.0f;
 static float void_port_camera_sensitivity(void) {return option_sensitivity;}

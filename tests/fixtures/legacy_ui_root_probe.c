@@ -18,10 +18,9 @@ static uint32_t void_call_guest(uint32_t address,int n,const uint32_t *args,int 
  assert(address==DYNAMIC_CAST&&n==5&&args[0]==0x20024&&!pops);return 0x22000;
 }
 static uint32_t void_call_guest_this(uint32_t address,uint32_t object,int n,const uint32_t *args) {
- unsigned phase=(unsigned)callbacks++%4;
+ unsigned phase=(unsigned)callbacks++%3;
  if(phase==0){assert(address==LAYOUT&&object==0x300F8&&n==1&&args[0]==viewport_scratch);}
- else if(phase==1){assert(address==INVALIDATE&&object==0x3010C&&!n&&!args);}
- else if(phase==2){assert(address==CHILDREN&&object==0x30000&&!n&&!args);}
+ else if(phase==1){assert(address==CHILDREN&&object==0x30000&&!n&&!args);}
  else {assert(address==NEXT_SCREEN&&object==0x20000&&!n&&!args);return cycle?0x20000:0;}
  return 0;
 }
@@ -41,10 +40,10 @@ int main(void) {
   float *r=(float *)GPTR(0x32000);
   assert(r[0]==0&&r[1]==0&&r[2]==width&&r[3]==height);
  }
- void_touch_legacy_relayout();assert(callbacks==4&&viewport_scratch==0x32000);
- cycle=1;void_touch_legacy_relayout();assert(callbacks==8);
- cycle=0;void_touch_legacy_resize(2399,1080);assert(callbacks==12);
+ void_touch_legacy_relayout();assert(callbacks==3&&viewport_scratch==0x32000);
+ cycle=1;void_touch_legacy_relayout();assert(callbacks==6);
+ cycle=0;void_touch_legacy_resize(2399,1080);assert(callbacks==9);
  assert(MEMF(PHYSICAL_X)==2399&&MEMF(PHYSICAL_Y)==1080&&MEMF(CANVAS_X)==1706&&MEMF(CANVAS_Y)==768);
- void_touch_legacy_resize(0,1080);assert(callbacks==12);
- puts("PASS actual legacy UI root: full parent canvas atUI50/100/200, absentToEresourcefields ignored, original three-call layout ABI, removedToEslot unused, screenlistcycle guard, native resize");
+ void_touch_legacy_resize(0,1080);assert(callbacks==9);
+ puts("PASS actual legacy UI root: full parent canvas atUI50/100/200, absentToEresourcefields ignored, geometry and children without resource reset, screenlistcycle guard, native resize");
 }
