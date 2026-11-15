@@ -97,7 +97,9 @@ class ThinLTOBuilderTest(unittest.TestCase):
                     stack.enter_context(patch("port_patches.native_overrides", return_value=()))
                     stack.enter_context(patch("port_patches.adapt_host_source", side_effect=lambda source, *_: (source, [])))
                     stack.enter_context(patch.object(module.subprocess, "run", side_effect=fake_run))
-                    stack.enter_context(patch.object(sys, "argv", ["build_android.py", "--jobs", "2", *options]))
+                    # These cases cover the whole engine; libhomm5_common.so has tests/test_common_lib.py.
+                    whole = ["--monolithic"] if "--shared" in options and "--common-lib" not in options else []
+                    stack.enter_context(patch.object(sys, "argv", ["build_android.py", "--jobs", "2", *options, *whole]))
                     stack.enter_context(redirect_stdout(io.StringIO()))
                     stack.enter_context(redirect_stderr(io.StringIO()))
                     try:

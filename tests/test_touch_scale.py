@@ -532,6 +532,12 @@ int main(void) {
     MEM8(atb+0x70)=1;
     assert(scale_fits(root,1,1365.6f,614.4f,1707,768,125)==125);
     near(last_combat_hud,443); /* Ordinary battle initiative retains its original measurement. */
+    /* First battle frames: no stack label is shown yet, the enlarged HUD is compensated already
+       (every edition; 1.6/2.1 once waited for a label). */
+    MEM8(MEM32(elements[3]+0x140)+0x70)=0;MEM8(MEM32(elements[4]+0x140)+0x70)=0;
+    last_combat_hud=-1;
+    assert(scale_fits(root,1,1365.6f,614.4f,1707,768,125)==125);
+    near(last_combat_hud,443);
     for(unsigned i=0;i<5;++i)MEM8(MEM32(elements[i]+0x140)+0x70)=0;
     void_android_display_size=NULL;alternate_top=bad_cast=cycle_screens=flip_on_query=0;
     /* CINEMATIC_PROBE */
@@ -621,15 +627,17 @@ class TouchScaleTest(unittest.TestCase):
         import port_patches
         from test_d3d_lifecycle import function
         source = (ROOT / "android/host/touch_scale.c").read_text(encoding="utf-8")
-        original = function(source, "static void scale_anchor(")
         for edition in ("vanilla", "hof"):
             path, _ = port_patches.adapt_host_source(ROOT / "android/host/touch_scale.c",
                 ROOT / "build/tests" / ("stack-bounds-" + edition), edition)
-            actual = function(path.read_text(), "static void scale_anchor(")
-            # Other fixture screens use ToE VAs; exercise the legacy traversal with the same geometry.
+            # Other fixture screens use ToE VAs; exercise the legacy traversal and battle-lens
+            # measurement with the same geometry.
             inverse = {value: key for key, value in port_patches.load_contract(edition)["addresses"].items()}
-            actual = re.sub(r'(0x|sub_)([0-9A-Fa-f]{8})', lambda m: m[1] + inverse.get(m[2].upper(), m[2]), actual)
-            fixture = source.replace(original, actual)
+            fixture = source
+            for name in ("static void scale_anchor(", "static int scale_fits("):
+                actual = function(path.read_text(), name)
+                actual = re.sub(r'(0x|sub_)([0-9A-Fa-f]{8})', lambda m: m[1] + inverse.get(m[2].upper(), m[2]), actual)
+                fixture = fixture.replace(function(source, name), actual)
             for name in ("host.h", "input.h", "touch.h"):
                 fixture = fixture.replace(f'#include "{name}"\n', '')
             fixture = '\n'.join(line for line in fixture.splitlines() if not line.startswith("extern int void_android_"))

@@ -158,6 +158,7 @@ gl_Position=vec4(p[gl_VertexID],0,1);io_5_0=probeKill;}
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 typedef unsigned GLuint;
 typedef int GLint;
 typedef struct { int usage, index; } attribute;
@@ -173,18 +174,26 @@ static program_t *programs[1024], *current_program;
 static uint32_t d3d_constant_generation=1;
 static unsigned links, binds, uniforms;
 static int shader_type_ok(d3d_shader *s, int p) { (void)s; (void)p; return 1; }
-static GLuint d3d_ff_vertex_stage(d3d_device *d, const char *s, uint32_t *id) { (void)d; (void)s; *id=21; return 21; }
-static GLuint d3d_ff_pixel_stage(d3d_device *d, const char *s, uint32_t *id, uint32_t *mask) { (void)d; (void)s; *id=22; *mask=0; return 22; }
+static GLuint d3d_ff_vertex_stage(d3d_device *d, const char *s, uint32_t fog, uint32_t *id) { (void)d; (void)s; assert(!fog); *id=21; return 21; }
+static GLuint d3d_ff_pixel_stage(d3d_device *d, const char *s, uint32_t fog, int depth, uint32_t *id, uint32_t *mask) { (void)d; (void)s; assert(!fog&&!depth); *id=22; *mask=0; return 22; }
 static void d3d_ff_uniforms(d3d_device *d, GLuint gl, int v, int p) { (void)d; (void)gl; (void)v; (void)p; ++uniforms; }
+/* Fog off (D3DRS_FOGENABLE 0): the programs are exactly the former ones. */
+#define FOG_DEPTH_VS 4
+#define FFOG_SHADER_DEPTH 6
+static int d3d_fog_state(d3d_device *d, int v, int p, uint32_t *coord, float params[4], float color[4]) {
+ (void)v;(void)p;(void)params;(void)color; assert(!d->st.rs[28]); *coord=0; return 0;
+}
+static void glUniform4fv(GLint loc, int n, const float *v) { (void)loc;(void)n;(void)v; abort(); }
 static void glUseProgram(GLuint gl) { assert(gl); ++binds; }
 static int bgra_of(d3d_device *d, int u, int i) { (void)d; (void)u; (void)i; return 0; }
-static program_t *link_program(d3d_shader *vs, d3d_shader *ps, uint32_t mask, GLuint ff, uint32_t id, uint32_t samplers, int alpha) {
- (void)ff; (void)samplers; program_t *p=calloc(1,sizeof *p); assert(p); p->vs=vs;p->ps=ps;
+static program_t *link_program(d3d_shader *vs, d3d_shader *ps, uint32_t mask, GLuint ff, uint32_t id, uint32_t samplers, int alpha, int fog) {
+ (void)ff; (void)samplers; program_t *p=calloc(1,sizeof *p); assert(p&&!fog); p->vs=vs;p->ps=ps;
  p->bgra_mask=mask;p->ff_id=id;p->alpha_mode=alpha;p->gl=++links;return p;
 }
 #include "gate.h"
 static void prelink_record(d3d_shader *vs,d3d_shader *ps,uint32_t bgra,int alpha){(void)vs;(void)ps;(void)bgra;(void)alpha;}
 static int d3d_gl_ui_filter(void){return 1;}
+static const float *d3d_gl_ui_blur(void){static const float none[4]={0,0,0,0};return none;}
 #include "bind.h"
 static unsigned function_uploads, reference_uploads;
 static int d3d_gl_ui_drawing(void) { return 0; }

@@ -9,7 +9,9 @@ static unsigned char memory[0x1100000];
 #define MEM32(a) (*(uint32_t *)GPTR(a))
 #define MEMF(a) (*(float *)GPTR(a))
 static uint32_t viewport_scratch;
-static int callbacks, cycle;
+static int callbacks, cycle, console_closes;
+/* A shown console is closed before any screen is laid out again (touch_engine.c). */
+static void void_touch_console_close(void) {assert(callbacks%3==0);++console_closes;}
 static int void_vm_readable(uint32_t a,uint32_t n) {return a>=0x100&&(uint64_t)a+n<=sizeof memory;}
 static int void_vm_writable(uint32_t a,uint32_t n) {return void_vm_readable(a,n);}
 static uint32_t void_galloc(uint32_t size) {assert(size==16);return 0x32000;}
@@ -40,10 +42,10 @@ int main(void) {
   float *r=(float *)GPTR(0x32000);
   assert(r[0]==0&&r[1]==0&&r[2]==width&&r[3]==height);
  }
- void_touch_legacy_relayout();assert(callbacks==3&&viewport_scratch==0x32000);
- cycle=1;void_touch_legacy_relayout();assert(callbacks==6);
- cycle=0;void_touch_legacy_resize(2399,1080);assert(callbacks==9);
+ void_touch_legacy_relayout();assert(callbacks==3&&viewport_scratch==0x32000&&console_closes==1);
+ cycle=1;void_touch_legacy_relayout();assert(callbacks==6&&console_closes==2);
+ cycle=0;void_touch_legacy_resize(2399,1080);assert(callbacks==9&&console_closes==3);
  assert(MEMF(PHYSICAL_X)==2399&&MEMF(PHYSICAL_Y)==1080&&MEMF(CANVAS_X)==1706&&MEMF(CANVAS_Y)==768);
- void_touch_legacy_resize(0,1080);assert(callbacks==9);
- puts("PASS actual legacy UI root: full parent canvas atUI50/100/200, absentToEresourcefields ignored, geometry and children without resource reset, screenlistcycle guard, native resize");
+ void_touch_legacy_resize(0,1080);assert(callbacks==9&&console_closes==3);
+ puts("PASS actual legacy UI root: full parent canvas atUI50/100/200, absentToEresourcefields ignored, geometry and children without resource reset, screenlistcycle guard, native resize, console closed first");
 }

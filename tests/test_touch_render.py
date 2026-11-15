@@ -375,7 +375,9 @@ static int scale_fits(uint32_t r,int a,float w,float h,float bw,float bh,int req
                     'void void_touch_legacy_resize(uint32_t width,uint32_t height);\n#include "touch_render_impl.h"', 1)
                 # The real legacy relayout visits one root through layout/children/next.
                 callbacks = r'''
-static int legacy_resize_active,legacy_layout_phase;
+static int legacy_resize_active,legacy_layout_phase,console_closes,console_close_phase=-1;
+/* touch_engine.c: a shown console is closed before the screens are laid out again. */
+static void void_touch_console_close(void){++console_closes;console_close_phase=legacy_layout_phase;}
 static uint32_t void_call_guest_this(uint32_t va,uint32_t self,int n,const uint32_t *args){
  unsigned phase=(unsigned)legacy_layout_phase++%3;
  assert(!gesture_active);
@@ -392,7 +394,9 @@ static uint32_t void_call_guest_this(uint32_t va,uint32_t self,int n,const uint3
                 fixture = fixture.replace('#include "touch_scale_impl.h"', callbacks + '#include "touch_scale_impl.h"' + r'''
 void void_touch_legacy_resize(uint32_t width,uint32_t height){
  assert(!gesture_active&&(MEMF(0xF74BF0)!=width||MEMF(0xF74BF4)!=height));
+ int closes=console_closes,phase=legacy_layout_phase;
  legacy_resize_active=1;legacy_resize_actual(width,height);legacy_resize_active=0;
+ assert(console_closes==closes+1&&console_close_phase==phase);   /* before the first layout call */
 }
 ''')
                 fixture = fixture.replace(' MEMF(0xF74BE8)=1024;',

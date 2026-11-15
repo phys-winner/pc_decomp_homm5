@@ -106,6 +106,27 @@ int main(void){
             for right in range(left + 1, 4):
                 self.assertNotEqual(images[left], images[right], (left, right))
 
+    def test_legacy_editions_filter_the_texture2d_alias_too(self):
+        # 1.6/2.1 compile the shared header with HOMM5_LEGACY_UI (their edition.h): the alias
+        # MojoShader's GLES 3 profile leaves in main must reach vpTexture there as in ToE.
+        harness = r'''
+#define HOMM5_LEGACY_UI 1
+#include <assert.h>
+#include "d3d9_filter.h"
+int main(void){
+ const char *mojo="#version 310 es\n#define texture2D texture\n#define texture2DLod textureLod\n"
+ "precision highp float;uniform sampler2D image;layout(location=0)out vec4 color;"
+ "void main(){color=texture2D(image,gl_FragCoord.xy/vec2(8.0))+texture(image,vec2(0.5));}";
+ char *ui=d3d_ui_filter_source(mojo);assert(ui);
+ const char *body=strstr(ui,"void main(");assert(body);
+ assert(strstr(body,"color=vpTexture(image,gl_FragCoord.xy/vec2(8.0))+vpTexture(image,vec2(0.5))"));
+ assert(!strstr(body,"texture2D(")&&strstr(ui,"#define texture2DLod textureLod"));
+ free(ui);return 0;
+}
+'''
+        compile_probe("spatial_filter_legacy_alias", harness, {name: (ROOT / "android/host" / name).read_text()
+                                                               for name in ("d3d9_filter.h", "fsr1.h")})
+
 
 if __name__ == "__main__":
     unittest.main()

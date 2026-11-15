@@ -38,6 +38,15 @@ static _Atomic int surface_live, pace_restart;
 void d3d_rt_settle(void);
 void d3d_rt_mirror_frame(uint32_t frame);
 extern uint32_t d3d_constant_generation;
+/* Swap chain MSAA (see the MSAA section) and the gamma ramp pass (before present). */
+typedef void (*fb_texture_ms_fn)(GLenum, GLenum, GLenum, GLuint, GLint, GLsizei);
+static fb_texture_ms_fn fb_texture_ms;
+uint32_t d3d_gl_msaa_counts;               /* bit n: n samples usable (2, 4); set by gl_init */
+static void gamma_release(void);
+static int xt_rect(d3d_device *d, const uint32_t in[4], uint32_t out[4]);
+static void xt_canvas_resolve(void);
+static int render_blur;                    /* render: port_battle_blur of this draw (see the UI state) */
+static void activate_unit(GLuint unit);
 
 /* Opt-in GPU render-span measurements; availability polling never stalls the pipeline. */
 #define GPU_PROFILE_QUERIES 8
@@ -219,8 +228,17 @@ static int gl_init(void)
         }
     }
     gpu_profile_init(extensions);
-    void_log("[gl] limits: texture %u, 3D texture %u, draw buffers %u, ASTC %s", d3d_gl_limits.max_texture,
-        d3d_gl_limits.max_3d_texture, d3d_gl_limits.max_draw_buffers, d3d_gl_limits.astc_ldr ? "yes" : "no");
+    /* Swap chain MSAA needs a multisampled depth texture too: the "2" extension. */
+    d3d_gl_msaa_counts = 0;
+    if (extensions && strstr(extensions, "GL_EXT_multisampled_render_to_texture2") && !getenv("VOID_NO_MSAA")) {
+        fb_texture_ms = (fb_texture_ms_fn)eglGetProcAddress("glFramebufferTexture2DMultisampleEXT");
+        GLint max_samples = 0;
+        glGetIntegerv(GL_MAX_SAMPLES_EXT, &max_samples);
+        for (int s = 2; fb_texture_ms && s <= 4 && s <= max_samples; s *= 2) d3d_gl_msaa_counts |= 1u << s;
+    }
+    void_log("[gl] limits: texture %u, 3D texture %u, draw buffers %u, ASTC %s, MSAA%s%s", d3d_gl_limits.max_texture,
+        d3d_gl_limits.max_3d_texture, d3d_gl_limits.max_draw_buffers, d3d_gl_limits.astc_ldr ? "yes" : "no",
+        (d3d_gl_msaa_counts & 4u) ? " 2x" : " none", (d3d_gl_msaa_counts & 16u) ? " 4x" : "");
     const char *dump = getenv("VOID_DUMP_FRAMES");
     dump_every = dump ? atoi(dump) : 0;
     const char *trace = getenv("VOID_TRACE_FRAME");
@@ -396,29 +414,45 @@ static void trace_dump(d3d_device *d, d3d_surface *s, const char *why)
  * tile), and the map set its depth surface ~290 times a frame: only real
  * changes reach GL. A deleted texture's name can come back, so deletion
  * forgets it (d3d_gl_forget_texture). */
-typedef struct { GLuint tex; GLenum target; GLint level, layer; } fb_attachment;
-static fb_attachment fb_color[4] = { { FB_UNKNOWN, 0, 0, 0 }, { FB_UNKNOWN, 0, 0, 0 }, { FB_UNKNOWN, 0, 0, 0 },
-                                     { FB_UNKNOWN, 0, 0, 0 } };
-static fb_attachment fb_depth = { FB_UNKNOWN, 0, 0, 0 };
+typedef struct { GLuint tex; GLenum target; GLint level, layer; GLsizei samples; } fb_attachment;
+static fb_attachment fb_color[4] = { { FB_UNKNOWN, 0, 0, 0, 0 }, { FB_UNKNOWN, 0, 0, 0, 0 }, { FB_UNKNOWN, 0, 0, 0, 0 },
+                                     { FB_UNKNOWN, 0, 0, 0, 0 } };
+static fb_attachment fb_depth = { FB_UNKNOWN, 0, 0, 0, 0 };
 static GLenum fb_depth_point = FB_UNKNOWN, fb_bufs[4];
 static uint32_t fb_depth_w, fb_depth_h;
 static GLsizei fb_buf_count = -1;
 
+/* ---------------------------------------------------------------- MSAA
+ * Multisampling of the swap chain, the game's FSAA option (0x00A3F980:
+ * D3DMULTISAMPLE_NONMASKABLE at quality min(levels, gfx_fsaa) - 1), through
+ * GL_EXT_multisampled_render_to_texture2: the back buffer and its automatic
+ * depth stay the single-sample textures the rest of the bridge reads; while
+ * the scene draws into them the GPU keeps the samples in tile memory and
+ * resolves them as the render pass ends (no extra memory or resolve pass on a
+ * tiler). Other targets, the full-resolution UI and every blit stay single
+ * sample. */
+typedef void (*fb_texture_ms_fn)(GLenum, GLenum, GLenum, GLuint, GLint, GLsizei);
+static fb_texture_ms_fn fb_texture_ms;      /* glFramebufferTexture2DMultisampleEXT, from gl_init */
+static GLuint msaa_color_tex, msaa_depth_tex;   /* render: the swap chain's textures */
+static GLenum msaa_depth_point;
+static GLsizei msaa_samples;
+
 static fb_attachment attachment_of(d3d_surface *s)
 {
-    fb_attachment a = { 0, GL_TEXTURE_2D, 0, 0 };
+    fb_attachment a = { 0, GL_TEXTURE_2D, 0, 0, 0 };
     if (s) a.tex = d3d_surface_gl_texture(s, &a.target, &a.level, &a.layer);
     return a;
 }
 
 static int same_attachment(fb_attachment a, fb_attachment b)
 {
-    return a.tex == b.tex && a.target == b.target && a.level == b.level && a.layer == b.layer;
+    return a.tex == b.tex && a.target == b.target && a.level == b.level && a.layer == b.layer && a.samples == b.samples;
 }
 
 static void put_attachment(GLenum point, fb_attachment a)
 {
     if (!a.tex) glFramebufferTexture2D(GL_FRAMEBUFFER, point, GL_TEXTURE_2D, 0, 0);
+    else if (a.samples && fb_texture_ms) fb_texture_ms(GL_FRAMEBUFFER, point, GL_TEXTURE_2D, a.tex, 0, a.samples);
     else if (a.target == GL_TEXTURE_3D) glFramebufferTextureLayer(GL_FRAMEBUFFER, point, a.tex, a.level, a.layer);
     else glFramebufferTexture2D(GL_FRAMEBUFFER, point, a.target, a.tex, a.level);
 }
@@ -428,14 +462,258 @@ void d3d_gl_forget_texture(GLuint tex)
     for (int i = 0; i < 32; ++i) if (unit_tex[i] == tex) unit_tex[i] = 0;   /* deletion unbinds it everywhere */
     for (int i = 0; i < 4; ++i) if (fb_color[i].tex == tex) fb_color[i].tex = FB_UNKNOWN;
     if (fb_depth.tex == tex) { fb_depth.tex = FB_UNKNOWN; fb_depth_point = FB_UNKNOWN; }
+    if (msaa_color_tex == tex) { msaa_color_tex = 0; msaa_samples = 0; }
+    if (msaa_depth_tex == tex) msaa_depth_tex = 0;
 }
+
+/* The main framebuffer holds multisampled attachments: blits must not write through it. */
+static int fbo_multisampled(void) { return fb_color[0].samples > 0 || fb_depth.samples > 0; }
+
+typedef struct { GLuint color, depth; GLenum depth_point; GLsizei samples; } msaa_args;
+static void run_set_msaa(void *args)
+{
+    const msaa_args *a = (const msaa_args *)args;
+    msaa_color_tex = a->color; msaa_depth_tex = a->depth; msaa_depth_point = a->depth_point;
+    msaa_samples = fb_texture_ms && a->color ? a->samples : 0;
+    for (int i = 0; i < 4; ++i) fb_color[i].tex = FB_UNKNOWN;
+    fb_depth.tex = FB_UNKNOWN; fb_depth_point = FB_UNKNOWN;
+    if (RDEV) RDEV->fbo_dirty = 1;
+    void_log("[gl] swap chain multisampling: %d samples", (int)msaa_samples);
+}
+
+/* The game's thread (CreateDevice, Reset): the surfaces' GL objects exist by then on the render thread. */
+static void run_msaa_names(void *args)
+{
+    msaa_args *a = (msaa_args *)args;
+    d3d_surface **s = (d3d_surface **)(a + 1);
+    GLenum target; GLint level, layer;
+    a->color = s[0] ? d3d_surface_gl_texture(s[0], &target, &level, &layer) : 0;
+    a->depth = s[1] ? d3d_surface_gl_texture(s[1], &target, &level, &layer) : 0;
+    a->depth_point = s[1] && s[1]->fmt && s[1]->fmt->stencil ? GL_DEPTH_STENCIL_ATTACHMENT : GL_DEPTH_ATTACHMENT;
+    run_set_msaa(a);
+}
+void d3d_gl_set_msaa(d3d_surface *color, d3d_surface *depth, int samples)
+{
+    struct { msaa_args a; d3d_surface *s[2]; } args = { { 0, 0, 0, (GLsizei)samples }, { color, depth } };
+    d3d_rt_call(run_msaa_names, &args, sizeof args);
+}
+
+/* D3D9 quality levels of D3DMULTISAMPLE_NONMASKABLE: 4 when 4x works (levels
+ * 0..2 draw 2x, 3 draws 4x: the game's options 2 and 4 select levels 1 and 3), 2
+ * with only 2x, 0 without. */
+uint32_t d3d_gl_msaa_levels(void)
+{
+    return (d3d_gl_msaa_counts & (1u << 4)) ? 4u : (d3d_gl_msaa_counts & (1u << 2)) ? 2u : 0u;
+}
+
+/* Samples drawn for a D3DPRESENT_PARAMETERS multisample type and quality (0: single sample). */
+int d3d_gl_msaa_count(uint32_t type, uint32_t quality)
+{
+    if (type == 1) {
+        uint32_t levels = d3d_gl_msaa_levels();
+        if (!levels || quality >= levels) return 0;
+        return quality >= 3 && (d3d_gl_msaa_counts & (1u << 4)) ? 4 : 2;
+    }
+    return type >= 2 && type <= 16 && (d3d_gl_msaa_counts & (1u << type)) ? (int)type : 0;
+}
+
+/* ----------------------------------------------------- transition targets
+ * port_battle_blur: the battle-entry transition (0x00CB31E0) captures the
+ * adventure frame into a 256x256 render target (StretchRect, 0x00C2FF20),
+ * renders the battle once into another and zooms both across the screen as
+ * two draws of ten translucent quads (0x00CB2E10, 0x00CB2FB0), each quad a
+ * scaled and shifted copy of the one before: at 2400x1080 that is ~9x
+ * magnified point samples, a grid of blocks and ghost copies between layers. With the switch on, a
+ * single-level 256x256 32-bit render-target texture that a UI quad magnifies
+ * becomes a transition target (GlowTex256, the only other texture of that
+ * kind, is only ever minified, into GlowTex128). It gets a backing at the back
+ * buffer's resolution (at most 2048 a side) with mips and a depth of its own,
+ * first filled from the 256x256 image; from then on drawing into it scales
+ * viewport and scissor (the game still sees a 256x256 surface), StretchRect
+ * writes it at full resolution and sampling reads it trilinearly with the
+ * game's addressing. Each layer is blurred along its step to the neighbouring
+ * layer and feathered at its own edges (xt_layers, UI filter 4 in
+ * d3d9_filter.h), so the copies merge into one smooth zoom; being a blur, the
+ * layers are drawn at half size (xt_canvas). Off: the 256x256 textures exactly
+ * as the game made them. */
+typedef struct { GLuint key, tex, depth; GLsizei w, h; int dirty; } xt_entry;
+static xt_entry xt_table[8];
+static GLuint sampler_for(const uint32_t *ss, int no_filter, uint32_t levels, uint32_t lod);
+
+static int xt_candidate(d3d_surface *s)
+{
+    d3d_texture *t = s ? s->container : NULL;
+    return t && t->rtype == D3DRTYPE_TEXTURE && (t->usage & D3DUSAGE_RENDERTARGET) && t->levels == 1 &&
+           t->width == 256 && t->height == 256 && !s->level && t->gl && t->fmt && !t->fmt->depth &&
+           !t->fmt->is_float && t->fmt->bits == 32 && t->fmt->internal;
+}
+
+static xt_entry *xt_find(GLuint key)
+{
+    for (int i = 0; key && i < 8; ++i) if (xt_table[i].key == key) return &xt_table[i];
+    return NULL;
+}
+
+/* The backing of a transition target while the switch is on. */
+static xt_entry *xt_backing(d3d_surface *s)
+{
+    if (!render_blur || !xt_candidate(s)) return NULL;
+    return xt_find(s->container->gl);
+}
+
+/* xt_layers: a candidate a UI quad magnifies becomes a transition target, its
+ * backing filled by magnifying what the game has drawn into it so far. */
+static xt_entry *xt_adopt(d3d_texture *t)
+{
+    xt_entry *e = NULL;
+    for (int i = 0; i < 8 && !e; ++i) if (!xt_table[i].key) e = &xt_table[i];
+    d3d_device *d = RDEV;
+    if (!e || !d || !d->backbuffer || !t->surfaces || !t->surfaces[0]) return NULL;
+    GLsizei w = (GLsizei)d->backbuffer->width, h = (GLsizei)d->backbuffer->height, levels = 1;
+    w = w > 2048 ? 2048 : w < 256 ? 256 : w;
+    h = h > 2048 ? 2048 : h < 256 ? 256 : h;
+    while (((w | h) >> levels) > 0) ++levels;
+    GLint swizzle[4];
+    d3d_gl_upload_unit();
+    glBindTexture(GL_TEXTURE_2D, t->gl);
+    for (int c = 0; c < 4; ++c) glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R + (GLenum)c, &swizzle[c]);
+    memset(e, 0, sizeof *e);
+    e->key = t->gl; e->w = w; e->h = h; e->dirty = 1;
+    glGenTextures(1, &e->tex);
+    glBindTexture(GL_TEXTURE_2D, e->tex);
+    glTexStorage2D(GL_TEXTURE_2D, levels, t->fmt->internal, w, h);
+    for (int c = 0; c < 4; ++c) glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R + (GLenum)c, swizzle[c]);
+    unit_tex[upload_unit] = 0;
+    if (!read_fbo) { glGenFramebuffers(1, &read_fbo); glGenFramebuffers(1, &draw_fbo); }
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, read_fbo);
+    attach(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, t->surfaces[0]);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw_fbo);
+    attach(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, NULL);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, e->tex, 0);
+    glDisable(GL_SCISSOR_TEST);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glBlitFramebuffer(0, 0, (GLint)t->width, (GLint)t->height, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    d->fbo_dirty = 1;
+    raster_state_valid = 0;
+    void_log("[gl] transition target %u backed at %dx%d", e->key, (int)w, (int)h);
+    return e;
+}
+
+/* d3d_gl_bind_targets: colour 0 and depth when rt[0] is a backed target. */
+static int xt_targets(d3d_device *d, fb_attachment *color, fb_attachment *depth, GLenum *point)
+{
+    xt_entry *e = xt_backing(d->rt[0]);
+    if (!e) return 0;
+    if (d->ds && !e->depth) {
+        glGenTextures(1, &e->depth);
+        d3d_gl_upload_unit();
+        glBindTexture(GL_TEXTURE_2D, e->depth);
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_DEPTH24_STENCIL8, e->w, e->h);
+        unit_tex[upload_unit] = 0;
+    }
+    *color = (fb_attachment){ e->tex, GL_TEXTURE_2D, 0, 0, 0 };
+    *depth = (fb_attachment){ d->ds ? e->depth : 0, GL_TEXTURE_2D, 0, 0, 0 };
+    *point = d->ds ? GL_DEPTH_STENCIL_ATTACHMENT : 0;
+    e->dirty = 1;
+    return 1;
+}
+
+/* ui_rect: viewport and scissor of a backed target, in its own pixels. */
+static int xt_rect(d3d_device *d, const uint32_t in[4], uint32_t out[4])
+{
+    xt_entry *e = d ? xt_backing(d->rt[0]) : NULL;
+    if (!e) return 0;
+    double x = e->w / 256.0, y = e->h / 256.0;
+    int32_t left = (int32_t)lround((int32_t)in[0] * x), top = (int32_t)lround((int32_t)in[1] * y);
+    out[0] = (uint32_t)left; out[1] = (uint32_t)top;
+    out[2] = (uint32_t)((int32_t)lround(((int32_t)in[2] + (double)(int32_t)in[0]) * x) - left);
+    out[3] = (uint32_t)((int32_t)lround(((int32_t)in[3] + (double)(int32_t)in[1]) * y) - top);
+    return 1;
+}
+
+/* gl_blit: a StretchRect into a backed target writes the backing; returns it (0: none). */
+static GLuint xt_blit_target(d3d_surface *dst, const uint32_t *dr, uint32_t *out)
+{
+    xt_entry *e = xt_backing(dst);
+    if (!e) return 0;
+    for (int i = 0; i < 4; ++i) out[i] = (uint32_t)lround((double)(int32_t)dr[i] * ((i & 1 ? e->h : e->w) / 256.0));
+    e->dirty = 1;
+    return e->tex;
+}
+
+/* bind_texture: a transition target is sampled from its backing, trilinear with the game's addressing. */
+static int xt_bind(const uint32_t *ss, d3d_texture *t, GLuint unit)
+{
+    xt_entry *e = render_blur && t->rtype == D3DRTYPE_TEXTURE ? xt_find(t->gl) : NULL;
+    if (!e) return 0;
+    if (unit_tex[unit] != e->tex || unit_target[unit] != GL_TEXTURE_2D || e->dirty) {
+        activate_unit(unit);
+        glBindTexture(GL_TEXTURE_2D, e->tex);
+        if (e->dirty) { glGenerateMipmap(GL_TEXTURE_2D); e->dirty = 0; }
+        unit_tex[unit] = e->tex;
+        unit_target[unit] = GL_TEXTURE_2D;
+    }
+    uint32_t state[14];
+    memcpy(state, ss, sizeof state);
+    state[5] = state[6] = state[7] = 2;   /* D3DTEXF_LINEAR magnification, minification and mip filter */
+    state[9] = 0;                         /* D3DSAMP_MAXMIPLEVEL: every level */
+    GLuint sampler = sampler_for(state, 0, 2, 0);
+    if (unit_sampler[unit] != sampler) { glBindSampler(unit, sampler); unit_sampler[unit] = sampler; }
+    return 1;
+}
+
+static void xt_release(xt_entry *e)
+{
+    GLuint names[2] = { e->tex, e->depth };
+    for (int n = 0; n < 2; ++n) if (names[n]) {
+        for (int i = 0; i < 32; ++i) if (unit_tex[i] == names[n]) unit_tex[i] = 0;
+        for (int i = 0; i < 4; ++i) if (fb_color[i].tex == names[n]) fb_color[i].tex = FB_UNKNOWN;
+        if (fb_depth.tex == names[n]) { fb_depth.tex = FB_UNKNOWN; fb_depth_point = FB_UNKNOWN; }
+        glDeleteTextures(1, &names[n]);
+    }
+    memset(e, 0, sizeof *e);
+}
+
+/* d3d9_resource.c: the game's texture is deleted (or its storage remade). */
+void d3d_gl_transition_forget(GLuint key)
+{
+    xt_entry *e = xt_find(key);
+    if (e) xt_release(e);
+}
+
+static void xt_reset(void)
+{
+    for (int i = 0; i < 8; ++i) if (xt_table[i].key) xt_release(&xt_table[i]);
+}
+
 
 /* The native quad renderer is shared by text, buttons and UI panels. */
 static unsigned ui_quad_depth;             /* game: original quad call depth */
 static int render_ui, render_filter[2];     /* render: this draw's snapshot */
+static int render_fog = 1;                 /* render: port_fog of this draw */
+static int render_blur, render_rt_smooth;  /* render: port_battle_blur; this UI draw magnifies a render target */
 static float render_sharpness;
 int d3d_gl_ui_drawing(void) { return render_ui; }
-int d3d_gl_ui_filter(void) { return render_filter[1]; }
+/* UI filter of this draw (vpTexture, d3d9_filter.h): 4 for the layers of the
+ * battle-entry transition (0x00CB31E0) with port_battle_blur, each blurred
+ * along its step to the neighbouring layer (xt_layers); 2 (bicubic, exact at
+ * 1:1) for any other render target UI quads magnify with port_battle_blur;
+ * else the player's UI filter. */
+#define XT_LAYERS 32                       /* quads of one draw taken as layers */
+#define XT_QUARTER_SPREAD 16.0f            /* steps (positions) from which the layers are drawn at a quarter */
+static int render_xt_blur;                 /* render: quads of this UI draw that are transition layers */
+static float render_xt_steps[XT_LAYERS][4]; /* render: each one's step, duv = xy * uv + zw */
+static float render_xt_rects[XT_LAYERS][4]; /* render: each one's uv rectangle to feather (+-1e4: no edge) */
+static float render_xt_spread;             /* render: the longest step of the draw at its quads' corners, in positions */
+static uint32_t xt_spread_frame;           /* render: frame of xt_spread_now */
+static float xt_spread_now, xt_spread_last; /* render: least spread of the transition draws of that frame, of the one before */
+int d3d_gl_ui_filter(void) { return render_xt_blur ? 4 : render_rt_smooth ? 2 : render_filter[1]; }
+/* d3d9_shader.c / d3d9_ff.c: vpUiBlur of UI filter 4 (the first layer's; gl_draw sets the others). */
+const float *d3d_gl_ui_blur(void) { return render_xt_steps[0]; }
+/* d3d9_ff.c / d3d9_shader.c: whether D3D9 fog is drawn at all (port_fog). */
+int d3d_gl_fog_enabled(void) { return render_fog; }
 
 void d3d_gl_filter_done(d3d_device *dev)
 {
@@ -546,6 +824,7 @@ static void ui_promote(d3d_device *d)
 static void ui_rect(d3d_device *d, const uint32_t in[4], uint32_t out[4])
 {
     memcpy(out, in, 4 * sizeof *out);
+    if (xt_rect(d, in, out)) return;
     if (!d || d->rt[0] != d->backbuffer || ui_surface(d, d->backbuffer) == d->backbuffer) return;
     double x = (double)ui_color->width / d->backbuffer->width;
     double y = (double)ui_color->height / d->backbuffer->height;
@@ -564,6 +843,7 @@ static void ui_scissor(d3d_device *d, int x, int y, int w, int h)
 
 void d3d_gl_bind_targets(d3d_device *dev)
 {
+    if (!render_xt_blur) xt_canvas_resolve();  /* the transition's half-size layers, before anything else */
     ui_prepare_depth(dev);
     if (!fbo) glGenFramebuffers(1, &fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
@@ -578,10 +858,24 @@ void d3d_gl_bind_targets(d3d_device *dev)
     }
     GLenum bufs[4];
     int last = 0, changed = 0;
+    fb_attachment xt_color, xt_depth;
+    GLenum xt_point = 0;
+    int xt = xt_targets(dev, &xt_color, &xt_depth, &xt_point);
+    /* The swap chain's own colour and depth draw multisampled, with nothing else attached. */
+    GLsizei samples = 0;
+    {
+        d3d_surface *c = ui_surface(dev, dev->rt[0]), *z = ui_surface(dev, dev->ds);
+        fb_attachment ca = attachment_of(c), za = attachment_of(z);
+        if (msaa_samples && c && ca.tex == msaa_color_tex && !dev->rt[1] && !dev->rt[2] && !dev->rt[3] &&
+            (!z || za.tex == msaa_depth_tex))
+            samples = msaa_samples;
+    }
     for (int i = 0; i < 4; ++i) {
         d3d_surface *s = ui_surface(dev, dev->rt[i]);
         int usable = s && s->fmt && s->fmt->internal;
         fb_attachment a = attachment_of(usable ? s : NULL);
+        if (i == 0 && a.tex) a.samples = samples;
+        if (i == 0 && xt) a = xt_color;
         if (!same_attachment(a, fb_color[i])) {
             put_attachment(GL_COLOR_ATTACHMENT0 + (GLenum)i, a);
             fb_color[i] = a;
@@ -598,10 +892,19 @@ void d3d_gl_bind_targets(d3d_device *dev)
     }
     d3d_surface *depth = ui_surface(dev, dev->ds);
     fb_attachment z = attachment_of(depth);
+    if (z.tex) z.samples = samples;
     GLenum point = depth ? depth_attachment(depth) : 0;
     d3d_surface *rt0 = ui_surface(dev, dev->rt[0]);
-    if (!dev->ds && fb_depth_point != FB_UNKNOWN && fb_depth_point && fb_depth.tex != FB_UNKNOWN && rt0 &&
-        fb_depth_w >= rt0->width && fb_depth_h >= rt0->height) {
+    if (xt) {
+        z = xt_depth;
+        point = xt_point;
+    } else if (!dev->ds && samples && msaa_depth_tex) {
+        /* Without a depth surface the multisampled colour keeps the swap chain's depth: all
+         * attachments must have the same samples. Depth tests check d->ds, so it is unused. */
+        z = (fb_attachment){ msaa_depth_tex, GL_TEXTURE_2D, 0, 0, samples };
+        point = msaa_depth_point;
+    } else if (!dev->ds && fb_depth_point != FB_UNKNOWN && fb_depth_point && fb_depth.tex != FB_UNKNOWN && rt0 &&
+        fb_depth.samples == samples && fb_depth_w >= rt0->width && fb_depth_h >= rt0->height) {
         /* No depth surface: keep the last one attached while it covers the
          * colour target. Depth and stencil tests and clears all check d->ds,
          * so it is neither read nor written; detaching it would end the
@@ -622,6 +925,7 @@ void d3d_gl_bind_targets(d3d_device *dev)
         fb_depth = z;
         fb_depth_point = point;
         if (depth) { fb_depth_w = depth->width; fb_depth_h = depth->height; }
+        if (xt) fb_depth_w = fb_depth_h = 0;   /* never retained for another target */
         changed = 1;
     }
     GLenum status = changed ? glCheckFramebufferStatus(GL_FRAMEBUFFER) : GL_FRAMEBUFFER_COMPLETE;
@@ -870,6 +1174,7 @@ static void bind_texture(d3d_device *d, int slot, GLuint unit)
         }
         return;
     }
+    if (xt_bind(d->st.ss[slot], t, unit)) return;
     if (t->mips_dirty) d3d_generate_mips(t);
     if (unit_tex[unit] != t->gl || unit_target[unit] != t->target) {
         activate_unit(unit);
@@ -1077,9 +1382,22 @@ static GLuint stream_vbos[16];
  * RING_SEGMENTS segments, one per frame in flight, each reused only after the
  * fence of the frame that last wrote it. A fresh glBufferData store per draw
  * cost an allocation and the driver's own copy ~430 times a frame. A frame
- * that outgrows its segment uploads the rest the old way. */
+ * that outgrows its segment uploads the rest the old way; after RING_GROW_FRAMES
+ * such frames in a row the ring grows to fit what they asked (up to
+ * RING_SEGMENT_MAX): a dense Vanilla map view asks ~29 MB every frame, and its
+ * per-draw stores kept the render thread in the kernel 76% of its time and the
+ * view at 7.6 FPS (Adreno 650, 2026-11-15). A single large frame (one at every
+ * start) does not grow it. */
 #define RING_SEGMENTS 3u
-#define RING_SEGMENT_BYTES (16u << 20)
+#define RING_SEGMENT_MIN (16u << 20)
+#define RING_SEGMENT_MAX (64u << 20)
+static uint32_t ring_segment_bytes = RING_SEGMENT_MIN;
+#define RING_SEGMENT_BYTES ring_segment_bytes
+#define RING_GROW_FRAMES 3u
+static uint64_t ring_demand;             /* bytes asked of the ring this frame */
+static uint64_t ring_demand_peak;        /* the most a frame of the current overflow run asked */
+static int ring_overflow;                /* a request of this frame did not fit */
+static unsigned ring_overflow_run;       /* frames in a row that did not fit */
 static GLuint ring_buffer;
 static uint8_t *ring_map;
 static uint32_t ring_segment, ring_used;
@@ -1097,16 +1415,18 @@ static int ring_ready(void)
     PFNGLBUFFERSTORAGEEXTPROC storage = (PFNGLBUFFERSTORAGEEXTPROC)eglGetProcAddress("glBufferStorageEXT");
     if (!storage) return 0;
     GLbitfield flags = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT_EXT | GL_MAP_COHERENT_BIT_EXT;
-    GLsizeiptr bytes = (GLsizeiptr)RING_SEGMENTS * RING_SEGMENT_BYTES;
-    glGenBuffers(1, &ring_buffer);
-    glBindBuffer(GL_COPY_WRITE_BUFFER, ring_buffer);
-    storage(GL_COPY_WRITE_BUFFER, bytes, NULL, flags);
-    ring_map = (uint8_t *)glMapBufferRange(GL_COPY_WRITE_BUFFER, 0, bytes, flags);
-    if (!ring_map) {
-        void_log("[gl] streaming ring unavailable (%04X)", glGetError());
+    for (;;) {
+        GLsizeiptr bytes = (GLsizeiptr)RING_SEGMENTS * RING_SEGMENT_BYTES;
+        glGenBuffers(1, &ring_buffer);
+        glBindBuffer(GL_COPY_WRITE_BUFFER, ring_buffer);
+        storage(GL_COPY_WRITE_BUFFER, bytes, NULL, flags);
+        ring_map = (uint8_t *)glMapBufferRange(GL_COPY_WRITE_BUFFER, 0, bytes, flags);
+        if (ring_map) break;
+        void_log("[gl] streaming ring of %u MiB unavailable (%04X)", (unsigned)(bytes >> 20), glGetError());
         glDeleteBuffers(1, &ring_buffer);
         ring_buffer = 0;
-        return 0;
+        if (RING_SEGMENT_BYTES <= RING_SEGMENT_MIN) return 0;
+        ring_segment_bytes = RING_SEGMENT_MIN;   /* a grown ring that does not fit: the first size again */
     }
     ring_segment = ring_used = 0;
     ring_state = 1;
@@ -1118,8 +1438,9 @@ static int ring_ready(void)
 static uint8_t *ring_alloc(uint32_t bytes, uint32_t *offset)
 {
     if (!bytes || !ring_ready()) return NULL;
+    ring_demand += (uint64_t)bytes + 15u;
     uint32_t at = (ring_used + 15u) & ~15u;
-    if ((uint64_t)at + bytes > RING_SEGMENT_BYTES) return NULL;
+    if ((uint64_t)at + bytes > RING_SEGMENT_BYTES) { ring_overflow = 1; return NULL; }
     ring_used = at + bytes;
     *offset = ring_segment * RING_SEGMENT_BYTES + at;
     return ring_map + *offset;
@@ -1127,9 +1448,30 @@ static uint8_t *ring_alloc(uint32_t bytes, uint32_t *offset)
 
 /* After a frame's last draw: fence its segment, move to the next one and wait
  * for the GPU to finish the frame that used it RING_SEGMENTS frames ago. */
+static void ring_release(void);
 static void ring_frame_end(void)
 {
     if (ring_state <= 0) return;
+    ring_overflow_run = ring_overflow ? ring_overflow_run + 1u : 0u;
+    if (ring_overflow && ring_demand > ring_demand_peak) ring_demand_peak = ring_demand;
+    if (!ring_overflow_run) ring_demand_peak = 0;
+    if (ring_overflow_run >= RING_GROW_FRAMES && RING_SEGMENT_BYTES < RING_SEGMENT_MAX) {
+        /* The next request maps a new ring; the GPU keeps the old one until its draws are done.
+           The peak demand + 25%, in 4 MiB steps (Vanilla's dense view: 29 MB -> 36 MiB, 108 MiB in all). */
+        const uint64_t want = (ring_demand_peak + ring_demand_peak / 4u + (4u << 20) - 1u) & ~(uint64_t)((4u << 20) - 1u);
+        const uint32_t size = want > RING_SEGMENT_MAX ? RING_SEGMENT_MAX : want > RING_SEGMENT_BYTES ? (uint32_t)want :
+                              RING_SEGMENT_BYTES + (4u << 20);
+        void_log("[gl] streaming ring: %u frames in a row asked up to %llu KiB, segments grow to %u MiB",
+                 ring_overflow_run, (unsigned long long)(ring_demand_peak >> 10), size >> 20);
+        ring_release();
+        ring_segment_bytes = size;
+        ring_overflow = 0;
+        ring_overflow_run = 0;
+        ring_demand = ring_demand_peak = 0;
+        return;
+    }
+    ring_overflow = 0;
+    ring_demand = 0;
     if (ring_fence[ring_segment]) glDeleteSync(ring_fence[ring_segment]);
     ring_fence[ring_segment] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
     ring_segment = (ring_segment + 1u) % RING_SEGMENTS;
@@ -1406,11 +1748,292 @@ static GLenum gl_mode(uint32_t p)
 
 static uint64_t swap_ns;      /* time in eglSwapBuffers: vsync and the GPU catching up */
 
+/* port_battle_blur: uv = map.xy * position + map.zw, per axis, through the
+ * vertices of a quad if they all lie on it (an axis-aligned quad, the UI's,
+ * 0x00A47260); extent: the quad's size in positions; rect: its corners. */
+static int xt_fit(float (*pos)[2], float (*uv)[2], uint32_t count, float map[4], float extent[2], float rect[4])
+{
+    for (int a = 0; a < 2; ++a) {
+        uint32_t lo = 0, hi = 0;
+        for (uint32_t i = 1; i < count; ++i) {
+            if (pos[i][a] < pos[lo][a]) lo = i;
+            if (pos[i][a] > pos[hi][a]) hi = i;
+        }
+        float span = pos[hi][a] - pos[lo][a], range = uv[hi][a] - uv[lo][a];
+        float scale = range / span, offset = uv[lo][a] - scale * pos[lo][a];
+        if (!(span > 1.0f) || !isfinite(scale) || !isfinite(offset) || scale == 0.0f) return 0;
+        for (uint32_t i = 0; i < count; ++i)
+            if (!(fabsf(scale * pos[i][a] + offset - uv[i][a]) <= 1e-3f * fabsf(range) + 1e-5f)) return 0;
+        map[a] = scale;
+        map[2 + a] = offset;
+        extent[a] = span;
+        rect[a] = pos[lo][a];
+        rect[2 + a] = pos[hi][a];
+    }
+    return 1;
+}
+
+/* The quads of a draw of whole quads (a list of two triangles per quad, or a
+ * strip/fan of one), each fitted (xt_fit) into maps[q]/extents[q]; returns
+ * their number, 0 when the draw is anything else. Texture coordinates of the
+ * game's UI vertices are SHORT2 in shader mode and its UI vertex shader
+ * scales them by c16 (oT0.xy = v3.xy * c16.xy, 0x00A46BC0); FLOAT2..4 as given. */
+static int xt_quads(d3d_device *d, uint32_t primitive, uint32_t start_vertex, uint32_t prim_count, int indexed,
+    uint32_t base_vertex, uint32_t start_index, const void *up_vertices, uint32_t up_stride, const void *up_indices,
+    int up_index32, float (*maps)[4], float (*extents)[2], float (*rects)[4])
+{
+    const d3d_vertex_element *el[2] = { find_element(d, 0, 0), find_element(d, 5, 0) };
+    uint32_t per = primitive == 4 ? 6 : 4, quads = primitive == 4 ? prim_count / 2 : 1;
+    if (!(primitive == 4 ? prim_count && !(prim_count & 1) : (primitive == 5 || primitive == 6) && prim_count == 2) ||
+        quads > XT_LAYERS || !el[0] || !el[1] || el[0]->type < 1 || el[0]->type > 3) return 0;
+    int shorts = el[1]->type == 6 || el[1]->type == 7;           /* SHORT2 / SHORT4 */
+    if (!shorts && (el[1]->type < 1 || el[1]->type > 3)) return 0;
+    float scale[2] = { 1.0f, 1.0f };
+    if (shorts && d->st.vs) { scale[0] = d->st.vs_f[16][0]; scale[1] = d->st.vs_f[16][1]; }
+    if (!(scale[0] > 0.0f && scale[1] > 0.0f && isfinite(scale[0]) && isfinite(scale[1]))) return 0;
+    const uint8_t *vb[2];
+    uint32_t stride[2];
+    uint64_t limit[2];
+    for (int k = 0; k < 2; ++k) {
+        limit[k] = UINT64_MAX;
+        if (up_vertices && el[k]->stream == 0) {
+            vb[k] = (const uint8_t *)up_vertices;
+            stride[k] = up_stride;
+        } else {
+            d3d_buffer *b = (d3d_buffer *)d->st.streams[el[k]->stream];
+            uint32_t offset = d->st.stream_offset[el[k]->stream];
+            if (!b || offset > b->size) return 0;
+            vb[k] = (const uint8_t *)GPTR(BUF_RT(b)->rt_shadow + offset);
+            stride[k] = d->st.stream_stride[el[k]->stream];
+            limit[k] = b->size - offset;
+        }
+    }
+    d3d_buffer *ib = indexed && !up_indices ? (d3d_buffer *)d->st.indices : NULL;
+    uint32_t isize = ib && ib->format == 102 ? 4u : 2u;
+    if (indexed && !up_indices && !ib) return 0;
+    for (uint32_t q = 0; q < quads; ++q) {
+        float values[2][6][2];
+        for (uint32_t i = 0; i < per; ++i) {
+            uint32_t n = q * per + i, v = start_vertex + n;
+            if (indexed && up_indices) {
+                v = up_index32 ? ((const uint32_t *)up_indices)[n] : ((const uint16_t *)up_indices)[n];
+            } else if (indexed) {
+                uint32_t at = (start_index + n) * isize;
+                if (at + isize > ib->size) return 0;
+                v = (isize == 4 ? MEM32(BUF_RT(ib)->rt_shadow + at) : MEM16(BUF_RT(ib)->rt_shadow + at)) + base_vertex;
+            }
+            for (int k = 0; k < 2; ++k) {
+                uint64_t at = (uint64_t)v * stride[k] + el[k]->offset;
+                if (at + (k && shorts ? 4u : 8u) > limit[k]) return 0;
+                if (k && shorts) {
+                    int16_t s[2];
+                    memcpy(s, vb[k] + at, sizeof s);
+                    values[1][i][0] = s[0] * scale[0];
+                    values[1][i][1] = s[1] * scale[1];
+                } else {
+                    memcpy(values[k][i], vb[k] + at, sizeof values[k][i]);
+                }
+            }
+        }
+        if (!xt_fit(values[0], values[1], per, maps[q], extents[q], rects[q])) return 0;
+    }
+    return (int)quads;
+}
+
+/* The step of each layer to its neighbour (the layer drawn before it; the
+ * first layer's is to the second), as a function of its own uv:
+ * duv = step.xy * uv + step.zw, from uv = map.xy * position + map.zw of both
+ * (positions cancel). One layer alone has none. */
+static void xt_steps(float (*maps)[4], int n, float (*steps)[4])
+{
+    for (int q = 0; q < n; ++q) {
+        const float *a = maps[q], *b = maps[q ? q - 1 : 1];
+        for (int axis = 0; axis < 2; ++axis) {
+            float k = n > 1 ? 1.0f - b[axis] / a[axis] : 0.0f;
+            steps[q][axis] = k;
+            steps[q][2 + axis] = n > 1 ? a[2 + axis] - b[2 + axis] - k * a[2 + axis] : 0.0f;
+        }
+    }
+}
+
+/* The quads of a UI draw of a candidate: a magnified one makes it a
+ * transition target (xt_adopt); a target's draw of several quads is layers,
+ * each with its step and the uv rectangle of its edges inside the viewport
+ * (the shrinking layers' edges; edges on the viewport border stay sharp). */
+static void xt_layers(d3d_device *d, d3d_texture *t, float (*maps)[4], float (*extents)[2], float (*rects)[4], int n)
+{
+    xt_entry *e = xt_find(t->gl);
+    for (int q = 0; q < n && !e; ++q)
+        if (extents[q][0] > (float)t->width && extents[q][1] > (float)t->height) e = xt_adopt(t);
+    if (!e || n < 2) return;
+    xt_steps(maps, n, render_xt_steps);
+    const float view[4] = { (float)d->st.viewport[0], (float)d->st.viewport[1],
+                            (float)d->st.viewport[0] + (float)d->st.viewport[2], (float)d->st.viewport[1] + (float)d->st.viewport[3] };
+    for (int q = 0; q < n; ++q)
+        for (int a = 0; a < 2; ++a) {
+            float u0 = maps[q][a] * rects[q][a] + maps[q][2 + a], u1 = maps[q][a] * rects[q][2 + a] + maps[q][2 + a];
+            int inside0 = rects[q][a] > view[a] + 1.0f, inside1 = rects[q][2 + a] < view[2 + a] - 1.0f;
+            if (u0 > u1) {
+                float u = u0; u0 = u1; u1 = u;
+                int i = inside0; inside0 = inside1; inside1 = i;
+            }
+            render_xt_rects[q][a] = inside0 ? u0 : -1e4f;
+            render_xt_rects[q][2 + a] = inside1 ? u1 : 1e4f;
+        }
+    /* The step in positions at each corner: duv / map.xy. */
+    render_xt_spread = 0.0f;
+    for (int q = 0; q < n; ++q)
+        for (int c = 0; c < 4; ++c) {
+            float s2 = 0.0f;
+            for (int a = 0; a < 2; ++a) {
+                float p = rects[q][(c >> a & 1) ? 2 + a : a], uv = maps[q][a] * p + maps[q][2 + a];
+                float step = (render_xt_steps[q][a] * uv + render_xt_steps[q][2 + a]) / maps[q][a];
+                s2 += step * step;
+            }
+            if (s2 > render_xt_spread * render_xt_spread) render_xt_spread = sqrtf(s2);
+        }
+    if (d->frame != xt_spread_frame) {
+        xt_spread_last = xt_spread_frame + 1 == d->frame ? xt_spread_now : 0.0f;
+        xt_spread_frame = d->frame;
+        xt_spread_now = render_xt_spread;
+    } else if (render_xt_spread < xt_spread_now) {
+        xt_spread_now = render_xt_spread;
+    }
+    render_xt_blur = n;
+}
+
+/* The canvas of this frame's layers: a quarter of the target while every
+ * transition draw of the frame has long steps (this one, and all of the
+ * previous frame: group 1 comes before group 2), else half; the first frame
+ * of a transition is half. */
+static int xt_canvas_divisor(void)
+{
+    float least = render_xt_spread < xt_spread_last ? render_xt_spread : xt_spread_last;
+    return least >= XT_QUARTER_SPREAD ? 4 : 2;
+}
+
+/* gl_draw: a transition draw goes to GL one layer at a time with its own step and rectangle. */
+static GLint xt_step_at = -1, xt_rect_at = -1;
+
+static void xt_uniforms_begin(void)
+{
+    GLint program = 0;
+    glGetIntegerv(GL_CURRENT_PROGRAM, &program);
+    xt_step_at = program ? glGetUniformLocation((GLuint)program, "vpUiBlur") : -1;
+    xt_rect_at = program ? glGetUniformLocation((GLuint)program, "vpUiBlurRect") : -1;
+}
+
+static void xt_uniforms(int part)
+{
+    if (xt_step_at >= 0) glUniform4fv(xt_step_at, 1, render_xt_steps[part]);
+    if (xt_rect_at >= 0) glUniform4fv(xt_rect_at, 1, render_xt_rects[part]);
+}
+
+/* The layers are a blur: they are drawn into a canvas of half their target's
+ * size (a quarter of the fragments), or a quarter of it (a sixteenth) while
+ * every layer group's steps are long (xt_canvas_divisor), started from the target so far, and
+ * put back with one linear blit before anything else reads or draws the
+ * target (d3d_gl_bind_targets, gl_blit_ex, gl_fill, gl_read_rgba,
+ * gl_present). Not for multisampled or several targets. */
+static GLuint xt_canvas_tex, xt_canvas_fbo;
+static GLsizei xt_canvas_w, xt_canvas_h, xt_canvas_tw, xt_canvas_th;
+static GLsizei xt_canvas_rw, xt_canvas_rh;     /* the region in use: the target / xt_canvas_div */
+static int xt_canvas_div = 2;
+static GLenum xt_canvas_internal;
+static int xt_canvas_live;                 /* holds layers its target does not have yet */
+
+static void xt_canvas_release(void)
+{
+    if (xt_canvas_tex) { d3d_gl_forget_texture(xt_canvas_tex); glDeleteTextures(1, &xt_canvas_tex); }
+    if (xt_canvas_fbo) glDeleteFramebuffers(1, &xt_canvas_fbo);
+    xt_canvas_tex = xt_canvas_fbo = 0;
+    xt_canvas_w = xt_canvas_h = 0;
+    xt_canvas_live = 0;
+}
+
+static void xt_canvas_resolve(void)
+{
+    if (!xt_canvas_live) return;
+    xt_canvas_live = 0;
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, xt_canvas_fbo);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
+    GLenum color0 = GL_COLOR_ATTACHMENT0;
+    glDrawBuffers(1, &color0);
+    fb_buf_count = -1;
+    glDisable(GL_SCISSOR_TEST);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glBlitFramebuffer(0, 0, xt_canvas_rw, xt_canvas_rh, 0, 0, xt_canvas_tw, xt_canvas_th, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    raster_state_valid = 0;
+    d3d_device *dev = RDEV;
+    if (dev) dev->fbo_dirty = 1;               /* draw buffers again */
+}
+
+/* After d3d_gl_bind_targets and the draw's state: draw into the canvas (0: into the target). */
+static int xt_canvas_begin(d3d_device *d)
+{
+    d3d_surface *t = ui_surface(d, d->rt[0]);
+    if (!t || !t->fmt || !t->fmt->internal || t->fmt->depth || t->fmt->is_float || d->rt[1] || d->rt[2] || d->rt[3] ||
+        !fb_color[0].tex || fb_color[0].tex == FB_UNKNOWN || fb_color[0].samples) return 0;
+    GLsizei w = (GLsizei)((t->width + 1) / 2), h = (GLsizei)((t->height + 1) / 2);
+    if (!xt_canvas_live) {
+        if (!xt_canvas_tex || w != xt_canvas_w || h != xt_canvas_h || t->fmt->internal != xt_canvas_internal) {
+            xt_canvas_release();
+            glGenTextures(1, &xt_canvas_tex);
+            d3d_gl_upload_unit();
+            glBindTexture(GL_TEXTURE_2D, xt_canvas_tex);
+            glTexStorage2D(GL_TEXTURE_2D, 1, t->fmt->internal, w, h);
+            unit_tex[upload_unit] = 0;
+            glGenFramebuffers(1, &xt_canvas_fbo);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, xt_canvas_fbo);
+            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, xt_canvas_tex, 0);
+            int complete = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            if (!complete) { xt_canvas_release(); return 0; }
+            xt_canvas_w = w; xt_canvas_h = h; xt_canvas_internal = t->fmt->internal;
+            void_log("[gl] transition layers drawn at up to %dx%d for %ux%u", (int)w, (int)h, t->width, t->height);
+        }
+        /* The target so far, reduced. */
+        xt_canvas_div = xt_canvas_divisor();
+        xt_canvas_rw = (GLsizei)((t->width + (uint32_t)xt_canvas_div - 1) / (uint32_t)xt_canvas_div);
+        xt_canvas_rh = (GLsizei)((t->height + (uint32_t)xt_canvas_div - 1) / (uint32_t)xt_canvas_div);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+        glReadBuffer(GL_COLOR_ATTACHMENT0);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, xt_canvas_fbo);
+        glDisable(GL_SCISSOR_TEST);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glBlitFramebuffer(0, 0, (GLint)t->width, (GLint)t->height, 0, 0, xt_canvas_rw, xt_canvas_rh, GL_COLOR_BUFFER_BIT,
+            GL_LINEAR);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        xt_canvas_tw = (GLsizei)t->width;
+        xt_canvas_th = (GLsizei)t->height;
+        xt_canvas_live = 1;
+        raster_state_valid = 0;
+        d3d_gl_apply_state(d);                 /* the draw's scissor and masks again */
+    }
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, xt_canvas_fbo);
+    GLint v[4], s[4], k = xt_canvas_div;
+    glGetIntegerv(GL_VIEWPORT, v);
+    glViewport(v[0] / k, v[1] / k, (v[2] + k - 1) / k, (v[3] + k - 1) / k);
+    if (glIsEnabled(GL_SCISSOR_TEST)) {
+        glGetIntegerv(GL_SCISSOR_BOX, s);
+        glScissor(s[0] / k, s[1] / k, (s[2] + k - 1) / k, (s[3] + k - 1) / k);
+    }
+    return 1;
+}
+
+static void xt_canvas_end(void)
+{
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
+    raster_state_valid = 0;                    /* the next state sets the full viewport again */
+}
+
 static int gl_draw(d3d_device *d, uint32_t primitive, uint32_t start_vertex, uint32_t vertex_count,
     uint32_t prim_count, int indexed, uint32_t base_vertex, uint32_t start_index, uint32_t min_index,
     const void *up_vertices, uint32_t up_stride, const void *up_indices, int up_index32)
 {
-    (void)prim_count; (void)min_index;
+    (void)min_index;
     ++draw_calls;
     d3d_shader *vs = (d3d_shader *)d->st.vs, *ps = (d3d_shader *)d->st.ps;
     /* POSITIONT vertices are already transformed: D3D9 runs no vertex shader
@@ -1424,9 +2047,24 @@ static int gl_draw(d3d_device *d, uint32_t primitive, uint32_t start_vertex, uin
                 break;
             }
     }
+    render_xt_blur = 0;
+    if (render_ui && render_blur) {
+        /* Before any binding: adopting a transition target blits. */
+        d3d_texture *t0 = (d3d_texture *)d->st.textures[0];
+        static float maps[XT_LAYERS][4], extents[XT_LAYERS][2], rects[XT_LAYERS][4];
+        int quads = t0 && t0->rtype == D3DRTYPE_TEXTURE && t0->surfaces && xt_candidate(t0->surfaces[0]) ?
+            xt_quads(d, primitive, start_vertex, prim_count, indexed, base_vertex, start_index, up_vertices, up_stride,
+                     up_indices, up_index32, maps, extents, rects) : 0;
+        if (quads) xt_layers(d, t0, maps, extents, rects, quads);
+    }
     if (render_ui) ui_promote(d);
     d3d_gl_bind_targets(d);
     d3d_gl_apply_state(d);
+    {
+        d3d_texture *t0 = (d3d_texture *)d->st.textures[0];
+        render_rt_smooth = render_ui && render_blur && t0 && t0->rtype == D3DRTYPE_TEXTURE &&
+                           (t0->usage & D3DUSAGE_RENDERTARGET) && !t0->fmt->depth && !xt_find(t0->gl);
+    }
     int attr_count;
     const int *attr_usage, *attr_index, *ps_types, *vs_types;
     uint32_t ps_samplers, vs_samplers;
@@ -1629,6 +2267,16 @@ static int gl_draw(d3d_device *d, uint32_t primitive, uint32_t start_vertex, uin
                 dn += (size_t)snprintf(dl + dn, sizeof dl - dn, " %u.%u:t%u@%u", dd->elements[i].usage, dd->elements[i].usage_index,
                     dd->elements[i].type, dd->elements[i].offset);
             void_log("[trace]   decl%s (fvf %X, set vs %08X)", dl, d->st.fvf, shader_tag(d->st.vs));
+            float fs, fe, fd;
+            memcpy(&fs, &d->st.rs[36], 4); memcpy(&fe, &d->st.rs[37], 4); memcpy(&fd, &d->st.rs[38], 4);
+            void_log("[trace]   fog enable %u color %08X table %u vertex %u range %u start %g end %g density %g (port %d)",
+                d->st.rs[28], d->st.rs[34], d->st.rs[35], d->st.rs[140], d->st.rs[48], fs, fe, fd, render_fog);
+            if (render_xt_blur)
+                void_log("[trace]   transition layers %d, longest step %g positions", render_xt_blur, render_xt_spread);
+            for (int q = 0; q < render_xt_blur; ++q)
+                void_log("[trace]   transition layer %d step (%g %g %g %g) rect (%g %g %g %g)", q, render_xt_steps[q][0],
+                    render_xt_steps[q][1], render_xt_steps[q][2], render_xt_steps[q][3], render_xt_rects[q][0],
+                    render_xt_rects[q][1], render_xt_rects[q][2], render_xt_rects[q][3]);
         }
         void_log("[trace] draw from %08X prim %u count %u%s vs %08X ps %08X%s blend %u(%u,%u) z %u/%u/%u cull %u cw %X vp %u,%u %ux%u%s",
             g_icall_from[ck], primitive, vertex_count, indexed ? " indexed" : "", shader_tag(vs), shader_tag(ps), (!vs && !ps) ? " (ff)" : "",
@@ -1709,6 +2357,12 @@ static int gl_draw(d3d_device *d, uint32_t primitive, uint32_t start_vertex, uin
     }
     gpu_profile_begin(d->frame);
     GLenum mode = gl_mode(primitive);
+    /* Transition layers (xt_layers) go to GL one quad at a time, each with its
+     * step and rectangle, into the half-size canvas when the target allows. */
+    int parts = render_xt_blur > 1 ? render_xt_blur : 1;
+    GLsizei part_count = parts > 1 ? (GLsizei)(vertex_count / (uint32_t)parts) : (GLsizei)vertex_count;
+    if (parts > 1) xt_uniforms_begin();
+    int canvas = parts > 1 && xt_canvas_begin(d);
     if (indexed) {
         if (up_indices) {
             uint32_t index_bytes = vertex_count * (up_index32 ? 4u : 2u), index_at = 0;
@@ -1722,8 +2376,11 @@ static int gl_draw(d3d_device *d, uint32_t primitive, uint32_t start_vertex, uin
             }
             if (elem_buffer != element) { glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, element); elem_buffer = element; }
             if (!dst) glBufferData(GL_ELEMENT_ARRAY_BUFFER, index_bytes, up_indices, GL_STREAM_DRAW);
-            glDrawElements(mode, (GLsizei)vertex_count, up_index32 ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT,
-                           (const void *)(uintptr_t)index_at);
+            for (int part = 0; part < parts; ++part) {
+                if (parts > 1) xt_uniforms(part);
+                glDrawElements(mode, part_count, up_index32 ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT,
+                               (const void *)(uintptr_t)(index_at + (uint32_t)part * (uint32_t)part_count * (up_index32 ? 4u : 2u)));
+            }
         } else {
             d3d_buffer *ib = (d3d_buffer *)d->st.indices;
             if (!ib) { void_log("[gl] indexed draw without an index buffer"); return 0; }
@@ -1752,21 +2409,30 @@ static int gl_draw(d3d_device *d, uint32_t primitive, uint32_t start_vertex, uin
             if (instances)
                 glDrawElementsInstancedBaseVertex(mode, (GLsizei)vertex_count, i32 ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT, ptr,
                     (GLsizei)instances, draw_base);
-            else if (vertex_bounds) {
-                /* GL ranges describe raw indices, before base-vertex rebasing. */
-                GLuint lo = sparse_count ? 0 : first_vertex - base_vertex;
-                GLuint hi = sparse_count ? sparse_count - 1u : last_vertex - base_vertex;
-                glDrawRangeElementsBaseVertex(mode, lo, hi, (GLsizei)vertex_count,
-                    i32 ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT, ptr, draw_base);
+            else for (int part = 0; part < parts; ++part) {
+                const void *at = (const uint8_t *)ptr + (size_t)part * (size_t)part_count * (i32 ? 4u : 2u);
+                if (parts > 1) xt_uniforms(part);
+                if (vertex_bounds) {
+                    /* GL ranges describe raw indices, before base-vertex rebasing. */
+                    GLuint lo = sparse_count ? 0 : first_vertex - base_vertex;
+                    GLuint hi = sparse_count ? sparse_count - 1u : last_vertex - base_vertex;
+                    glDrawRangeElementsBaseVertex(mode, lo, hi, part_count, i32 ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT, at,
+                        draw_base);
+                } else {
+                    glDrawElementsBaseVertex(mode, part_count, i32 ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT, at, draw_base);
+                }
             }
-            else
-                glDrawElementsBaseVertex(mode, (GLsizei)vertex_count, i32 ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT, ptr, draw_base);
         }
     } else {
         GLint draw_start = local_streams ? 0 : (GLint)start_vertex;
         if (instances) glDrawArraysInstanced(mode, draw_start, (GLsizei)vertex_count, (GLsizei)instances);
-        else glDrawArrays(mode, draw_start, (GLsizei)vertex_count);
+        else for (int part = 0; part < parts; ++part) {
+            if (parts > 1) xt_uniforms(part);
+            glDrawArrays(mode, draw_start + part * part_count, part_count);
+        }
     }
+    if (canvas) xt_canvas_end();
+    render_xt_blur = 0;                        /* a clear or blit after this is no transition draw */
     /* GL errors stay set until read: present checks once per frame, a traced
      * draw at once (a per-draw glGetError is a driver entry ~430 times a frame). */
     GLenum e = trace_query ? glGetError() : GL_NO_ERROR;
@@ -1815,7 +2481,7 @@ typedef struct {
     uint32_t primitive, start_vertex, vertex_count, prim_count, base_vertex, start_index, min_index;
     int indexed, up_index32, up_vertices, up_indices;
     uint32_t up_stride, up_vertex_bytes;
-    int ui, world_filter, ui_filter;
+    int ui, world_filter, ui_filter, fog, blur;
     float sharpness;
 } draw_args;
 
@@ -1824,6 +2490,8 @@ static void run_draw(void *args)
     const draw_args *a = (const draw_args *)args;
     render_ui = a->ui;
     render_filter[0] = a->world_filter; render_filter[1] = a->ui_filter;
+    render_fog = a->fog;
+    render_blur = a->blur;
     render_sharpness = a->sharpness;
     const uint8_t *data = (const uint8_t *)(a + 1);
     gl_draw(RDEV, a->primitive, a->start_vertex, a->vertex_count, a->prim_count, a->indexed, a->base_vertex,
@@ -1863,6 +2531,8 @@ int d3d_gl_draw(d3d_device *d, uint32_t primitive, uint32_t start_vertex, uint32
     if (index_bytes) memcpy(data + ((vertex_bytes + 15u) & ~15u), up_indices, index_bytes);
     a->ui = ui_quad_depth != 0;
     a->world_filter = void_port_filter(0); a->ui_filter = void_port_filter(1);
+    a->fog = void_port_fog();
+    a->blur = void_port_battle_blur();
     a->sharpness = void_port_sharpness();
     d3d_rt_commit();
     uint64_t at = d3d_rt_position();
@@ -1944,8 +2614,68 @@ void d3d_gl_clear(d3d_device *d, uint32_t count, uint32_t rects, uint32_t flags,
 }
 
 /* -------------------------------------------------------- blits and reads */
-static void gl_blit(d3d_surface *src, const uint32_t *sr, d3d_surface *dst, const uint32_t *dr, uint32_t filter)
+/* port_battle_blur: the transition's capture of the frame (0x00C2FF20,
+ * StretchRect of the back buffer into a 256x256 target with D3DTEXF_NONE)
+ * point-decimates 2400x1080 about 9:1; a whole-surface colour downscale of 2x
+ * or more instead box-filters through a mip chain of a copy and samples the
+ * nearest larger level bilinearly. Returns the mip level to read (0: none). */
+static GLuint aa_tex;
+static uint32_t aa_w, aa_h;
+static GLenum aa_internal;
+
+/* The smallest mip level of a w x h image still at least dw x dh (0: not a 2x downscale). */
+static GLint aa_level_for(uint32_t w, uint32_t h, uint32_t dw, uint32_t dh)
 {
+    if (!dw || !dh || w < 2 * dw || h < 2 * dh) return 0;
+    GLint level = 0;
+    while (level < 15 && (w >> (level + 1)) >= dw && (h >> (level + 1)) >= dh) ++level;
+    return level;
+}
+
+static GLint aa_downsample(d3d_surface *src, const uint32_t *sr, d3d_surface *dst, const uint32_t *dr, uint32_t filter)
+{
+    if (filter >= 2 || !src->fmt || !dst->fmt || src->fmt->depth || dst->fmt->depth || src->fmt->is_float ||
+        !src->fmt->internal || sr[0] || sr[1] || sr[2] != src->width || sr[3] != src->height ||
+        dr[0] || dr[1] || dr[2] != dst->width || dr[3] != dst->height) return 0;
+    GLint level = aa_level_for(src->width, src->height, dst->width, dst->height);
+    if (!level) return 0;
+    if (!aa_tex || aa_w != src->width || aa_h != src->height || aa_internal != src->fmt->internal) {
+        if (aa_tex) { d3d_gl_forget_texture(aa_tex); glDeleteTextures(1, &aa_tex); }
+        GLsizei levels = 1;
+        while (((src->width | src->height) >> levels) > 0) ++levels;
+        glGenTextures(1, &aa_tex);
+        d3d_gl_upload_unit();
+        glBindTexture(GL_TEXTURE_2D, aa_tex);
+        glTexStorage2D(GL_TEXTURE_2D, levels, src->fmt->internal, (GLsizei)src->width, (GLsizei)src->height);
+        aa_w = src->width; aa_h = src->height; aa_internal = src->fmt->internal;
+    }
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, read_fbo);
+    attach(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, src);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw_fbo);
+    attach(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, NULL);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, aa_tex, 0);
+    glDisable(GL_SCISSOR_TEST);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glBlitFramebuffer(0, 0, (GLint)src->width, (GLint)src->height, 0, 0, (GLint)src->width, (GLint)src->height,
+        GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
+    d3d_gl_upload_unit();
+    glBindTexture(GL_TEXTURE_2D, aa_tex);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    unit_tex[upload_unit] = 0;
+    return level;
+}
+
+static void aa_release(void)
+{
+    if (aa_tex) { d3d_gl_forget_texture(aa_tex); glDeleteTextures(1, &aa_tex); }
+    aa_tex = 0; aa_w = aa_h = 0; aa_internal = 0;
+}
+
+static void gl_blit_ex(d3d_surface *src, const uint32_t *sr, d3d_surface *dst, const uint32_t *dr, uint32_t filter,
+    int smooth)
+{
+    xt_canvas_resolve();
     raster_state_valid = 0;
     if (RDEV && tracing(RDEV)) {
         GLboolean cm[4];
@@ -1981,8 +2711,13 @@ static void gl_blit(d3d_surface *src, const uint32_t *sr, d3d_surface *dst, cons
         dr = target_rect;
     }
     src = source; dst = target;
+    uint32_t xt_rect_out[4];
+    GLuint xt_target = depth ? 0 : xt_blit_target(dst, dr, xt_rect_out);
+    if (xt_target) { dr = xt_rect_out; slot = -1; filter = 2; }
+    GLint aa_level = smooth && !depth && !xt_target ? aa_downsample(src, sr, dst, dr, filter) : 0;
+    if (slot >= 0) d3d_gl_bind_targets(dev);
+    if (slot >= 0 && fbo_multisampled()) slot = -1;   /* a blit cannot write a multisampled framebuffer */
     if (slot >= 0) {
-        d3d_gl_bind_targets(dev);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
         if (slot < 4) {
             GLenum bufs[4] = { GL_NONE, GL_NONE, GL_NONE, GL_NONE };
@@ -1992,10 +2727,24 @@ static void gl_blit(d3d_surface *src, const uint32_t *sr, d3d_surface *dst, cons
         }
     } else {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw_fbo);
-        attach(GL_DRAW_FRAMEBUFFER, depth ? depth_attachment(dst) : GL_COLOR_ATTACHMENT0, dst);
+        attach(GL_DRAW_FRAMEBUFFER, depth ? depth_attachment(dst) : GL_COLOR_ATTACHMENT0, xt_target ? NULL : dst);
+        if (xt_target) glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, xt_target, 0);
     }
     glBindFramebuffer(GL_READ_FRAMEBUFFER, read_fbo);
-    attach(GL_READ_FRAMEBUFFER, attachment, src);
+    uint32_t aa_rect[4];
+    if (aa_level) {
+        /* The box-filtered level, read bilinearly. */
+        attach(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, NULL);
+        glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, aa_tex, aa_level);
+        glReadBuffer(GL_COLOR_ATTACHMENT0);
+        aa_rect[0] = aa_rect[1] = 0;
+        aa_rect[2] = aa_w >> aa_level ? aa_w >> aa_level : 1;
+        aa_rect[3] = aa_h >> aa_level ? aa_h >> aa_level : 1;
+        sr = aa_rect;
+        filter = 2;
+    } else {
+        attach(GL_READ_FRAMEBUFFER, attachment, src);
+    }
     glDisable(GL_SCISSOR_TEST);
     /* StretchRect ignores the write masks; some GL drivers apply them to
      * blits. The next draw re-applies the D3D masks. */
@@ -2020,10 +2769,16 @@ static void gl_blit(d3d_surface *src, const uint32_t *sr, d3d_surface *dst, cons
     if (RDEV) RDEV->fbo_dirty = 1;
 }
 
+static void gl_blit(d3d_surface *src, const uint32_t *sr, d3d_surface *dst, const uint32_t *dr, uint32_t filter)
+{
+    gl_blit_ex(src, sr, dst, dr, filter, 0);
+}
+
 /* Logical RGBA of rect (x0, y0, x1, y1) of a GPU surface: storage rows are
  * D3D rows, so the rect reads unchanged. Returns 0 if GL cannot read it. */
 static int gl_read_rgba(d3d_surface *s, const uint32_t *r, float *out)
 {
+    xt_canvas_resolve();
     if (!s->fmt || s->fmt->depth || !s->fmt->internal) return 0;
     d3d_surface *shown = ui_surface(RDEV, s);
     if (shown != s) ui_copy(shown, s);
@@ -2056,11 +2811,12 @@ static int gl_read_rgba(d3d_surface *s, const uint32_t *r, float *out)
     return 1;
 }
 
-typedef struct { d3d_surface *src, *dst; uint32_t sr[4], dr[4], filter; } blit_args;
+typedef struct { d3d_surface *src, *dst; uint32_t sr[4], dr[4], filter; int smooth, blur; } blit_args;
 static void run_blit(void *args)
 {
     const blit_args *a = (const blit_args *)args;
-    gl_blit(a->src, a->sr, a->dst, a->dr, a->filter);
+    render_blur = a->blur;
+    gl_blit_ex(a->src, a->sr, a->dst, a->dr, a->filter, a->smooth);
 }
 
 /* The game's thread: StretchRect, D3DXLoadSurfaceFromSurface. */
@@ -2068,7 +2824,10 @@ void d3d_gl_blit(d3d_surface *src, const uint32_t *sr, d3d_surface *dst, const u
 {
     if (d3d_rt_executing()) { gl_blit(src, sr, dst, dr, filter); return; }
     if (g_d3d_device) d3d_rt_sync_state(g_d3d_device);
-    blit_args a = { src, dst, { sr[0], sr[1], sr[2], sr[3] }, { dr[0], dr[1], dr[2], dr[3] }, filter };
+    /* Only the game's own StretchRect of the swap chain's image is smoothed (the transition's capture). */
+    int smooth = g_d3d_device && src == g_d3d_device->backbuffer && void_port_battle_blur();
+    blit_args a = { src, dst, { sr[0], sr[1], sr[2], sr[3] }, { dr[0], dr[1], dr[2], dr[3] }, filter, smooth,
+                    void_port_battle_blur() };
     d3d_rt_call(run_blit, &a, sizeof a);
 }
 
@@ -2121,6 +2880,7 @@ void d3d_gl_read_surface(d3d_surface *src, uint32_t dst_mem, uint32_t dst_pitch)
 
 static void gl_fill(d3d_surface *dst, const uint32_t *r, uint32_t color)
 {
+    xt_canvas_resolve();
     raster_state_valid = 0;
     uint32_t scaled[4];
     d3d_surface *target = RDEV ? ui_surface(RDEV, dst) : dst;
@@ -2204,6 +2964,10 @@ static void gl_device_destroy(void)
     ui_owner = NULL; ui_backbuffer = ui_depth_source = NULL;
     ui_release(&ui_color); ui_release(&ui_depth);
     d3d_filter_reset();
+    gamma_release();
+    aa_release();
+    xt_reset();
+    xt_canvas_release();
     combat_route_reset();
     glUseProgram(0);
     d3d_shader_reset();
@@ -2213,9 +2977,11 @@ static void gl_device_destroy(void)
     if (read_fbo) glDeleteFramebuffers(1, &read_fbo);
     if (draw_fbo) glDeleteFramebuffers(1, &draw_fbo);
     fbo = read_fbo = draw_fbo = 0;
-    for (int i = 0; i < 4; ++i) fb_color[i] = (fb_attachment){FB_UNKNOWN, 0, 0, 0};
-    fb_depth = (fb_attachment){FB_UNKNOWN, 0, 0, 0};
+    for (int i = 0; i < 4; ++i) fb_color[i] = (fb_attachment){FB_UNKNOWN, 0, 0, 0, 0};
+    fb_depth = (fb_attachment){FB_UNKNOWN, 0, 0, 0, 0};
     fb_depth_point = FB_UNKNOWN;
+    msaa_color_tex = msaa_depth_tex = 0;
+    msaa_samples = 0;
     fb_depth_w = fb_depth_h = 0;
     memset(fb_bufs, 0, sizeof fb_bufs);
     fb_buf_count = -1;
@@ -2320,12 +3086,130 @@ void d3d_gl_frame_pace(void)
     frame_deadline_ns = now >= frame_deadline_ns + period ? now + period : frame_deadline_ns + period;
 }
 
+/* -------------------------------------------------------------- gamma
+ * IDirect3DDevice9::SetGammaRamp: the hardware ramp D3D9 applies to the whole
+ * presented image, the game's own brightness option. An identity ramp (within
+ * one 8-bit step, as the game's gamma 1.0 ramp x * 65535/256 is) keeps the
+ * plain present blit; any other draws the frame through a 256-entry LUT,
+ * interpolated between entries as the scaled image falls between pixels. */
+static uint8_t gamma_lut_data[256 * 4];
+static int gamma_identity = 1, gamma_dirty, gamma_failed;
+static GLuint gamma_program, gamma_lut, gamma_sampler;
+static GLint gamma_image_loc, gamma_lut_loc;
+
+static void run_set_gamma(void *args)
+{
+    const uint16_t *ramp = (const uint16_t *)args;
+    int identity = 1;
+    for (int i = 0; i < 256; ++i) {
+        for (int c = 0; c < 3; ++c) {
+            unsigned v = ((unsigned)ramp[c * 256 + i] + 128u) / 257u;
+            gamma_lut_data[4 * i + c] = (uint8_t)(v > 255u ? 255u : v);
+            if ((int)v - i > 1 || i - (int)v > 1) identity = 0;
+        }
+        gamma_lut_data[4 * i + 3] = 255;
+    }
+    if (identity != gamma_identity) void_log("[gl] gamma ramp %s", identity ? "identity" : "applied at present");
+    gamma_identity = identity;
+    gamma_dirty = 1;
+}
+
+/* The game's thread (SetGammaRamp). */
+void d3d_gl_set_gamma(const uint16_t *ramp)
+{
+    d3d_rt_call(run_set_gamma, ramp, 768u * 2u);
+}
+
+static int gamma_ready(void)
+{
+    if (gamma_program || gamma_failed) return gamma_program != 0;
+    const char *vertex = "#version 310 es\nout highp vec2 uv;\n"
+        "void main(){vec2 p=vec2(gl_VertexID&1,gl_VertexID>>1)*2.0;uv=vec2(p.x,1.0-p.y);gl_Position=vec4(p*2.0-1.0,0.0,1.0);}";
+    const char *fragment = "#version 310 es\nprecision highp float;\nin highp vec2 uv;\n"
+        "uniform highp sampler2D image;uniform highp sampler2D lut;layout(location=0)out vec4 color;\n"
+        "float ramp(float v,int c){float x=clamp(v,0.0,1.0)*255.0;float i=floor(x);\n"
+        " float a=texelFetch(lut,ivec2(int(i),0),0)[c],b=texelFetch(lut,ivec2(min(int(i)+1,255),0),0)[c];return mix(a,b,x-i);}\n"
+        "void main(){vec4 c=texture(image,uv);color=vec4(ramp(c.r,0),ramp(c.g,1),ramp(c.b,2),1.0);}";
+    GLuint shaders[2] = { glCreateShader(GL_VERTEX_SHADER), glCreateShader(GL_FRAGMENT_SHADER) };
+    const char *sources[2] = { vertex, fragment };
+    GLuint program = glCreateProgram();
+    for (int i = 0; i < 2; ++i) {
+        glShaderSource(shaders[i], 1, &sources[i], NULL);
+        glCompileShader(shaders[i]);
+        glAttachShader(program, shaders[i]);
+    }
+    glLinkProgram(program);
+    GLint ok = 0;
+    glGetProgramiv(program, GL_LINK_STATUS, &ok);
+    for (int i = 0; i < 2; ++i) glDeleteShader(shaders[i]);
+    if (!ok) {
+        char log[1024];
+        glGetProgramInfoLog(program, sizeof log, NULL, log);
+        void_log("[gl] gamma program failed: %s", log);
+        glDeleteProgram(program);
+        gamma_failed = 1;
+        return 0;
+    }
+    gamma_program = program;
+    gamma_image_loc = glGetUniformLocation(program, "image");
+    gamma_lut_loc = glGetUniformLocation(program, "lut");
+    glGenTextures(1, &gamma_lut);
+    glGenSamplers(1, &gamma_sampler);
+    glSamplerParameteri(gamma_sampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glSamplerParameteri(gamma_sampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glSamplerParameteri(gamma_sampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glSamplerParameteri(gamma_sampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    gamma_dirty = 1;
+    return 1;
+}
+
+/* Draws `bb` into the window rectangle through the ramp; 0: blit instead. */
+static int gamma_present(d3d_device *dev, d3d_surface *bb, int dx, int dy, int dw, int dh)
+{
+    if (gamma_identity || !bb->gl || !gamma_ready()) return 0;
+    glActiveTexture(GL_TEXTURE30);
+    glBindTexture(GL_TEXTURE_2D, gamma_lut);
+    glBindSampler(30, 0);
+    if (gamma_dirty) {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 256, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, gamma_lut_data);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+        gamma_dirty = 0;
+    }
+    glActiveTexture(GL_TEXTURE31);
+    glBindTexture(GL_TEXTURE_2D, bb->gl);
+    glBindSampler(31, gamma_sampler);
+    glDisable(GL_BLEND); glDisable(GL_DEPTH_TEST); glDisable(GL_STENCIL_TEST); glDisable(GL_CULL_FACE);
+    glDisable(GL_SCISSOR_TEST); glDisable(GL_POLYGON_OFFSET_FILL);
+    glViewport(dx, dy, dw, dh);
+    glUseProgram(gamma_program);
+    glUniform1i(gamma_image_loc, 31);
+    glUniform1i(gamma_lut_loc, 30);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    /* The units, program and raster state the draw path caches. */
+    for (int unit = 30; unit < 32; ++unit) unit_tex[unit] = unit_sampler[unit] = unit_target[unit] = 0;
+    d3d_gl_filter_done(dev);
+    return 1;
+}
+
+static void gamma_release(void)
+{
+    if (gamma_program) glDeleteProgram(gamma_program);
+    if (gamma_lut) glDeleteTextures(1, &gamma_lut);
+    if (gamma_sampler) glDeleteSamplers(1, &gamma_sampler);
+    gamma_program = gamma_lut = gamma_sampler = 0;
+    gamma_failed = 0;
+    gamma_dirty = 1;
+}
+
 /* What the game's thread did meanwhile, as of its present (frame statistics). */
 static uint64_t present_game_cpu_ns, present_game_wait_ns;
 static d3d_rt_stats_t present_game_stats;
 
 static void gl_present(d3d_device *dev, const combat_route_snapshot *route)
 {
+    xt_canvas_resolve();
     gpu_profile_end(dev->frame);
     ring_frame_end();
     GLenum error = glGetError();
@@ -2422,7 +3306,8 @@ static void gl_present(d3d_device *dev, const combat_route_snapshot *route)
         float scale = fminf((float)sw / (float)bb->width, (float)sh / (float)bb->height);
         int dw = (int)((float)bb->width * scale), dh = (int)((float)bb->height * scale);
         int dx = (sw - dw) / 2, dy = (sh - dh) / 2;
-        glBlitFramebuffer(0, 0, (GLint)bb->width, (GLint)bb->height, dx, dy + dh, dx + dw, dy, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+        if (!gamma_present(dev, bb, dx, dy, dw, dh))
+            glBlitFramebuffer(0, 0, (GLint)bb->width, (GLint)bb->height, dx, dy + dh, dx + dw, dy, GL_COLOR_BUFFER_BIT, GL_LINEAR);
         combat_route_draw(dev, route, dx, dy, dw, dh);
         /* Present hands off after the swap and frame state are committed. */
         struct timespec swap_start, swap_end;

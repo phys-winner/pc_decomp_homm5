@@ -56,6 +56,8 @@ static void glScissor(GLint x,GLint y,GLsizei w,GLsizei h) {scissor[0]=x;scissor
 static void d3d_gl_blit(d3d_surface *src,const uint32_t *sr,d3d_surface *dst,const uint32_t *dr,uint32_t filter);
 static d3d_device *d3d_rt_device(void);
 #define RDEV d3d_rt_device()
+/* port_battle_blur off: no transition target rescales a viewport (d3d9_gl.c xt_rect). */
+static int xt_rect(d3d_device *d,const uint32_t in[4],uint32_t out[4]) {(void)d;(void)in;(void)out;return 0;}
 /* ACTUAL */
 static void d3d_gl_blit(d3d_surface *src,const uint32_t *sr,d3d_surface *dst,const uint32_t *dr,uint32_t filter) {
     assert(!ui_active&&src->dev->fbo_dirty&&src!=dst);

@@ -301,6 +301,7 @@ static int selected_mode;
 static int hardware_burst=96,hardware_capacity=1920,hardware_size=192;
 static int requested_capacity,buffer_changes,buffer_error;
 static int16_t accepted[16384];
+static unsigned pending_writes;
 static AAudioStream streams[16];
 static AAudioStreamBuilder builder;
 static const int16_t *chunk_base;
@@ -373,20 +374,47 @@ static aaudio_result_t AAudioStream_write(AAudioStream *s,const void *data,int32
         if(result>0) {s->prefilled+=result;s->written+=result;}
         return result;
     }
-    assert(data==chunk_base+chunk_offset*2);
+    /* The chunk continues exactly after its accepted prefix; a carried tail comes from elsewhere. */
+    const int16_t *pcm=data;
+    int in_chunk=chunk_base && pcm>=chunk_base && pcm<chunk_base+960;
+    if(in_chunk) assert(pcm==chunk_base+chunk_offset*2); else ++pending_writes;
     int32_t result=result_index<result_count?results[result_index++]:frames;
     ++write_calls;now_ns+=1000000;
     if(result>0) {
         assert(result<=frames && accepted_count+(unsigned)result*2<=16384);
         memcpy(accepted+accepted_count,data,(size_t)result*2*sizeof(int16_t));
-        accepted_count+=(unsigned)result*2;chunk_offset+=(unsigned)result;s->written+=result;
+        accepted_count+=(unsigned)result*2;if(in_chunk) chunk_offset+=(unsigned)result;s->written+=result;
     }
     if(change_generation_after_write==write_calls) pause_generation+=4;
     return result;
 }
+#define AAUDIO_ERROR_DISCONNECTED (-899)
+#define AAUDIO_ERROR_UNAVAILABLE (-889)
+static const char *AAudio_convertResultToText(aaudio_result_t result) {(void)result;return "AAUDIO_ERROR";}
+static const char *void_data_dir(void) {return "userdata";}
+/* <userdata>/audio_fault spies: one text file the poll reads and removes. */
+static char fault_text[64];
+static int fault_present,fault_reads,fault_unlinks,fault_unlink_fails;
+static FILE *spy_fopen(const char *path,const char *mode) {
+    assert(!strcmp(path,"userdata/audio_fault") && !strcmp(mode,"r"));
+    ++fault_reads;return fault_present?(FILE *)fault_text:NULL;
+}
+static char *spy_fgets(char *line,int size,FILE *file) {
+    assert(file==(FILE *)fault_text && size>=64);snprintf(line,(size_t)size,"%s",fault_text);return line;
+}
+static int spy_fclose(FILE *file) {assert(file==(FILE *)fault_text);return 0;}
+static int spy_unlink(const char *path) {
+    assert(!strcmp(path,"userdata/audio_fault"));++fault_unlinks;
+    if(fault_unlink_fails) return -1;
+    fault_present=0;return 0;
+}
+#define fopen spy_fopen
+#define fgets spy_fgets
+#define fclose spy_fclose
+#define unlink spy_unlink
 #include "android_audio.h"
 static void reset_script(const int16_t *frames) {
-    chunk_base=frames;chunk_offset=0;result_index=result_count=0;write_calls=accepted_count=0;
+    chunk_base=frames;chunk_offset=0;result_index=result_count=0;write_calls=accepted_count=pending_writes=0;
 }
 int main(void) {
     int16_t frames[960];for(int i=0;i<960;i++) frames[i]=(int16_t)(i-480);
@@ -406,35 +434,50 @@ int main(void) {
     int64_t before=now_ns;void_audio_output(frames,480);
     assert(now_ns-before>=100000000 && now_ns-before<=101000000);
     assert(write_calls==50 && !accepted_count && audio_dropped_frames==480);
-    /* A disconnect closes on this owner thread and the next chunk reopens. */
+    /* A disconnect of a running stream closes on this owner thread; the next
+       chunk reopens and first plays the unwritten tail of the failed chunk. */
+    now_ns+=1000000000;
     reset_script(frames);results[0]=100;results[1]=-899;result_count=2;
     void_audio_output(frames,480);
     assert(!stream && closes==1 && audio_errors==1 && accepted_count==200);
-    assert(audio_dropped_frames==860 && !memcmp(accepted,frames,400));
+    assert(audio_dropped_frames==480 && audio_pending_frames==380 && !memcmp(accepted,frames,400));
     reset_script(frames);void_audio_output(frames,480);
-    assert(stream && opens==2 && accepted_count==960 && !memcmp(accepted,frames,sizeof frames));
+    assert(stream && opens==2 && accepted_count==1720 && pending_writes==1 && !audio_pending_frames);
+    assert(!memcmp(accepted,frames+200,760*sizeof(int16_t)) && !memcmp(accepted+760,frames,sizeof frames));
+    assert(audio_reconnects==1 && !audio_lost_at && audio_dropped_frames==480);
     /* Background uses the existing mixer clock: no second 10ms sleep. */
     reset_script(frames);audio_paused=1;before=now_ns;void_audio_output(frames,480);
     assert(!stream && closes==2 && !write_calls && now_ns==before);
     void_audio_output(frames,480);assert(closes==2 && now_ns==before);
     audio_paused=0;void_audio_output(frames,480);
     assert(stream && opens==3 && starts==3 && accepted_count==960);
-    /* Failed start, open and foreground reopen never cache an unusable stream. */
-    pthread_mutex_lock(&audio_lock);audio_close_failed(-899);pthread_mutex_unlock(&audio_lock);start_error=-900;
+    /* Failed start, open and foreground reopen never cache an unusable stream.
+       A stream failing within a second of opening and each failed open back
+       off 20, 40, 80 ms ... rather than reopening at every 10 ms chunk. */
+    pthread_mutex_lock(&audio_lock);audio_close_failed(-899);pthread_mutex_unlock(&audio_lock);
+    assert(!stream && closes==3 && audio_retry_delay==20000000);
     reset_script(frames);void_audio_output(frames,480);
-    assert(!stream && closes==4 && !write_calls && !accepted_count);start_error=0;open_error=-901;
-    reset_script(frames);void_audio_output(frames,480);assert(!stream && !write_calls);open_error=0;
-    void_audio_output(frames,480);assert(stream && accepted_count==960);
+    assert(!stream && opens==3 && !write_calls);          /* inside the backoff: no open */
+    now_ns+=20000000;start_error=-900;reset_script(frames);void_audio_output(frames,480);
+    assert(!stream && opens==4 && closes==4 && !write_calls && !accepted_count && audio_retry_delay==40000000);
+    start_error=0;open_error=-901;now_ns+=40000000;
+    reset_script(frames);void_audio_output(frames,480);
+    assert(!stream && opens==4 && !write_calls && audio_retry_delay==80000000);open_error=0;
+    now_ns+=79000000;reset_script(frames);void_audio_output(frames,480);assert(!stream && opens==4);
+    now_ns+=1000000;reset_script(frames);void_audio_output(frames,480);
+    assert(stream && opens==5 && accepted_count==960 && !audio_retry_at && audio_reconnects==2);
     audio_paused=1;reset_script(frames);void_audio_output(frames,480);
     assert(!stream && !write_calls && !lock_depth);audio_paused=0;
     reset_script(frames);void_audio_output(frames,480);assert(stream && accepted_count==960);
     audio_paused=1;void_audio_output(frames,480);audio_paused=0;start_error=-903;
     reset_script(frames);void_audio_output(frames,480);assert(!stream && !write_calls && !accepted_count);
-    start_error=0;create_error=-904;reset_script(frames);void_audio_output(frames,480);
-    assert(!stream && !write_calls);create_error=0;
+    start_error=0;create_error=-904;now_ns+=20000000;reset_script(frames);void_audio_output(frames,480);
+    assert(!stream && !write_calls && audio_retry_delay==40000000);create_error=0;
     /* A failed prefill must not start or cache a broken output stream. */
-    reset_script(frames);prime_result=-905;int before_starts=starts;
-    void_audio_output(frames,480);assert(!stream && !write_calls && starts==before_starts);prime_result=480;
+    reset_script(frames);prime_result=-905;int before_starts=starts;now_ns+=40000000;
+    void_audio_output(frames,480);
+    assert(!stream && !write_calls && starts==before_starts && audio_retry_delay==80000000);prime_result=480;
+    now_ns+=100000000;
     /* Attempted but unaccepted PCM must not advance the ten-second meter. */
     assert(!level_reports);
     for(int i=0;i<1000;i++) {
@@ -461,14 +504,20 @@ def directsound_headers():
         "COM_METHOD(dsb, Lock,", "COM_METHOD(dsb, SetCurrentPosition,", "COM_METHOD(dsb, Unlock,"))
     return {"buffer_type.h": types, "sound_functions.h": functions}
 
+AAUDIO_FUNCTIONS = ("static void audio_close_stream(", "static void audio_mark_lost(", "static void audio_open_failed(",
+                    "static void audio_close_failed(", "static uint32_t audio_write_frames(", "uint32_t void_audio_output(")
+
+
+def aaudio_headers():
+    """The Android audio block: globals and helpers up to audio_close_stream, then its functions."""
+    source = (ROOT / "android/host/android_main.c").read_text(encoding="utf8")
+    globals_ = source[source.index("static AAudioStream *stream;"):source.index("static void audio_close_stream(")]
+    return {"android_audio.h": globals_ + "\n".join(function(source, signature) for signature in AAUDIO_FUNCTIONS)}
+
 
 class SoundStreamingTest(unittest.TestCase):
     def test_aaudio_reduces_default_queue_and_retunes_normal_output(self):
-        source = (ROOT / "android/host/android_main.c").read_text(encoding="utf8")
-        globals_ = source[source.index("static AAudioStream *stream;"):source.index("static void audio_close_stream(")]
-        functions = "\n".join(function(source, signature) for signature in (
-            "static void audio_close_stream(", "static void audio_close_failed(",
-            "static uint32_t audio_write_frames(", "uint32_t void_audio_output("))
+        headers = aaudio_headers()
         harness = AAUDIO_HARNESS[:AAUDIO_HARNESS.index("int main(void) {")] + r'''
 int main(void) {
     int16_t frames[960]={0};
@@ -501,14 +550,10 @@ int main(void) {
         for legacy in (False, True):
             compile_probe("aaudio-normal-latency" + ("-legacy" if legacy else ""),
                           ("#define HOMM5_LEGACY_UI 1\n" if legacy else "") + harness,
-                          {"android_audio.h": globals_ + functions})
+                          headers)
 
     def test_aaudio_recovers_underruns_even_when_every_write_succeeds(self):
-        source = (ROOT / "android/host/android_main.c").read_text(encoding="utf8")
-        globals_ = source[source.index("static AAudioStream *stream;"):source.index("static void audio_close_stream(")]
-        functions = "\n".join(function(source, signature) for signature in (
-            "static void audio_close_stream(", "static void audio_close_failed(",
-            "static uint32_t audio_write_frames(", "uint32_t void_audio_output("))
+        headers = aaudio_headers()
         harness = AAUDIO_HARNESS[:AAUDIO_HARNESS.index("int main(void) {")] + r'''
 int main(void) {
     audio_normal_output=0;   /* the low-latency recovery a build can start with */
@@ -555,14 +600,10 @@ int main(void) {
     return 0;
 }
 '''
-        compile_probe("aaudio-underrun-recovery", harness, {"android_audio.h": globals_ + functions})
+        compile_probe("aaudio-underrun-recovery", harness, headers)
 
     def test_aaudio_zero_progress_falls_back_once_without_replaying_pcm(self):
-        source = (ROOT / "android/host/android_main.c").read_text(encoding="utf8")
-        globals_ = source[source.index("static AAudioStream *stream;"):source.index("static void audio_close_stream(")]
-        functions = "\n".join(function(source, signature) for signature in (
-            "static void audio_close_stream(", "static void audio_close_failed(",
-            "static uint32_t audio_write_frames(", "uint32_t void_audio_output("))
+        headers = aaudio_headers()
         harness = AAUDIO_HARNESS[:AAUDIO_HARNESS.index("int main(void) {")] + r'''
 static void zero_chunk(const int16_t *frames) {
     reset_script(frames);memset(results,0,sizeof results);result_count=128;
@@ -601,21 +642,17 @@ int main(void) {
     audio_paused=0;pause_generation+=2;void_audio_output(fresh,480);
     assert(opens==5 && stream->mode==10 && accepted_count==960);
     reset_script(fresh);results[0]=-899;result_count=1;void_audio_output(fresh,480);
-    assert(!stream && fallback_reports==1);
-    reset_script(fresh);void_audio_output(fresh,480);
-    assert(opens==6 && stream->mode==10 && accepted_count==960 && !lock_depth);
+    assert(!stream && fallback_reports==1 && !audio_pending_frames);   /* fresh stream failed: back off */
+    now_ns+=20000000;reset_script(fresh);void_audio_output(fresh,480);
+    assert(opens==6 && stream->mode==10 && accepted_count==960 && !pending_writes && !lock_depth);
     puts("PASS stalled AAudio: three zero deadlines only, partial/epoch reset, one normal fallback, fresh PCM and sticky mode on reconnect");
     return 0;
 }
 '''
-        compile_probe("aaudio-zero-progress-recovery", harness, {"android_audio.h": globals_ + functions})
+        compile_probe("aaudio-zero-progress-recovery", harness, headers)
 
     def test_aaudio_discards_previous_foreground_generation(self):
-        source = (ROOT / "android/host/android_main.c").read_text(encoding="utf8")
-        globals_ = source[source.index("static AAudioStream *stream;"):source.index("static void audio_close_stream(")]
-        functions = "\n".join(function(source, signature) for signature in (
-            "static void audio_close_stream(", "static void audio_close_failed(",
-            "static uint32_t audio_write_frames(", "uint32_t void_audio_output("))
+        headers = aaudio_headers()
         harness = AAUDIO_HARNESS[:AAUDIO_HARNESS.index("int main(void) {")] + r'''
 int main(void) {
     int16_t frames[960];for(int i=0;i<960;i++) frames[i]=(int16_t)(i-480);
@@ -650,7 +687,7 @@ int main(void) {
     return 0;
 }
 '''
-        compile_probe("aaudio-foreground-generation", harness, {"android_audio.h": globals_ + functions})
+        compile_probe("aaudio-foreground-generation", harness, headers)
 
     def test_pause_generation_keeps_short_and_duplicate_transitions(self):
         source = (ROOT / "android/host/android_main.c").read_text(encoding="utf8")
@@ -726,24 +763,109 @@ int main(void) {
         compile_probe("sound-refill-resample", harness, directsound_headers())
 
     def test_aaudio_reports_queue_shortfall(self):
-        source = (ROOT / "android/host/android_main.c").read_text(encoding="utf8")
-        globals_ = source[source.index("static AAudioStream *stream;"):source.index("static void audio_close_stream(")]
-        functions = "\n".join(function(source, signature) for signature in (
-            "static void audio_close_stream(", "static void audio_close_failed(",
-            "static uint32_t audio_write_frames(", "uint32_t void_audio_output("))
+        headers = aaudio_headers()
         harness = AAUDIO_HARNESS[:AAUDIO_HARNESS.index("int main(void) {")] + AAUDIO_WANTED_MAIN
         for legacy in (False, True):
             compile_probe("aaudio-queue-shortfall" + ("-legacy" if legacy else ""),
                           ("#define HOMM5_LEGACY_UI 1\n" if legacy else "") + harness,
-                          {"android_audio.h": globals_ + functions})
+                          headers)
 
     def test_aaudio_partial_writes_and_lifecycle(self):
-        source = (ROOT / "android/host/android_main.c").read_text(encoding="utf8")
-        globals_ = source[source.index("static AAudioStream *stream;"):source.index("static void audio_close_stream(")]
-        functions = "\n".join(function(source, signature) for signature in (
-            "static void audio_close_stream(", "static void audio_close_failed(",
-            "static uint32_t audio_write_frames(", "uint32_t void_audio_output("))
-        compile_probe("aaudio-streaming", AAUDIO_HARNESS, {"android_audio.h": globals_ + functions})
+        headers = aaudio_headers()
+        compile_probe("aaudio-streaming", AAUDIO_HARNESS, headers)
+
+    def test_aaudio_lost_output_reconnects_with_backoff_and_fault_file(self):
+        """A6: a disconnect reopens at the next chunk, a gone output backs off
+        (no open per 10 ms chunk), every loss/return is logged, and the debug
+        file <userdata>/audio_fault injects the same failures on a device."""
+        harness = AAUDIO_HARNESS[:AAUDIO_HARNESS.index("int main(void) {")] + r'''
+static unsigned lost_logs,back_logs,unavailable_logs,fault_logs;
+static void count_logs(void) {}
+int main(void) {
+    int16_t frames[960];for(int i=0;i<960;i++) frames[i]=(int16_t)(i*3-1440);
+    reset_script(frames);void_audio_output(frames,480);
+    assert(stream && opens==1 && accepted_count==960);
+    now_ns+=2000000000;
+    /* Five route changes in a row (the RMX3371 log showed one per capture
+       start/stop): each reopens at the next chunk and every one is logged,
+       not only the first four. */
+    for(int i=0;i<5;i++) {
+        unsigned before_logs=logs;
+        reset_script(frames);results[0]=-899;result_count=1;void_audio_output(frames,480);
+        assert(!stream && audio_pending_frames==480 && logs>before_logs);
+        reset_script(frames);void_audio_output(frames,480);
+        assert(stream && opens==2+i && pending_writes==1 && accepted_count==1920);
+        assert(!memcmp(accepted,frames,sizeof frames) && !memcmp(accepted+960,frames,sizeof frames));
+        now_ns+=3000000000LL;   /* 8 loss/return lines per 10 s are logged, more are counted */
+    }
+    assert(audio_reconnects==5 && !audio_dropped_frames && audio_errors==5);
+    /* The output stays gone: opens back off 20, 40, ..., 2000 ms; between
+       attempts a chunk only advances the counters (the mixer keeps its clock). */
+    reset_script(frames);results[0]=-899;result_count=1;void_audio_output(frames,480);
+    open_error=-881;
+    int attempts=0;int64_t start=now_ns;
+    for(int chunk=0;chunk<1000;chunk++) {   /* 10 s of 10 ms chunks */
+        int before=opens;reset_script(frames);
+        int64_t t=now_ns;void_audio_output(frames,480);
+        if(audio_lost_attempts>(unsigned)attempts) attempts=(int)audio_lost_attempts;
+        assert(!stream && opens==before && now_ns==t);
+        now_ns+=10000000;
+    }
+    assert(attempts>=8 && attempts<=14);          /* not 1000 opens in 10 s */
+    assert(audio_retry_delay==2000000000 && now_ns-start==10000000000LL);
+    assert(audio_dropped_frames>=480*990 && audio_lost_frames==audio_dropped_frames);
+    open_error=0;
+    while(!stream) {reset_script(frames);void_audio_output(frames,480);now_ns+=10000000;}
+    assert(accepted_count==960 && !audio_lost_at && audio_reconnects==6 && !audio_retry_at);
+    /* A stream that opens but fails at once backs off too (no 100 Hz storm). */
+    now_ns+=2000000000;
+    reset_script(frames);results[0]=-899;result_count=1;void_audio_output(frames,480);   /* running: immediate */
+    assert(!stream && !audio_retry_at && audio_pending_frames==480);
+    reset_script(frames);results[0]=-899;results[1]=-899;result_count=2;void_audio_output(frames,480);
+    assert(!stream && audio_retry_at && audio_retry_delay==20000000 && !audio_pending_frames);
+    reset_script(frames);int before_opens=opens;void_audio_output(frames,480);
+    assert(!stream && opens==before_opens);
+    now_ns+=20000000;reset_script(frames);void_audio_output(frames,480);
+    assert(stream && opens==before_opens+1 && accepted_count==960 && !pending_writes);
+    /* Background resets the backoff; the next foreground epoch opens at once. */
+    now_ns+=2000000000;reset_script(frames);results[0]=-899;results[1]=-899;result_count=2;
+    void_audio_output(frames,480);void_audio_output(frames,480);assert(!stream && audio_retry_at);
+    audio_paused=1;pause_generation+=2;void_audio_output(frames,480);
+    assert(!audio_retry_at && !audio_retry_delay && !audio_lost_at);
+    audio_paused=0;pause_generation+=2;reset_script(frames);void_audio_output(frames,480);
+    assert(stream && accepted_count==960);
+    /* Fault injection: one write failure, then three failed opens. */
+    now_ns+=2000000000;
+    snprintf(fault_text,sizeof fault_text,"disconnect 1\n");fault_present=1;
+    reset_script(frames);void_audio_output(frames,480);
+    assert(!stream && !fault_present && fault_unlinks==1 && !audio_fault_writes && audio_pending_frames==480);
+    reset_script(frames);void_audio_output(frames,480);
+    assert(stream && accepted_count==1920);
+    now_ns+=2000000000;
+    snprintf(fault_text,sizeof fault_text,"unavailable 3\n");fault_present=1;
+    reset_script(frames);results[0]=-899;result_count=1;void_audio_output(frames,480);  /* poll, then a real disconnect */
+    assert(!stream && audio_fault_opens==3);
+    int opens_now=opens;
+    for(int chunk=0;chunk<100 && !stream;chunk++) {reset_script(frames);void_audio_output(frames,480);now_ns+=10000000;}
+    assert(stream && opens==opens_now+1 && audio_lost_attempts==3 && !audio_fault_opens && audio_reconnects==11);
+    /* A file the process cannot remove applies once per distinct text. */
+    now_ns+=2000000000;fault_unlink_fails=1;
+    snprintf(fault_text,sizeof fault_text,"disconnect 1\n");fault_present=1;
+    reset_script(frames);void_audio_output(frames,480);assert(!stream && fault_present);
+    reset_script(frames);void_audio_output(frames,480);assert(stream);
+    for(int i=0;i<5;i++) {now_ns+=2000000000;reset_script(frames);void_audio_output(frames,480);assert(stream);}
+    snprintf(fault_text,sizeof fault_text,"disconnect 1 again\n");now_ns+=2000000000;
+    reset_script(frames);void_audio_output(frames,480);assert(!stream);
+    reset_script(frames);void_audio_output(frames,480);assert(stream);
+    snprintf(fault_text,sizeof fault_text,"spin 1\n");now_ns+=2000000000;
+    reset_script(frames);void_audio_output(frames,480);assert(stream && !audio_fault_writes && !audio_fault_opens);
+    count_logs();(void)lost_logs;(void)back_logs;(void)unavailable_logs;(void)fault_logs;
+    assert(!lock_depth && stops==closes);
+    puts("PASS lost output: next-chunk reopen with the carried tail, logged every time, 20 ms..2 s open backoff, fresh-stream failure backoff, background reset, fault file");
+    return 0;
+}
+'''
+        compile_probe("aaudio-lost-output", harness, aaudio_headers())
 
 
 if __name__ == "__main__":

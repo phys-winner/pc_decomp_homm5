@@ -38,13 +38,13 @@ int main(void){
  g_fp_sp=128;g_fp_top=0;fp_set_cw(0x007F);
 #ifdef VANILLA
  const float original[]={33,68};check(ORIGINAL_ANCHOR_Y,ORIGINAL_BACK_Y,2,original);
- const float broken[]={-122,-47,28};check(ORIGINAL_ANCHOR_Y,PATCHED_BACK_Y,3,broken);
- const float fixed[]={38,73,108};check(PATCHED_ANCHOR_Y,PATCHED_BACK_Y,3,fixed);
- puts("PASS Vanilla original33/68, broken-122/-47/28, fixed38/73/108; native CombatReplay anchor143 +Back178, real RET0/x87 ABI");
+ const float broken[]={-122,-47,28};check(ORIGINAL_ANCHOR_Y,ORIGINAL_BACK_Y+40,3,broken);
+ const float fixed[]={43,78,113,148};check(PATCHED_ANCHOR_Y,PATCHED_BACK_Y,CATEGORY_COUNT,fixed);
+ puts("PASS ToE/Vanilla four categories43/78/113/148 inside taller scroll; native CombatReplay anchor183 +Back218, real RET0/x87 ABI");
 #else
  const float original[]={36,72};check(ORIGINAL_ANCHOR_Y,ORIGINAL_BACK_Y,2,original);
- const float fixed[]={40,76,112};check(PATCHED_ANCHOR_Y,PATCHED_BACK_Y,3,fixed);
- puts("PASS HoF original36/72, fixed40/76/112; native Template anchor112 +Back148, real RET0/x87 ABI");
+ const float fixed[]={44,80,116,152};check(PATCHED_ANCHOR_Y,PATCHED_BACK_Y,CATEGORY_COUNT,fixed);
+ puts("PASS HoF four categories44/80/116/152 inside taller scroll; native Template anchor152 +Back188, real RET0/x87 ABI");
 #endif
  return 0;
 }

@@ -20,6 +20,7 @@ def fixed_function_sources():
     out = ROOT / "build/tests/shadow_ff"
     out.mkdir(parents=True, exist_ok=True)
     harness = """
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>

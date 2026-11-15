@@ -76,6 +76,10 @@ NATIVE_OVERRIDES = ("sub_1102BC0B", "sub_110277DD", "sub_1102B103",
                     # tables (android/host/nubi_log.c).
                     "sub_008CD870", "sub_0081F500", "sub_0081F670")
 
+# --shared links an engine against libhomm5_common.so (tools/common_lib.py) into <build>/common/
+# unless --monolithic asks for the whole engine in <build>/; PGO training and coverage builds stay whole.
+COMMON_LIB_DEFAULT = True
+
 FPU_MEMORY_NOOP = re.compile(rb"/\* (fnsave|fsave|frstor): FPU state is not a memory image here \*/ /\* 0x([0-9A-F]{8}): [^\r\n]*? \*/")
 
 
@@ -490,6 +494,18 @@ def override_source(source, local_xmm):
     patched copy under build/ when a transform changes it: x87 precision
     rounding, one of NATIVE_OVERRIDES, or (with local_xmm) a body that uses SSE
     or backedges, with packed arithmetic and direct jump tables."""
+    original, text = transform_source(source, local_xmm)
+    if text == original:
+        return source, []
+    patched = OUT / "patched" / source.parent.name / source.name
+    patched.parent.mkdir(parents=True, exist_ok=True)
+    if not patched.is_file() or patched.read_bytes() != text:
+        patched.write_bytes(text)
+    return patched, ["-I" + source.parent.relative_to(ROOT).as_posix()]
+
+
+def transform_source(source, local_xmm):
+    """A generated source's bytes and the bytes override_source compiles for it (nothing is written)."""
     original = source.read_bytes()
     text = round_x87_precision(guard_fpu_memory(original))
     if EDITION == "toe":
@@ -529,13 +545,7 @@ def override_source(source, local_xmm):
     from native_routes import apply_native_routes, NATIVE_GROUPS
     text, _, _ = apply_native_routes(text, EDITION, module=source.parent.name[:-len("-x86")],
                                      dispatch=source.name == "recomp_dispatch.c", groups=NATIVE_GROUPS)
-    if text == original:
-        return source, []
-    patched = OUT / "patched" / source.parent.name / source.name
-    patched.parent.mkdir(parents=True, exist_ok=True)
-    if not patched.is_file() or patched.read_bytes() != text:
-        patched.write_bytes(text)
-    return patched, ["-I" + source.parent.relative_to(ROOT).as_posix()]
+    return original, text
 
 
 def sha_file(path):
@@ -567,14 +577,22 @@ def generated_sources():
     return sources
 
 
-def module_compile_flags(module):
+def module_yield_every(module, edition=None):
     # FMOD's x87 decode batches have no native calls between loop edges. A
     # smaller-than-default handoff interval keeps render progress while giving
     # the decoder enough work per FIFO round to refill before playback catches it.
     # HoF's loading transition needs more decode work per contended round.
-    # Other modules keep the runtime default. Flags join each object's digest.
-    edges = 32768 if EDITION == "hof" else 16384
-    return [f"-DRECOMP_YIELD_EVERY={edges}u"] if module == "fmod-x86" else []
+    # Other modules keep the runtime default (None). libhomm5_common.so compiles
+    # FMOD once and reads this value from the engine (tools/common_lib.py).
+    if module != "fmod-x86":
+        return None
+    return 32768 if (edition or EDITION) == "hof" else 16384
+
+
+def module_compile_flags(module):
+    # Flags join each object's digest.
+    edges = module_yield_every(module)
+    return [f"-DRECOMP_YIELD_EVERY={edges}u"] if edges else []
 
 
 def host_sources():
@@ -642,6 +660,18 @@ def compile_one(source, obj, flags, fingerprint, cache):
     return rel, "compiled", elapsed, {"fingerprint": fingerprint, "object_sha256": sha_file(obj)}
 
 
+class _ThisModule:
+    """This file's globals as attributes for tools/common_lib.py, however the file was loaded."""
+    def __getattr__(self, name):
+        try:
+            return globals()[name]
+        except KeyError:
+            raise AttributeError(name) from None
+
+    def __setattr__(self, name, value):
+        globals()[name] = value
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--edition", choices=EDITION_IDS, default="toe")
@@ -669,11 +699,30 @@ def main():
     parser.add_argument("--protocol-check", action="store_true",
                         help="Validation build (build/arm64-check): full state at every transfer, callee-saved "
                              "and x87 window checks logged as [protocol] / [x87]")
+    parser.add_argument("--common", action="store_true",
+                        help="Build libhomm5_common.so (build/arm64-common*, tools/common_lib.py): the lifted DLL "
+                             "code identical in all three engines, with the engines' profiles merged; needs --shared")
+    parser.add_argument("--common-lib", dest="common_lib", action="store_true", default=None,
+                        help="Link the engine against libhomm5_common.so into <build>/common/, building the "
+                             "library first when it is missing or stale (the default with --shared)")
+    parser.add_argument("--monolithic", dest="common_lib", action="store_false",
+                        help="Link the whole engine, with its own copy of that code, into <build>/")
     args = parser.parse_args()
     if args.function_coverage:
         if args.pgo_generate or args.pgo_use:
             parser.error("Function coverage uses a separate no-PGO diagnostic build")
         args.no_pgo = True
+    if args.common_lib is None:
+        args.common_lib = COMMON_LIB_DEFAULT and args.shared and not (args.common or args.pgo_generate or
+                                                                      args.function_coverage)
+    if (args.common or args.common_lib) and not args.shared:
+        parser.error("--common and --common-lib build shared libraries; add --shared")
+    if args.common and args.common_lib:
+        parser.error("--common builds only libhomm5_common.so")
+    if (args.common or args.common_lib) and (args.pgo_generate or args.function_coverage):
+        parser.error("Instrumented and coverage builds keep each engine whole (--monolithic)")
+    if args.common and args.pgo_use:
+        parser.error("--common merges the engines' default profiles; --pgo-use names one engine's")
     configure_edition(args.edition)
     if args.global_regs:
         parser.error("Hand-written native kernels require the tested local-register ABI")
@@ -689,7 +738,11 @@ def main():
     # choice, since it recompiles every generated object.
     profile_dir = "pgo" if EDITION == "toe" else "pgo-" + EDITION
     default_profile = ROOT / "build" / profile_dir / "homm5.profdata"
-    if args.pgo_use is None and not args.no_pgo and not args.pgo_generate and default_profile.is_file():
+    if args.common:
+        import common_lib
+        merged = None if args.no_pgo else common_lib.merged_profile(_ThisModule(), ROOT)
+        args.pgo_use = str(merged) if merged else None
+    elif args.pgo_use is None and not args.no_pgo and not args.pgo_generate and default_profile.is_file():
         args.pgo_use = str(default_profile)
     if args.no_pgo:
         args.pgo_use = None
@@ -722,6 +775,9 @@ def main():
     lto_compile_flags = ["-flto=thin"] if args.thinlto else []
     GENERATED_FLAGS = GENERATED_FLAGS + lto_compile_flags
     mojo_flags = MOJO_FLAGS + lto_compile_flags
+    if args.common:
+        import common_lib
+        return common_lib.build_common(_ThisModule(), args, upstream)
     # Missing or stale native seams must stop before any compiler job starts.
     from port_patches import (validate_native_inputs, native_overrides,
                               adapt_host_source, finalize_native_receipt)
@@ -740,14 +796,22 @@ def main():
                      for name in available_modules()}
     gen_digest = header_digest(runtime_headers + sorted(p for name in available_modules()
                                                         for p in (GENERATED / f"{name}-x86").glob("*.h")))
+    # Host sources include the vendored dlmalloc and zlib 1.3.1 deflate (zlib_deflate_native.c).
     host_digest = header_digest(runtime_headers + sorted((ROOT / "android/host").glob("*.h")) +
                                 [descriptor, include] +
-                                [ROOT / "reference/dlmalloc/malloc.c"])
+                                [ROOT / "reference/dlmalloc/malloc.c"] +
+                                sorted((ROOT / "reference/zlib").glob("*.[ch]")))
     # Inventory the exact post-adaptation sources, then instrument only diagnostic
     # build copies. Normal source/object locations and receipts are untouched.
     prepared_generated = [(source, *override_source(source, local_xmm=not args.global_regs))
                           for source in generated_sources()]
     prepared_host = [(source, *adapt_host_source(source, OUT, EDITION)) for source in host_sources()]
+    common = None
+    if args.common_lib:
+        # The DLL code this engine transforms exactly as libhomm5_common.so holds it.
+        import common_lib
+        common = common_lib.engine_plan(_ThisModule(), args, upstream, prepared_generated)
+        prepared_generated = [row for row in prepared_generated if row[0] not in common.shared]
     coverage = None
     coverage_flags = []
     if args.function_coverage:
@@ -846,12 +910,15 @@ def main():
     if failures:
         sys.exit(1)
     objects = [str(o) for o in generated_objects] + [str(o) for _, o, _, _ in jobs]
-    response = OUT / "link.rsp"
-    response.write_text("\n".join(o.replace("\\", "/") for o in objects))
     library = edition_spec(EDITION, root=ROOT)["library"]
     output = OUT / ("lib" + library + ".so" if args.shared else library.replace("_", "-") + "-arm64")
+    common_inputs = []
+    if common:
+        output, common_inputs = common_lib.engine_link(_ThisModule(), common, output)
+    response = output.parent / "link.rsp"
+    response.write_text("\n".join(o.replace("\\", "/") for o in objects))
     link = [str(CLANG), "--target=" + TARGET, "-fuse-ld=lld", "-Wl,--no-undefined", "-Wl,--gc-sections", "-Wl,-z,nostart-stop-gc", "-Wl,-z,max-page-size=16384",
-            "-Wl,--build-id=sha1", "@" + str(response), "-o", str(output), "-lm", "-llog", "-ldl", "-lEGL", "-lGLESv3", "-lz"]
+            "-Wl,--build-id=sha1", "@" + str(response), *common_inputs, "-o", str(output), "-lm", "-llog", "-ldl", "-lEGL", "-lGLESv3", "-lz"]
     link += ["-shared", "-landroid", "-lOpenSLES", "-laaudio"] if args.shared else ["-pie"]
     if args.pgo_generate:
         link.append("-fprofile-instr-generate")
@@ -866,6 +933,8 @@ def main():
         print(result.stderr[-6000:])
         sys.exit(1)
     finalize_native_receipt(EDITION, output)
+    if common:
+        common_lib.engine_record(_ThisModule(), common, output)
     if coverage:
         output.with_suffix(".coverage.json").write_text(json.dumps({
             "diagnostic_only": True, "edition": EDITION, "library_sha256": sha_file(output),

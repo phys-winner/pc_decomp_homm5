@@ -322,15 +322,23 @@ class PortSettingsTest(unittest.TestCase):
         original, _ = port_ui.source_resource(game, port_ui.UICONSTS)
         tree = ET.fromstring(port_ui.patch_uiconsts(original))
         categories = tree.findall("GameOptions/Categories/Item")
-        self.assertEqual([c.findtext("ID") for c in categories], ["game", "video_audio", "port_additional"])
+        self.assertEqual([c.findtext("ID") for c in categories], ["game", "video_audio", "port_additional", "port_graphics"])
         for category in categories[:2]:
             self.assertFalse(any(o.findtext("ID", "").startswith("port_") for o in category.findall(".//Options/Item")))
-        self.assertEqual([o.findtext("ID") for o in categories[2].findall(".//Options/Item")],
-                         ["port_render_scale", "port_ui_scale", "port_fps_limit",
-                          "port_world_filter", "port_ui_filter", "port_sharpness", "port_camera_sensitivity",
-                          "port_cursor_offset_x", "port_cursor_offset_y", "port_touch_cursor", "port_lan_vpn", "port_console",
-                          "port_split_hints", "port_split_zones", "port_combat_confirm", "port_attack_hints", "port_combat_route"])
-        kinds = {o.findtext("ID"): o.findtext("Type") for o in categories[2].findall(".//Options/Item")}
+        self.assertEqual([[o.findtext("ID") for o in page.findall("Options/Item")] for page in categories[2].findall("Pages/Item")],
+                         [["port_ui_scale", "port_lan_vpn", "port_console"],
+                          ["port_camera_sensitivity", "port_cursor_offset_x", "port_cursor_offset_y", "port_touch_cursor",
+                           "port_split_hints", "port_split_zones", "port_fast_ai", "port_combat_confirm", "port_attack_hints",
+                           "port_combat_route"]])
+        self.assertEqual([[o.findtext("ID") for o in page.findall("Options/Item")] for page in categories[3].findall("Pages/Item")],
+                         [["port_render_scale", "port_fps_limit", "port_world_filter", "port_sharpness", "port_ui_filter"],
+                          ["port_lod_fix", "port_fog", "port_battle_blur"]])
+        self.assertEqual([page.findtext("ID") for page in categories[3].findall("Pages/Item")], ["port_video", "port_effects"])
+        for name, default in (("port_lod_fix", "1"), ("port_fog", "1"), ("port_battle_blur", "0")):
+            item = categories[3].find(f".//Options/Item[ID='{name}']")
+            self.assertEqual((item.findtext("Type"), item.findtext("GlobalVar1"), item.findtext("DefaultValue1")),
+                             ("OPTION_CHECK_BOX", name, default))
+        kinds = {o.findtext("ID"): o.findtext("Type") for c in categories[2:] for o in c.findall(".//Options/Item")}
         self.assertEqual((kinds["port_render_scale"], kinds["port_ui_scale"], kinds["port_fps_limit"]),
                          ("OPTION_SCROLLER", "OPTION_SCROLLER", "OPTION_COMBO_BOX"))
         self.assertEqual((kinds["port_touch_cursor"], kinds["port_lan_vpn"]), ("OPTION_CHECK_BOX",) * 2)
@@ -356,18 +364,20 @@ class PortSettingsTest(unittest.TestCase):
             self.assertIsNotNone(controls.find(f"Item[ID='{name}']"))
             self.assertEqual(port_ui.texts()[f"UI/Consts/GameOptions/Port_{name}/Name.txt"].decode("utf16"), label)
             self.assertGreater(len(port_ui.texts()[f"UI/Consts/GameOptions/Port_{name}/Tooltip.txt"].decode("utf16")), len(label))
-        rates = categories[2].find(".//Options/Item[ID='port_fps_limit']")
+        rates = categories[3].find(".//Options/Item[ID='port_fps_limit']")
         self.assertEqual((rates.findtext("ItemsGlobalVar"), rates.findtext("UseItemNameAsValue"), rates.findtext("GlobalVar1")),
                          ("port_fps_items", "true", "port_fps_choice"))
         for edition in ("vanilla", "hof"):
-            legacy = ET.fromstring(port_ui.patch_uiconsts(original, edition)).findall("GameOptions/Categories/Item")[2]
-            fit = legacy.find(".//Options/Item[ID='port_combat_fit']")
-            self.assertIsNone(fit)
-            toe = ET.fromstring(ET.tostring(categories[2]))
-            ET.indent(legacy); ET.indent(toe)
-            self.assertEqual(ET.tostring(legacy), ET.tostring(toe))
+            for index in (2, 3):
+                legacy = ET.fromstring(port_ui.patch_uiconsts(original, edition)).findall("GameOptions/Categories/Item")[index]
+                fit = legacy.find(".//Options/Item[ID='port_combat_fit']")
+                self.assertIsNone(fit)
+                toe = ET.fromstring(ET.tostring(categories[index]))
+                ET.indent(legacy); ET.indent(toe)
+                self.assertEqual(ET.tostring(legacy), ET.tostring(toe))
             self.assertIn("UI/Consts/GameOptions/Port_port_split_hints/Name.txt", port_ui.texts(edition))
-        self.assertEqual(len(categories[2].findall("Pages/Item")), 2)  # Native two-column templates have valid initial widths.
+        for category in categories[2:]:
+            self.assertEqual(len(category.findall("Pages/Item")), 2)  # Native two-column templates have valid initial widths.
         self.assertEqual(tree.findtext(".//Options/Item[ID='tooltip_delay']/DefaultValue1"), "0")
         members = port_ui.launcher_buttons(game)
         self.assertNotIn("UI/PortExitLauncher.(WindowMSButton).xdb", members)
@@ -379,6 +389,7 @@ class PortSettingsTest(unittest.TestCase):
             self.assertEqual(len(button.find("GameMessageReactions")), 0)
             self.assertIn("PortLauncher.(UISDirectRunReaction)", button.find("ButtonStates/Item/CommandsOnEnterState/Commands/Item").get("href"))
         self.assertEqual(port_ui.texts()["UI/Consts/GameOptions/PortAdditional.txt"].decode("utf16"), "Дополнительные")
+        self.assertEqual(port_ui.texts()["UI/Consts/GameOptions/PortGraphics.txt"].decode("utf16"), "Доп. графика")
 
     def test_battle_controls_fit_above_native_menu_buttons(self):
         from editions import game_directory
@@ -389,8 +400,10 @@ class PortSettingsTest(unittest.TestCase):
                     return ET.fromstring(port_ui.source_resource(game, 'UI/GameOptions/' + name, edition)[0])
                 tree = ET.fromstring(port_ui.patch_uiconsts(port_ui.source_resource(game, port_ui.UICONSTS, edition)[0], edition))
                 pages = tree.find("GameOptions/Categories/Item[ID='port_additional']/Pages")
-                self.assertEqual([page.findtext('ID') for page in pages], ['port_video', 'port_controls'])
-                controls = pages[1].findall('Options/Item')
+                self.assertEqual([page.findtext('ID') for page in pages], ['port_interface', 'port_controls'])
+                graphics = tree.find("GameOptions/Categories/Item[ID='port_graphics']/Pages")
+                self.assertEqual([page.findtext('ID') for page in graphics], ['port_video', 'port_effects'])
+                controls = max((page.findall('Options/Item') for page in (*pages, *graphics)), key=len)
                 heights = {
                     'OPTION_SCROLLER': int(resource('Templates/ScrollBar/ScrollBarPanel.(WindowSimple).xdb').findtext('Placement/Size/First/y')),
                     'OPTION_CHECK_BOX': int(resource('Templates/CheckBox/CheckBoxPanel.(WindowSimple).xdb').findtext('Placement/Size/First/y')),
@@ -417,8 +430,8 @@ class PortSettingsTest(unittest.TestCase):
                     return int(ET.fromstring(data).findtext('Placement/Position/First/y'))
                 original_back = y(port_ui.source_resource(game, back, edition)[0])
                 original_replay = y(port_ui.source_resource(game, replay, edition)[0])
-                self.assertEqual(y(members[back]), original_back + 40)
-                self.assertEqual(y(members[replay]), original_replay + 40)
+                self.assertEqual(y(members[back]), original_back + 80)
+                self.assertEqual(y(members[replay]), original_replay + 80)
                 self.assertEqual(y(members[back]) - y(members[replay]), original_back - original_replay)
 
     def test_activity_persists_and_seeds(self):
@@ -540,7 +553,7 @@ public class GameActivity {
             source = source.replace(f'#include "{name}"\n', "")
         options = {option[1]: option for option in port_ui.OPTIONS}
         names = ("port_ui_scale", "port_render_scale", "port_camera_sensitivity", "port_fps_limit", "port_cursor_offset_x", "port_cursor_offset_y", "port_touch_cursor")
-        self.assertEqual(set(options), set(names) | {"port_lan_vpn", "port_console", "port_world_filter", "port_ui_filter", "port_sharpness", "port_combat_fit", "port_split_hints", "port_split_zones", "port_combat_confirm", "port_attack_hints", "port_combat_route"})
+        self.assertEqual(set(options), set(names) | {"port_lan_vpn", "port_console", "port_world_filter", "port_ui_filter", "port_sharpness", "port_combat_fit", "port_split_hints", "port_split_zones", "port_combat_confirm", "port_attack_hints", "port_combat_route", "port_lod_fix", "port_fog", "port_battle_blur", "port_fast_ai"})
         rows, counts = [], []
         for name in names:
             values = options[name][7]
@@ -548,8 +561,8 @@ public class GameActivity {
             rows.append("{" + ",".join(f"{value!r}f" for value in values) + "}")
             counts.append(str(len(values)))
         harness = NATIVE_HARNESS.replace("/* OPTION_VALUES */", ",".join(rows)).replace("/* OPTION_COUNTS */", ",".join(counts))
-        harness = harness.replace("/* SPLIT_NAMES */", ', "port_split_hints", "port_split_zones", "port_combat_confirm", "port_attack_hints", "port_combat_route"')
-        harness = harness.replace("/* SPLIT_DEFAULTS */", ', "1", "1", "0", "0", "1"')
+        harness = harness.replace("/* SPLIT_NAMES */", ', "port_split_hints", "port_split_zones", "port_combat_confirm", "port_attack_hints", "port_combat_route", "port_lod_fix", "port_fog", "port_battle_blur", "port_fast_ai"')
+        harness = harness.replace("/* SPLIT_DEFAULTS */", ', "1", "1", "0", "0", "1", "1", "1", "0", "1"')
         checks = ''
         for name in ("hints", "zones"):
             index = "PORT_SPLIT_" + name.upper()
@@ -570,6 +583,13 @@ public class GameActivity {
             for value, enabled in ((0, False), (1, True), (-1, False), ("NAN", bool(default)), ("0.49f", False), ("0.5f", True)):
                 checks += f'MEMF(port_storage+4*{index})={value};assert({"" if enabled else "!"}void_port_{name}());\n'
             checks += f'MEMF(port_storage+4*{index})=0;\n'
+        for name, default in (("lod_fix", 1), ("fog", 1), ("battle_blur", 0), ("fast_ai", 1)):
+            index = "PORT_" + name.upper()
+            self.assertEqual(options["port_" + name][7:9], ((0.0, 1.0), default))
+            checks += f'assert({"" if default else "!"}void_port_{name}());\n'
+            for value, enabled in ((0, False), (1, True), (-1, False), ("NAN", bool(default)), ("0.49f", False), ("0.5f", True)):
+                checks += f'MEMF(port_storage+4*{index})={value};assert({"" if enabled else "!"}void_port_{name}());\n'
+            checks += f'MEMF(port_storage+4*{index})={default};\n'
         harness = harness.replace("/* SPLIT_CHECKS */", checks)
         for toe in ("008791F0", "00499700", "00499630", "00C11400"):
             if edition != "toe":

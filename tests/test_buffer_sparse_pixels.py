@@ -107,7 +107,7 @@ typedef struct {uint32_t size,shadow,format;GLuint gl;uint8_t *dirty_pages;int l
 typedef struct {uint16_t stream,offset;uint8_t type,method,usage,usage_index;} d3d_vertex_element;
 typedef struct {int count;d3d_vertex_element elements[8];} d3d_decl;
 typedef struct {int unused;} d3d_shader;
-typedef struct {struct {void *vs,*ps,*decl,*indices,*streams[16];uint32_t stream_stride[16],stream_offset[16],stream_freq[16],rs[256],viewport[4];} st;uint32_t frame;} d3d_device;
+typedef struct {struct {void *vs,*ps,*decl,*indices,*streams[16],*textures[20];uint32_t stream_stride[16],stream_offset[16],stream_freq[16],rs[256],viewport[4];} st;uint32_t frame;} d3d_device;
 static unsigned char memory[80u*1024u*1024u];
 #define GPTR(a) (memory+(uint32_t)(a))
 static int void_vm_readable(uint32_t a,uint32_t n){return a>0&&(uint64_t)a+n<=sizeof memory;}
@@ -124,6 +124,22 @@ static void void_log(const char *format,...){if(!strncmp(format,"[gl] streaming 
 static unsigned render_ui;
 static void gpu_profile_begin(uint32_t frame){(void)frame;}
 static void ui_promote(d3d_device *d){(void)d;}
+/* port_battle_blur off (d3d9_gl.c transition targets): no texture is a transition layer. */
+#define D3DRTYPE_TEXTURE 3u
+#define D3DUSAGE_RENDERTARGET 1u
+typedef struct {int depth;} d3d_texture_format;
+typedef struct {uint32_t rtype,usage,width,height;GLuint gl;const d3d_texture_format *fmt;void **surfaces;} d3d_texture;
+#define XT_LAYERS 32
+static int render_blur,render_rt_smooth,render_xt_blur;
+static int xt_candidate(void *s){(void)s;return 0;}
+static void *xt_find(GLuint key){(void)key;return NULL;}
+static int xt_quads(d3d_device *d,uint32_t p,uint32_t sv,uint32_t pc,int ix,uint32_t bv,uint32_t si,const void *uv,uint32_t us,const void *ui,int u32,float (*maps)[4],float (*extents)[2],float (*rects)[4]){
+ (void)d;(void)p;(void)sv;(void)pc;(void)ix;(void)bv;(void)si;(void)uv;(void)us;(void)ui;(void)u32;(void)maps;(void)extents;(void)rects;return 0;}
+static void xt_layers(d3d_device *d,d3d_texture *t,float (*maps)[4],float (*extents)[2],float (*rects)[4],int n){(void)d;(void)t;(void)maps;(void)extents;(void)rects;(void)n;}
+static void xt_uniforms_begin(void){assert(!"no transition layers here");}
+static void xt_uniforms(int part){(void)part;assert(!"no transition layers here");}
+static int xt_canvas_begin(d3d_device *d){(void)d;assert(!"no transition layers here");return 0;}
+static void xt_canvas_end(void){assert(!"no transition layers here");}
 static void d3d_gl_bind_targets(d3d_device *d){(void)d;}
 static void d3d_gl_apply_state(d3d_device *d){(void)d;}
 static void bind_texture(d3d_device *d,int s,GLuint u){(void)d;(void)s;(void)u;}

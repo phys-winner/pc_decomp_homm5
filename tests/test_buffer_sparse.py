@@ -146,6 +146,12 @@ static void check_draw(GLsizei count,GLenum type,const void*indices,GLsizei inst
  ++draws;
 }
 static GLenum gl_mode(uint32_t p){return p;}
+/* port_battle_blur off (d3d9_gl.c transition layers): every draw goes to GL whole. */
+static int render_xt_blur;
+static void xt_uniforms_begin(void){assert(0);}
+static void xt_uniforms(int part){(void)part;assert(0);}
+static int xt_canvas_begin(d3d_device *d){(void)d;assert(0);return 0;}
+static void xt_canvas_end(void){assert(0);}
 static void glDrawElementsBaseVertex(GLenum mode,GLsizei n,GLenum type,const void*p,GLint base){assert(mode==4);check_draw(n,type,p,1,base);}
 static void glDrawRangeElementsBaseVertex(GLenum mode,GLuint lo,GLuint hi,GLsizei n,GLenum type,const void*p,GLint base){
  uint32_t minimum=UINT32_MAX,maximum=0;const uint8_t *data=gpu[element_bound].data+(uintptr_t)p;

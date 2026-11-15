@@ -61,7 +61,7 @@ public class GameActivity extends Context {
  private GameActivity(File assets,File own){super(assets,own);}
  private String gameEdition(){return edition;}private File gameFolder(){return folder;}
  private boolean isFinishing(){return finishing;}private boolean isDestroyed(){return destroyed;}
- private void runOnUiThread(Runnable body){ui.add(body);}private void chooseRenderer(){}
+ private void runOnUiThread(Runnable body){ui.add(body);}private File dxvkRuntime(){return null;}private void chooseRenderer(File runtime){}
  private void launchTiming(String event){}
  private void startGame(){started++;}private void finishLaunchDimming(String reason){dimEnds.add(reason);}
  private void toLauncher(){openedLauncher++;finishing=true;}

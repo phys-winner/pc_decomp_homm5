@@ -45,6 +45,8 @@ void void_touch_scale_pump(void);
 int void_touch_ui_pan(uint32_t screen, float dx, float dy);
 void void_touch_set_render_scale(float scale);
 void void_touch_render_pump(void);
+/* Closes the console shown on the current screen through the original ShowConsole pop. */
+void void_touch_console_close(void);
 
 /* Text operations retain the generation of the user-selected engine field. */
 void void_touch_text_arm(void);
@@ -86,6 +88,12 @@ int void_port_attack_hints(void);
 int void_port_combat_route(void);
 int void_port_filter(int ui);
 float void_port_sharpness(void);
+/* "Доп. графика" → "Эффекты" (all editions): full-detail adventure models (default on),
+   D3D9 fog on OpenGL ES (default on), smooth battle-entry blur (default off). */
+int void_port_lod_fix(void);
+int void_port_fog(void);
+int void_port_battle_blur(void);
+int void_port_fast_ai(void);
 void void_port_settings_pump(void);
 
 #endif

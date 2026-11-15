@@ -77,6 +77,9 @@ def build_mojo():
                          "__declspec(dllexport) char *probe_alpha_variant(const char *s, int m) { return alpha_test_source(s,m); }\n"
                          "__declspec(dllexport) int probe_alpha_mode(const uint32_t *s) { return alpha_test_mode(s); }\n"
                          "__declspec(dllexport) uint8_t *probe_ctab(const uint8_t *s, uint32_t n, int p, uint32_t *out) { return with_synthetic_ctab(s,n,p,out); }\n"
+                         # The engine's switch (android/host/shader_semantics.c): 0 as in 1.6/2.1, 1 as in ToE.
+                         "static int probe_texm;\nint void_mojoshader_texm_semantics(void) { return probe_texm; }\n"
+                         "__declspec(dllexport) void probe_set_texm(int on) { probe_texm = on; }\n"
                          "#include \"mojoshader.h\"\n"
                          "typedef struct { const uint8_t *bytecode,*parse_code; uint32_t size,parse_size; } d3d_shader;\n" +
                          function(host_source, "static char *pixel_source(") +
@@ -112,6 +115,8 @@ def build_mojo():
     lib.probe_typed_pixel.restype = C.c_void_p
     lib.probe_typed_pixel.argtypes = [C.c_void_p, C.c_uint, C.c_uint]
     lib.probe_free.argtypes = [C.c_void_p]
+    lib.probe_set_texm.argtypes = [C.c_int]
+    lib.probe_set_texm.restype = None
     return lib
 
 

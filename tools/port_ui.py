@@ -86,6 +86,12 @@ OPTIONS = (
      "Первый воин отделяется через 1 секунду, следующие — каждые 0,5 секунды. "
      "При отключении зон деление вторым пальцем остаётся доступным.",
      "Выкл.", "Вкл.", (0.0, 1.0), 1),
+    ("port_fast_ai", "port_fast_ai", "port_split_zones",
+     "Быстрый ход ИИ",
+     "Компьютерные игроки ходят быстрее на больших картах: оценивая цели, ИИ больше не сохраняет "
+     "заново таблицу имён объектов карты, копию которой игра тут же отбрасывает. Решения ИИ остаются "
+     "теми же. В сетевой игре всегда используется исходный способ.",
+     "Выкл.", "Вкл.", (0.0, 1.0), 1),
     ("port_combat_confirm", "port_combat_confirm", "port_split_zones",
      "Подтверждение приказов",
      "Касания и жесты выбирают перемещение, атаку или цель заклинания без расходования хода. "
@@ -120,7 +126,30 @@ OPTIONS = (
      "Для атаки с возвращением показываются два встречных направления. "
      "Работает независимо от подтверждения действий.",
      "Выкл.", "Вкл.", (0.0, 1.0), 1),
+    ("port_lod_fix", "port_lod_fix", "port_sharpness",
+     "Подробные модели на карте",
+     "Существа и герои на карте приключений рисуются полными моделями вместо упрощённых LOD-моделей "
+     "с ужатыми текстурами, которые игра 2006–2007 годов использовала для экономии памяти. "
+     "Действует после перезапуска игры.",
+     "Выкл.", "Вкл.", (0.0, 1.0), 1),
+    ("port_fog", "port_fog", "port_lod_fix",
+     "Туман",
+     "Туман Direct3D 9, который задают карты и движок: дымка вдали на карте приключений и в бою. "
+     "Действует при отрисовке OpenGL ES; DXVK рисует его сам.",
+     "Выкл.", "Вкл.", (0.0, 1.0), 1),
+    ("port_battle_blur", "port_battle_blur", "port_fog",
+     "Плавное размытие входа в бой",
+     "Сглаженный вариант эффекта размытия при переходе с карты в бой вместо исходного крупноблочного. "
+     "При выключении эффект остаётся исходным.",
+     "Выкл.", "Вкл.", (0.0, 1.0), 0),
 )
+
+# "Дополнительные" keeps the interface, network and touch controls; "Доп. графика" holds the
+# picture and the effects. Native battle mode disables page zero of a category as a unit, so
+# everything a player may change during a battle sits on page one of its category.
+GRAPHICS_PICTURE = ("port_render_scale", "port_fps_limit", "port_world_filter", "port_sharpness", "port_ui_filter")
+GRAPHICS_EFFECTS = ("port_lod_fix", "port_fog", "port_battle_blur")
+INTERFACE = ("port_ui_scale", "port_lan_vpn", "port_console")
 
 # Native numeric comboboxes store an item index; fractional scales need scrollers.
 # The frame rate uses the original resolution widget's string-value path.
@@ -128,6 +157,7 @@ KINDS = {"port_fps_limit": "rates",
          "port_touch_cursor": "check", "port_lan_vpn": "check", "port_console": "check", "port_combat_fit": "check",
          "port_split_hints": "check", "port_split_zones": "check",
          "port_combat_confirm": "check", "port_attack_hints": "check", "port_combat_route": "check",
+         "port_lod_fix": "check", "port_fog": "check", "port_battle_blur": "check", "port_fast_ai": "check",
          "port_world_filter": "combo", "port_ui_filter": "combo"}
 COMBO_TEMPLATE = "UI/GameOptions/Templates/ComboBox/Combo.(WindowComboBox).xdb"
 
@@ -205,25 +235,36 @@ def patch_uiconsts(data, edition="toe"):
         if f"<ID>{option[0]}</ID>".encode() in data:
             raise ValueError(f"uiconsts already has {option[0]}")
     end = data.index(b"</Categories>", data.index(b"<GameOptions>"))
-    category = b'''<Item>
-      <ID>port_additional</ID>
-      <MenuButtonNameFileRef href="Consts/GameOptions/PortAdditional.txt"/>
-      <NameFileRef href="Consts/GameOptions/PortAdditional.txt"/>
-      <TooltipFileRef href="Consts/GameOptions/PortAdditionalTooltip.txt"/>
-      <Pages>'''
-    # The native template lays out two pages; the network switch closes the controls page.
-    # The original battle menu disables its whole first page, including an input blocker.
-    # Battlefield controls belong to the second page so render restrictions stay intact.
-    graphics = {"port_render_scale", "port_ui_scale", "port_fps_limit", "port_world_filter", "port_ui_filter", "port_sharpness", "port_combat_fit"}
-    pages = [("port_video", "PortVideo", [o for o in edition_options if o[0] in graphics]),
-             ("port_controls", "PortControls", [o for o in edition_options if o[0] not in graphics])]
-    for identifier, name, page in pages:
-        category += (f'<Item><ID>{identifier}</ID><NameFileRef href="Consts/GameOptions/{name}.txt"/>'
-                     '<TooltipFileRef href="Consts/GameOptions/PortAdditionalTooltip.txt"/><Options>').encode()
-        category += b"".join(option_xml(option, kind=KINDS.get(option[0], "scroller")) for option in page)
-        category += b"</Options></Item>"
-    category += b"</Pages><Enabled>true</Enabled></Item>"
-    data = data[:end] + category + data[end:]
+    # The native template lays out two pages (columns) per category. The original battle
+    # menu disables its whole first page, including an input blocker, so battlefield
+    # controls and effects belong to the second pages; render restrictions stay intact.
+    graphics = set(GRAPHICS_PICTURE) | set(GRAPHICS_EFFECTS)
+    picture = {o[0]: o for o in edition_options if o[0] in GRAPHICS_PICTURE}
+    effects = {o[0]: o for o in edition_options if o[0] in GRAPHICS_EFFECTS}
+    categories = (
+        ("port_additional", "PortAdditional", "PortAdditionalTooltip",
+         [("port_interface", "PortInterface", [o for o in edition_options if o[0] in INTERFACE]),
+          ("port_controls", "PortControls", [o for o in edition_options
+                                             if o[0] not in graphics and o[0] not in INTERFACE])]),
+        ("port_graphics", "PortGraphics", "PortGraphicsTooltip",
+         [("port_video", "PortVideo", [picture[name] for name in GRAPHICS_PICTURE if name in picture]),
+          ("port_effects", "PortEffects", [effects[name] for name in GRAPHICS_EFFECTS if name in effects])]),
+    )
+    block = b""
+    for category_id, name, tooltip, pages in categories:
+        block += (f'''<Item>
+      <ID>{category_id}</ID>
+      <MenuButtonNameFileRef href="Consts/GameOptions/{name}.txt"/>
+      <NameFileRef href="Consts/GameOptions/{name}.txt"/>
+      <TooltipFileRef href="Consts/GameOptions/{tooltip}.txt"/>
+      <Pages>''').encode()
+        for identifier, page_name, page in pages:
+            block += (f'<Item><ID>{identifier}</ID><NameFileRef href="Consts/GameOptions/{page_name}.txt"/>'
+                      f'<TooltipFileRef href="Consts/GameOptions/{tooltip}.txt"/><Options>').encode()
+            block += b"".join(option_xml(option, kind=KINDS.get(option[0], "scroller")) for option in page)
+            block += b"</Options></Item>"
+        block += b"</Pages><Enabled>true</Enabled></Item>"
+    data = data[:end] + block + data[end:]
     # The tooltip delay's Standard value: instant (item 0, value 0).
     at = data.find(b"<ID>tooltip_delay</ID>")
     default = re.compile(rb"<DefaultValue1>\d+</DefaultValue1>")
@@ -245,9 +286,14 @@ def combo_rows(game_dir, edition="toe"):
 
 def texts(edition="toe"):
     out = {f"UI/{TEXTS}/PortAdditional.txt": utf16("Дополнительные"),
-           f"UI/{TEXTS}/PortVideo.txt": utf16("Изображение"),
-           f"UI/{TEXTS}/PortControls.txt": utf16("Управление и сеть"),
+           f"UI/{TEXTS}/PortInterface.txt": utf16("Интерфейс и сеть"),
+           f"UI/{TEXTS}/PortControls.txt": utf16("Управление"),
            f"UI/{TEXTS}/PortAdditionalTooltip.txt": utf16("Настройки Android-порта и переход в лаунчер."),
+           f"UI/{TEXTS}/PortGraphics.txt": utf16("Доп. графика"),
+           f"UI/{TEXTS}/PortVideo.txt": utf16("Изображение"),
+           f"UI/{TEXTS}/PortEffects.txt": utf16("Эффекты"),
+           f"UI/{TEXTS}/PortGraphicsTooltip.txt": utf16("Графика Android-порта: масштаб и фильтры изображения, "
+                                                       "частота кадров и эффекты движка."),
            "UI/PortLauncher.txt": utf16("В лаунчер"),
            "UI/PortLauncherTooltip.txt": utf16("Завершить игру и открыть лаунчер. Сначала сохраните игру."),
            "UI/PortSkipHints.txt": utf16("Пропустить все подсказки"),
@@ -423,7 +469,7 @@ def launcher_buttons(game_dir, edition="toe"):
         "UI/PortLauncher.(UISDirectRunReaction).xdb"].replace(b"PortLauncher", b"PortSkipHints")
     members["UI/PortSkipHints.(ARSendGameMessage).xdb"] = members[
         "UI/PortLauncher.(ARSendGameMessage).xdb"].replace(b"port_launcher", b"port_skip_hints")
-    # One more category needs one more row above the original menu buttons.
+    # Two added categories need two rows; the engine positions them above these anchors.
     menu_rows = ("MenuPanel.(WindowSimple).xdb", "Template.(WindowMSButton).xdb",
                  "Back.(WindowMSButton).xdb")
     if edition in ("toe", "vanilla"):
@@ -434,16 +480,17 @@ def launcher_buttons(game_dir, edition="toe"):
         window = ET.fromstring(original)
         field = "Size" if name.startswith("MenuPanel.") else "Position"
         y = window.find(f"Placement/{field}/First/y")
-        y.text = str(int(y.text) + 40)
+        y.text = "327" if field == "Size" else str(int(y.text) + 80)
         members[path] = ET.tostring(window, encoding="utf-8", xml_declaration=True)
     path = "UI/GameOptions/MenuPanel.(WindowSimpleShared).xdb"
     original, _ = source_resource(game_dir, path, edition)
     shared = ET.fromstring(original)
     shared.find("Background").set("href", "PortMenu.(BackgroundSimpleScallingTexture).xdb#xpointer(/BackgroundSimpleScallingTexture)")
     members[path] = ET.tostring(shared, encoding="utf-8", xml_declaration=True)
-    members["UI/GameOptions/PortMenu.(BackgroundSimpleScallingTexture).xdb"] = b'''<BackgroundSimpleScallingTexture>
-      <ClassTypeID>285694784</ClassTypeID><Texture href="MenuPanel.(Texture).xdb#xpointer(/Texture)"/>
-      <Color>-1</Color><Size><x>328</x><y>240</y></Size></BackgroundSimpleScallingTexture>'''
+    texture = "/UI/MainMenu2/" + ("SelectCampaign/MenuPanel" if edition == "hof" else "SinglePlayer/SinglePlayerBack")
+    members["UI/GameOptions/PortMenu.(BackgroundSimpleScallingTexture).xdb"] = f'''<BackgroundSimpleScallingTexture>
+      <ClassTypeID>285694784</ClassTypeID><Texture href="{texture}.(Texture).xdb#xpointer(/Texture)"/>
+      <Color>-1</Color><Size><x>328</x><y>{506 if edition == "hof" else 327}</y></Size></BackgroundSimpleScallingTexture>'''.encode()
     return members
 
 

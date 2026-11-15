@@ -594,9 +594,23 @@ int main(void) {
         assert(console_open_request.screen==mock_screen&&console_actions==6);
         mock_now_ns+=1000000001ull;void_touch_ui_pump();
         assert(!console_open_request.screen&&console_actions==6&&!console_visible);
+        /* 1.6/2.1 relayouts (render or UI scale) close a shown console first, as ToE's original
+           resize does: re-laid at its base place it stayed pushed off the screen, and the next
+           gear hold only closed it unseen. */
+        console_focus=1;event(TOUCH_CONSOLE_TOGGLE,0,0);
+        assert(console_actions==7&&console_visible&&void_touch_text_focus(&text_field,&text_kind,&text_epoch));
+        void_touch_console_close();
+        assert(console_hides==4&&!console_visible&&!void_touch_text_focus(&text_field,&text_kind,&text_epoch));
+        void_touch_console_close();assert(console_hides==4&&console_actions==7);   /* none shown: no pop */
+        console_focus=0;focused_field=0;event(TOUCH_CONSOLE_TOGGLE,0,0);
+        assert(console_open_request.screen==mock_screen&&console_actions==8);
+        void_touch_console_close();assert(!console_open_request.screen&&console_hides==4);
+        void_touch_frame_presented();void_touch_ui_pump();assert(console_actions==8);
+        console_focus=1;event(TOUCH_CONSOLE_TOGGLE,0,0);assert(console_actions==9&&console_visible);
+        event(TOUCH_CONSOLE_TOGGLE,0,0);assert(console_hides==5&&!console_visible);
         console_enabled=0;
         event(TOUCH_BEGIN,100,200);event(TOUCH_TAP,100,200);event(TOUCH_END,100,200);
-        assert(console_actions==6&&console_hides==3&&downs==1&&ups==1);
+        assert(console_actions==9&&console_hides==5&&downs==1&&ups==1);
     }
     reset(1);console_enabled=1;console_actions=0;
     event(TOUCH_BEGIN,100,200);event(TOUCH_HOLD_BEGIN,100,200);event(TOUCH_END,100,200);

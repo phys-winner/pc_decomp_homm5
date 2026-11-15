@@ -64,6 +64,16 @@ public final class LauncherHooks implements PortHooks {
     static final String[] OLD_FILES = {"game-started", "game-started-vanilla", "game-started-hof", "renderer.properties",
         "renderer.properties.tmp", "renderer-probe.txt", "renderer-probe.part", "renderer-probe.stage"};
 
+    /** The DXVK/Turnip runtime travels packed (DxvkRuntime): the launcher counts it as carried. */
+    @Override public java.util.Set<String> packedLibraries(Context context) { return DxvkRuntime.packed(context); }
+
+    /** The Turnip check's folder (in the launcher's ":probe" process): DxvkRuntime.forCheck. */
+    @Override public File checkLibraries(Context context, String mode, java.util.List<String> libraries) throws java.io.IOException {
+        return DxvkRuntime.forCheck(context, libraries);
+    }
+
+    @Override public void checkedLibraries(Context context, String mode, File folder) { DxvkRuntime.checked(context, folder); }
+
     @Override public void migrate(Context context) {
         keepCurrentTask(context);
         SharedPreferences old = context.getSharedPreferences(OLD_PREFERENCES, Context.MODE_PRIVATE);

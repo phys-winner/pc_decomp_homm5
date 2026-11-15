@@ -15,6 +15,7 @@ import build_android
 import build_windows
 import port_patches
 import prepare_windows_runtime
+from editions import generated_root
 
 
 BOOK_MAIN = r'''
@@ -82,7 +83,7 @@ static int void_vm_writable(uint32_t a,uint32_t n) { return void_vm_readable(a,n
 
 
 def generated_body(edition, address):
-    directory = ROOT / 'generated' / edition / 'game-x86'
+    directory = generated_root(edition) / 'game-x86'
     report = json.loads((directory / 'report.json').read_text())
     entries = [int(value, 0) for value in report['dispatch_entries']]
     path = directory / report['sources'][entries.index(address) // 100]

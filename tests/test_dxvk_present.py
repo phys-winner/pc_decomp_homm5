@@ -140,7 +140,7 @@ int main(){
     def test_game_hwnd_and_android_surface(self):
         source = (ROOT / "android/dxvk/bridge.cpp").read_text(encoding="utf-8")
         helpers = "\n".join(function(source, name) for name in
-                            ("RECT aspect_destination(", "uint32_t present(Context &c)"))
+                            ("RECT aspect_destination(", "uint32_t present(Context &c"))
         compile_probe("dxvk-present", HARNESS, {"present.h": helpers},
                       extra_flags=("/TP", "/EHsc", "/wd4189"))
 

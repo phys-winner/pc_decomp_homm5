@@ -1,4 +1,4 @@
-/* Tribes of the East's DXVK renderers. With the launcher's "DXVK (Vulkan)" or "DXVK (Turnip)"
+/* The DXVK renderers of all three editions. With the launcher's "DXVK (Vulkan)" or "DXVK (Turnip)"
  * (Renderers.java; GameActivity.nativeRenderer before the engine starts), Direct3DCreate9
  * (d3d9_device.c) hands the game DXVK's IDirect3D9 instead of the GLES one. DXVK runs natively in
  * libdxvk_d3d9.so through libh5dxvk.so (android/dxvk), both from the APK's native library
@@ -13,6 +13,13 @@
 #include "dxvk.h"
 #include "input.h"
 #include "touch.h"
+
+/* Every APK engine carries the DXVK side (2026-11-14); it starts only when the launcher chose a
+ * DXVK mode and the APK has libh5dxvk.so (tools/build_game_apk.py), else OpenGL ES renders.
+ * -DHOMM5_NO_DXVK keeps the stubs below. */
+#if !defined(HOMM5_DXVK) && !defined(HOMM5_NO_DXVK)
+#define HOMM5_DXVK 1
+#endif
 
 #if defined(VOID_ANDROID_APP) && defined(HOMM5_DXVK)
 #include <dlfcn.h>
@@ -161,14 +168,19 @@ static void dxvk_frame_pace(void)
     frame_deadline_ns = now >= frame_deadline_ns + period ? now + period : frame_deadline_ns + period;
 }
 
-/* A pending occlusion query polled with D3DGETDATA_FLUSH: after 8 polls let the other guest
- * threads (and DXVK's workers) run before the next one; results pass through unchanged. */
+/* A pending query polled with D3DGETDATA_FLUSH: after 8 polls the game's thread sleeps 50 us
+ * before the next one with the machine released, as the GLES renderer's query_pending_result does
+ * (d3d9_resource.c). The menu spun 120,000 event polls a frame through DXVK while the GPU drew
+ * (2026-11-14); results pass through unchanged. */
 static void dxvk_query_wait(uint32_t result, uint32_t flags)
 {
     static _Thread_local unsigned pending;
     if (result != 1u || !(flags & 1u)) { pending = 0; return; }
     if (pending < 8) { ++pending; return; }
-    if (recomp_yield_hook) recomp_yield_hook();
+    struct timespec delay = { 0, 50000 };
+    void_blocking_begin();
+    while (nanosleep(&delay, &delay) && errno == EINTR) {}
+    void_blocking_end();
 }
 
 static uint32_t dxvk_create_device(dxvk_object *object, const uint32_t *args)
@@ -189,13 +201,40 @@ static uint32_t dxvk_create_device(dxvk_object *object, const uint32_t *args)
     return hr;
 }
 
+/* Every 5 s, as the GLES renderer's "[gl] frame" line: the game's thread per frame (wall, its CPU
+ * time, the machine wait), DXVK's Present call and the frame limit's sleep. */
+static uint64_t present_ns, pace_ns;
+static void dxvk_frame_stats(void)
+{
+    static uint64_t start, cpu_start, wait_start, present_start, pace_start;
+    static uint32_t frame_start;
+    struct timespec cpu_now;
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpu_now);
+    uint64_t now = void_monotonic_ns(), cpu = (uint64_t)cpu_now.tv_sec * 1000000000ull + (uint64_t)cpu_now.tv_nsec;
+    uint64_t wait = void_lock_wait_ns();
+    uint32_t frames = shadow.frame - frame_start;
+    if (start && now - start < 5000000000ull && frames < 600) return;
+    if (start && frames)
+        void_log("[dxvk] frame %u: %.1f fps; per frame %.2f ms wall, %.2f ms cpu, %.2f ms machine wait, %.2f ms Present, %.2f ms limit",
+                 shadow.frame, frames * 1e9 / (double)(now - start), (double)(now - start) / 1e6 / frames,
+                 (double)(cpu - cpu_start) / 1e6 / frames, (double)(wait - wait_start) / 1e6 / frames,
+                 (double)(present_ns - present_start) / 1e6 / frames, (double)(pace_ns - pace_start) / 1e6 / frames);
+    start = now; cpu_start = cpu; wait_start = wait; present_start = present_ns; pace_start = pace_ns;
+    frame_start = shadow.frame;
+}
+
 static uint32_t dxvk_present(dxvk_object *object, unsigned kind, unsigned slot, const uint32_t *args)
 {
     dxvk_wait_window("present");
+    uint64_t begin = void_monotonic_ns();
     uint32_t hr = bridge->call(kind, object->native, slot, args);
+    uint64_t presented = void_monotonic_ns();
+    present_ns += presented - begin;
     ++shadow.frame;
     void_touch_frame_presented();
     dxvk_frame_pace();
+    pace_ns += void_monotonic_ns() - presented;
+    dxvk_frame_stats();
     if (recomp_yield_hook) recomp_yield_hook();
     return hr;
 }
@@ -259,6 +298,40 @@ static int dxvk_open(void)
     return 1;
 }
 
+/* /sdcard/HeroesV/dxvk.env beside dxvk.conf (`conf` names that file; its name changes here):
+ * NAME=VALUE lines for DXVK's, Mesa Turnip's and the bridge's variables (DXVK_*, TU_*, FD_*,
+ * IR3_*, MESA_*, VOID_DXVK_*), set before DXVK and the driver load; '#' starts a comment. For
+ * testing a Turnip or DXVK option (TU_DEBUG=sysmem, DXVK_HUD=fps) without another build. */
+static void dxvk_variables(char *conf)
+{
+    static const char *const prefixes[] = {"DXVK_", "TU_", "FD_", "IR3_", "MESA_", "VOID_DXVK_"};
+    if (!conf) return;
+    size_t length = strlen(conf);
+    if (length < 5 || strcmp(conf + length - 5, ".conf")) return;
+    snprintf(conf + length - 5, 6, ".env");
+    FILE *in = fopen(conf, "r");
+    if (!in) return;
+    char line[512];
+    while (fgets(line, sizeof line, in)) {
+        char *end = line + strcspn(line, "\r\n#");
+        *end = 0;
+        while (end > line && (end[-1] == ' ' || end[-1] == '\t')) *--end = 0;
+        char *name = line + strspn(line, " \t"), *equals = strchr(name, '=');
+        if (!equals || equals == name) continue;
+        *equals = 0;
+        int allowed = 0;
+        for (size_t i = 0; i < sizeof prefixes / sizeof *prefixes; ++i)
+            if (!strncmp(name, prefixes[i], strlen(prefixes[i]))) allowed = 1;
+        if (!allowed || strspn(name, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_") != strlen(name)) {
+            void_log("[dxvk] %s: %s is not a DXVK/Turnip variable, ignored", conf, name);
+            continue;
+        }
+        setenv(name, equals + 1, 1);
+        void_log("[dxvk] %s: %s=%s", conf, name, equals + 1);
+    }
+    fclose(in);
+}
+
 /* DXVK's log goes beside homm5.log, its pipeline state cache and configuration into the app
  * cache. The configuration starts with the port's defaults and ends with the player's
  * /sdcard/HeroesV/dxvk.conf, if any (later lines win): the 1 GiB of texture memory the GLES
@@ -293,6 +366,7 @@ static void dxvk_environment(void)
     setenv("DXVK_LOG_LEVEL", void_verbose ? "info" : "warn", 1);
     setenv("DXVK_WSI_DRIVER", "Android", 1);
     setenv("DXVK_FORCE_WINDOWED", "1", 1);
+    dxvk_variables(slash ? user : NULL);
 }
 
 uint32_t void_dxvk_create9(uint32_t sdk)

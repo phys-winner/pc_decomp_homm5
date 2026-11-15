@@ -84,6 +84,8 @@ void void_touch_legacy_root_rect(uint32_t root, uint32_t destination)
 
 void void_touch_legacy_relayout(void)
 {
+    /* As ToE's original resize/relayout: a shown console would stay pushed, laid out off the screen. */
+    void_touch_console_close();
     uint32_t interface = void_call_guest(0x008385A0u, 0, NULL, 1), seen[64];
     unsigned count = 0;
     if (!viewport_scratch) viewport_scratch = void_galloc(16);
@@ -497,11 +499,8 @@ static int scale_fits(uint32_t root, int anchor, float width, float height, floa
     /* Both ends of the combat HUD must fit together, not merely on their own. */
     if (pass.combat_left > 0 && pass.combat_right > 0)
         pass.need_w = fmaxf(pass.need_w, pass.combat_left + pass.combat_right);
-#ifdef HOMM5_LEGACY_UI
-    if (anchor && pass.stacks && scale_read32(viewport.screen) == 0x00E1DA84u)
-#else
+    /* The enlarged HUD is compensated as soon as it is measured, before stack labels appear. */
     if (anchor && scale_read32(viewport.screen) == 0x00E1DA84u)
-#endif
         void_touch_combat_frame(viewport.screen, width, height, pass.hud_top, pass.stack_top, pass.stack_bottom);
     if (anchor && scale_read32(viewport.screen) == 0x00E230E4u)
         void_touch_adventure_frame(viewport.screen, height, pass.map_army ? pass.map_top : 0,

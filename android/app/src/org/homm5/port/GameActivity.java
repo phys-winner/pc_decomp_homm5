@@ -82,8 +82,8 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private static native void nativeNewCreatureFramework(boolean enabled);
     private static native void nativeRefreshRates(float[] rates);
     private static native void nativeLanPeers(String peers);
-    /** Tribes of the East's renderer (android/host/d3d9_dxvk.c): 0 OpenGL ES, 1 DXVK, 2 DXVK on Turnip
-     *  (android/dxvk/bridge_abi.h). */
+    /** The renderer of every edition's engine (android/host/d3d9_dxvk.c): 0 OpenGL ES, 1 DXVK, 2 DXVK on
+     *  Turnip (android/dxvk/bridge_abi.h). */
     private static native void nativeRenderer(int mode, String libraryDir, String cacheDir);
     /** The mode the session renders with once Direct3D was created (-1 before; 0 OpenGL ES). */
     private static native int nativeRendererActive();
@@ -149,8 +149,10 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private float loadingShown;
     private boolean nativeReady;
     private boolean resumed;
-    /* DXVK keeps one surface for the activity's life and hands it back on onStart (surfaceHidden). */
+    /* DXVK keeps one surface for the activity's life: hidden from the game on pause, handed back on resume. */
     private String renderer = GLES;
+    /** The DXVK runtime's folder for this start (DxvkRuntime.install); null: OpenGL ES. */
+    private File dxvkRuntime;
     private boolean surfaceHidden;
     private long launchStarted;
     private long launchDimStarted;
@@ -191,10 +193,11 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                 Assets.verifyOriginals(this, originals, gameEdition(), allowUnsupported);
                 NativeLibrary.load(this, Games.library(gameEdition()));
                 launchTiming("library-ready");
+                final File runtime = dxvkRuntime();
                 runOnUiThread(() -> {
                     if (isFinishing() || isDestroyed()) return;
                     nativeReady = true;
-                    chooseRenderer();
+                    chooseRenderer(runtime);
                     startGame();
                 });
             } catch (Assets.UnsupportedOriginalException e) {
@@ -262,9 +265,30 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
 
     /* ------------------------------------------------------------ renderer */
 
-    /** Ignore renderer choices saved by older launchers. */
-    private void chooseRenderer() {
-        renderer = GLES;
+    /** The launcher's renderer for this start (port.json "renderers": gles, dxvk, turnip), the same
+     *  in every edition. A DXVK mode needs Android 11 (the surface lifecycle and adrenotools) and the
+     *  APK's DXVK runtime, installed for it (dxvkRuntime); without them, and when DXVK cannot start
+     *  (d3d9_dxvk.c), OpenGL ES renders. */
+    private void chooseRenderer(File runtime) {
+        String chosen = launch != null ? launch.renderer() : null;
+        boolean dxvk = "dxvk".equals(chosen) || "turnip".equals(chosen);
+        renderer = dxvk && Build.VERSION.SDK_INT >= 30 && runtime != null ? chosen : GLES;
+        dxvkRuntime = GLES.equals(renderer) ? null : runtime;
+    }
+
+    /** On the library thread: the DXVK runtime when the launcher chose a DXVK mode, installed from
+     *  the APK's packed copy on the first such start of a build (DxvkRuntime); null otherwise or
+     *  when it cannot be installed (OpenGL ES then renders, and the log says why). */
+    private File dxvkRuntime() {
+        String chosen = launch != null ? launch.renderer() : null;
+        if (!("dxvk".equals(chosen) || "turnip".equals(chosen)) || Build.VERSION.SDK_INT < 30 || !DxvkRuntime.available(this))
+            return null;
+        try {
+            return DxvkRuntime.install(this);
+        } catch (java.io.IOException | UnsatisfiedLinkError | SecurityException e) {
+            android.util.Log.w("HeroesV", "DXVK runtime unavailable, OpenGL ES renders: " + e);
+            return null;
+        }
     }
 
     /** android/dxvk/bridge_abi.h: HOMM5_RENDERER_GLES / _DXVK / _TURNIP. */
@@ -354,9 +378,9 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         nativeRefreshRates(displayRefreshRates());
         /* Tailscale/VPN players for the LAN search, used with the game's option (network.c). */
         nativeLanPeers(option("lan_peers"));
-        /* So is the DXVK renderer (android/host/d3d9_dxvk.c): its libraries were extracted with the APK. */
-        if (!GLES.equals(renderer)) {
-            nativeRenderer(nativeMode(renderer), getApplicationInfo().nativeLibraryDir, getCacheDir().getAbsolutePath());
+        /* So is the DXVK renderer (android/host/d3d9_dxvk.c): its libraries in the folder DxvkRuntime installed. */
+        if (!GLES.equals(renderer) && dxvkRuntime != null) {
+            nativeRenderer(nativeMode(renderer), dxvkRuntime.getAbsolutePath(), getCacheDir().getAbsolutePath());
             android.util.Log.i("HeroesV", "renderer " + renderer);
         }
         android.util.Log.i("HeroesV", "game " + gameDir + ", images " + images + ", overlay " + overlay);
@@ -589,23 +613,28 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         surfaceHidden = false;
     }
 
-    /* DXVK modes: the surface outlives onStop (SURFACE_LIFECYCLE_FOLLOWS_ATTACHMENT), so the game
-       is told it is gone, waits in its present as without a surface, and gets the same window back. */
-    @Override protected void onStop() {
+    /* DXVK modes: the game is told the surface is gone when the activity pauses, while its window is
+       still on screen, and waits in its present as without a surface; it gets the same window back on
+       resume, or the new one in surfaceCreated. Waiting for onStop or surfaceDestroyed was too late:
+       on Home the window is already invisible then, a DXVK present into it never got a buffer back,
+       and the game stayed black after resume (Hammers of Fate, the Adreno 650 test phone, 2026-11-15). */
+    private void hideDxvkSurface() {
         if (nativeReady && surface != null && dxvkSurface() && !surfaceHidden) {
             surfaceHidden = true;
-            releaseAll();
             nativeSurface(null);
         }
-        super.onStop();
     }
 
-    @Override protected void onStart() {
-        super.onStart();
+    private void showDxvkSurface() {
         if (surfaceHidden && surface != null && surface.getHolder().getSurface().isValid()) {
             surfaceHidden = false;
             nativeSurface(surface.getHolder().getSurface());
         }
+    }
+
+    @Override protected void onStop() {
+        hideDxvkSurface();
+        super.onStop();
     }
 
     @Override protected void onPause() {
@@ -615,6 +644,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         if (cheatDialog != null) cheatDialog.dismiss();
         releaseAll();
         if (nativeReady) nativePause(true);
+        hideDxvkSurface();
         if (lanLock != null && lanLock.isHeld()) lanLock.release();
         super.onPause();
     }
@@ -624,6 +654,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         resumed = true;
         if (combatOverlay != null) combatOverlay.setRunning(true);
         if (nativeReady) nativePause(false);
+        showDxvkSurface();
         showNextTouchHint();
         requestHighRefresh();
         if (lanLock != null && !lanLock.isHeld()) lanLock.acquire();

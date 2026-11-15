@@ -11,7 +11,7 @@ from android_tools import TOOLCHAIN
 
 def fixture():
     source = (ROOT / "android/host/d3d9_gl.c").read_text(encoding="utf-8")
-    start = source.index("typedef struct { GLuint tex; GLenum target; GLint level, layer; } fb_attachment;")
+    start = source.index("typedef struct { GLuint tex; GLenum target; GLint level, layer; GLsizei samples; } fb_attachment;")
     stop = source.index("void d3d_gl_forget_texture(", start)
     helpers = source[source.index("/* Dedicated CPU-only capture;"):
                      source.index("/* ------------------------------------------------------------ attributes */")]
@@ -20,7 +20,10 @@ def fixture():
             .replace("/* ACTUAL_DEPTH_POINT */", function(source, "static GLenum depth_attachment("))
             .replace("/* ACTUAL_FORGET */", function(source, "void d3d_gl_forget_texture("))
             .replace("/* ACTUAL_TARGETS */", "static void ui_prepare_depth(d3d_device *d) { (void)d; }\n"
-                     "static d3d_surface *ui_surface(d3d_device *d,d3d_surface *s) { (void)d;return s; }\n" +
+                     "static d3d_surface *ui_surface(d3d_device *d,d3d_surface *s) { (void)d;return s; }\n"
+                     "static int xt_targets(d3d_device *d,fb_attachment *c,fb_attachment *z,GLenum *p) "
+                     "{ (void)d;(void)c;(void)z;(void)p;return 0; }\n"
+                     "static int render_xt_blur;\nstatic void xt_canvas_resolve(void) {}\n" +
                      function(source, "void d3d_gl_bind_targets("))
             .replace("/* ACTUAL_HELPERS */", helpers))
 

@@ -27,10 +27,14 @@ static uint32_t args[5],last_error;
 #define __ATOMIC_RELEASE 3
 #define __atomic_load_n(p, order) (*(p))
 #define __atomic_store_n(p, value, order) (*(p) = (value))
-static int archive_cache_disabled;
+static int archive_cache_disabled,folder_cache_off;
 #define ARCHIVE_READ_AHEAD 65536u
+#ifndef S_ISREG
+#define S_ISREG(m) (((m)&_S_IFMT)==_S_IFREG)
+#endif
 /* ACTUAL_PERF_KINDS */
 /* ACTUAL_MAPPING_TYPE */
+/* ACTUAL_USER_VIEW */
 typedef struct { void *data; } void_object;
 static mapping_t mapping;
 static void_object object={&mapping};
@@ -215,6 +219,17 @@ int main(void) {
     assert(perf_bytes==(16u<<20)+1&&!memcmp(view,file_bytes,sizeof file_bytes));
     args[0]=0x10000;assert(UnmapViewOfFile_impl()==1);
     assert(dup_calls==close_calls&&dup_fd<0);
+    /* A profile or save file: a read-only view over 1 MiB inside the file is mapped, not read
+       (the save lists map whole saves to read their headers). */
+    mapping.user_data=1;allocs=alloc_calls;before=backend_calls;
+    args[0]=0x6000;args[1]=FILE_MAP_READ;args[2]=0;args[3]=0;args[4]=(1u<<20)+1;
+    assert(MapViewOfFile_impl()==0x10000&&backend_calls==before+1&&alloc_calls==allocs&&!seen_writable&&seen_shared);
+    assert(!memcmp(view,file_bytes,sizeof file_bytes));args[0]=0x10000;assert(UnmapViewOfFile_impl()==1);
+    read_view(FILE_MAP_READ,0,1u<<20,1u<<20,0);                     /* up to 1 MiB: read as before */
+    folder_cache_off=1;read_view(FILE_MAP_READ,0,(1u<<20)+1,(1u<<20)+1,0);folder_cache_off=0;   /* A/B switch */
+    assert(_chsize_s(fd,(1<<20)+65536)==0);                           /* a view past the end of the file */
+    read_view(FILE_MAP_READ,0,(1u<<20)+131072,(1u<<20)+131072,1);
+    assert(_chsize_s(fd,(16<<20)+65536)==0);mapping.user_data=0;
     /* Cache allocation failure retains the original copied view. */
     mapping=(mapping_t){fd,sizeof file_bytes,PAGE_READONLY,1,122};fail_cache_alloc=1;
     args[0]=0x6000;args[1]=FILE_MAP_READ;args[2]=0;args[3]=0;args[4]=1024;
@@ -275,10 +290,12 @@ class FileMappingTest(unittest.TestCase):
         host=(ROOT/"android/host/host.h").read_text(encoding="utf-8")
         perf_kinds=re.search(r"enum \{\s*VOID_PERF_FILE_OPEN\b.*?\};",host,re.S).group()
         mapping_type=re.search(r"typedef struct \{[^{}]*\} mapping_t;",text).group()
+        user_view=text[text.index("#define USER_VIEW_MAPPED"):text.index("static void mapping_destroy(")]
         code=body(text,"WINAPI_EXPORT(K32, MapViewOfFile,")+body(text,"WINAPI_EXPORT(K32, UnmapViewOfFile,")
         code+=body(text,"static void mapping_destroy(").replace("free(m->cached)","counted_free(m->cached)")
         path=json.dumps(str(ROOT/"build/tests/file_mapping/mapped-save.bin"))
         fixture=(HARNESS.replace("/* ACTUAL_PERF_KINDS */",perf_kinds).replace("/* ACTUAL_MAPPING_TYPE */",mapping_type)
+                 .replace("/* ACTUAL_USER_VIEW */",user_view)
                  .replace("/* ACTUAL_BODIES */",code).replace("FIXTURE_PATH",path))
         compile_probe("file_mapping",fixture,{})
         for name,old,new in (

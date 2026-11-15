@@ -51,7 +51,10 @@
       "tools/build_android.py"
     ],
     "shadows": [
-      "android/host/d3d9_shader.c"
+      "android/host/d3d9_shader.c",
+      "android/host/shadow_fit.c",
+      "android/host/shadow_fit.h",
+      "android/host/shader_semantics.c"
     ],
     "alpha_test": [
       "android/host/d3d9_shader.c",
@@ -124,59 +127,66 @@
       "android/host/curves_native.c",
       "android/host/skin_math_native.c",
       "android/host/object_refs_native.c",
-      "android/host/native_mode.h"
+      "android/host/native_mode.h",
+      "android/host/vertex_native.c",
+      "android/host/dilate_native.c",
+      "android/host/zlib_deflate_native.c",
+      "android/host/zlib_deflate_native.h",
+      "android/host/ai_turn_native.c",
+      "android/host/ai_names_native.c",
+      "android/host/ai_undo_native.c"
     ]
   },
   "sources": {
-    "android/app/src/org/homm5/port/GameActivity.java": "477f6d407d030202dffab6b091245619f790e973891ef68d3f6d7cfd629eda92",
+    "android/app/src/org/homm5/port/GameActivity.java": "0e756c4f9a3e52da569f1b00100cb0397c4bd8d13528c4a59a3715f7e2bd651d",
     "android/app/src/org/homm5/port/Games.java": "8c7f15083a3f2fa177c51e3edf22dea5c5c9239c21fc2daf8e097fd79116142f",
-    "android/app/src/org/homm5/port/LauncherHooks.java": "602f10467ca4e36292aa83b6dbe81f7f94430216e86a57d1c2b727804ea75b5f",
+    "android/app/src/org/homm5/port/LauncherHooks.java": "f38616e845f6a21e960d9bad096459ec12c8ab5223781491ebbad0b20aff982c",
     "android/app/src/org/homm5/port/Textures.java": "b162fd061c21dd25eb9d5f9417eaacfa95d5e5310e2af4beb4a1b83e049a5522",
-    "android/host/android_main.c": "cb6d438fe4592c03808a8fa4f8dd4369759c238abca3f430cad506c1ca69afe6",
+    "android/host/android_main.c": "a887757745b32f58ec5ad0e0de2760954a769cadd579976984d1db935d43a7b0",
     "android/host/cutscene.c": "da9cfd2e11f58534b57d575f515dc78d0503d94ab73492d4bef522e28aaf571d",
-    "android/host/d3d9_device.c": "1785334ef4aae558ad50efee3a142f682ef51fd7fbdfededf7f97241618361da",
-    "android/host/d3d9_ff.c": "547f8d3eb562988ddaad98fed1da1e1d8c106b28a97f971edc68e18737d2fff1",
-    "android/host/d3d9_gl.c": "031be56d2a7584bccd08b43fadcbdb83d987dbb024e4b167a0bb6b3f332f4225",
+    "android/host/d3d9_device.c": "32abe5b22d2d1e86641de504098fc765b7820029f693608616a13a2f41b3962d",
+    "android/host/d3d9_ff.c": "52561fd7fca84b43d1864d424ff278baa0fd043293535f0714ff54522898ae2b",
+    "android/host/d3d9_gl.c": "82d649d1fc7cb733704a3f339e43f58ba2e9d601136a3e45dbf1c4565cbc3555",
     "android/host/d3d9_internal.h": "a4499b5712374a04adf4597932e3629b1ffbe674e01bd4c845d1e1f9953b88f3",
-    "android/host/d3d9_resource.c": "d41a0bc4aa261b3b411502ea002dc012056aec2fbf99c8d6608edd457078f556",
-    "android/host/d3d9_shader.c": "fd05467e16433536a7867d92fea037bf258e19186148b47297bb30dfb08f396e",
+    "android/host/d3d9_resource.c": "4fc62fb2775266ee025d9733384d48f2b413e4defb1c978a68838a84594ad042",
+    "android/host/d3d9_shader.c": "6c4ac2bacf5f08cd114f6d86125f78a80430508ec33d642daceeec23cfe58caf",
     "android/host/dsound.c": "182f157f54c50928e3c2e8a5efc7477ec29b3dd9f07b1d1cdfdbdf5b8865976d",
-    "android/host/files.c": "11a17a578f3b3d4f6d15594a6b66c8ed7ca0da6fd56c5b34fe7759c47a5df6e1",
+    "android/host/files.c": "55f091d5097675db158d2da01f3a8ee3f9becf9a4c54401bc8270a5deeedbde8",
     "android/host/fmod_stream.c": "d3af274c8761c4d73eb35f33e65644d5d3d8f5302bb3ed50657ef5a2afe87c27",
-    "android/host/network.c": "588f68e86d4f91287133ff31e2860e636a84c803e51f349bcead6e28dba436e6",
+    "android/host/network.c": "cca6b010fcbe01175262b2eae2d89dae2413d83879844a23eab9107e8f74c846",
     "android/host/nubi_log.c": "c7e2f9cc9712e0f2f1769eb98bc4bffd45d399630fb3ddc371c5d387d139ef32",
     "android/host/pe.c": "6cb5a776022bf77139ab3905efc0aa89332695bcb0314247f9392b9c06e632fb",
-    "android/host/port_settings.c": "dc1c2f05a716731871de4511ad1c1d20efd209ee3086415857167b83159d99fa",
+    "android/host/port_settings.c": "45689e59096199402ad89482cb56faf706dd41eb6a4a68458e858dbdcb8a9bcc",
     "android/host/texture_native.c": "2d7f3248ba350af24f0e4a32fe4c13c6854c7c52e5413c0f138a8b16da0f5b17",
-    "android/host/touch.h": "1daf781af399925fe5d91def4d0ce4c01260642fc26a6db9dad837d95440382e",
+    "android/host/touch.h": "de4c8b2407265c32ebc27dee954c9eeabff1dc491a3ddba7501e8a5d055d3ed3",
     "android/host/touch_camera.c": "15d1d383c649103ea24d664504435f61fd5296c2791b91191c979d50b463a3ca",
-    "android/host/touch_engine.c": "4c4647c4f55426d7077a0a627f9e49131b5971a59fe298669c3f7b2a82fefd36",
+    "android/host/touch_engine.c": "c01e5f6ee3bf8f6f20ffeae1300c633d2f3128345c0322f90ea5612d50815d7c",
     "android/host/touch_queue.c": "e268d5fa53513c023ac2da5e02910af9f8762a7fd793e10a0c3b7cdf21fb9d61",
     "android/host/touch_render.c": "d4c03de35fe1d4846ca4bcca1f168a239812b3a22d5bb65b764eee371666012e",
-    "android/host/touch_scale.c": "8782914d3724f8c151e68df24f2d9a35579e2f9208bb827b784392452f406850",
+    "android/host/touch_scale.c": "cee25b59e8764bbdaff23136307ce9a6a1de415b1c4ca67d0c68a7c39e20b43a",
     "android/host/user32.c": "0c65db6ca7334687defee103f66a690dfadfc566298396f4aa1a3d9f872d35ec",
-    "android/port.json": "4cd5c3260f140b968d9e82c7a122b04b060b4778f0cefeca6354572300a2f951",
+    "android/port.json": "4e8a5975b0ebb1af19edce674b4099635437b319a0df5e4206a3a27cc7254bcd",
     "android/runtime/recomp_types.h": "5dc55d24ea3d96c8b6514bca881f90e5953dce83257ee7dd986c73d413f41a05",
     "android/texconv/texconv.cpp": "292745dcc57d29ae90744fcfa03083ecd3cbe2d5577ee09442274454e663d907",
     "android/texconv/texconv.h": "6bdafca201f973e1aa1b9b3819ae37603755618c837ef27affc1eaa6549ebf8b",
     "android/texconv/texconv_jni.cpp": "2f0a81e57a82666fd1559ba372c4b6c2c1116b7c0127ca1287d320ed8f97cd8d",
     "config/editions.json": "d027f842cc9cd9f4024d8de61b1c61930d9453dac85890fb3b759eac1089d304",
-    "tools/build_android.py": "30734f813469bb8945a49dfcea23096cebf6425a2a2a39e5e226478a5c5e7d75",
-    "tools/build_game_apk.py": "9ae955ea8260b11192c6c098f8c38cc111adae61b791ed36ce08ab26e833152d",
+    "tools/build_android.py": "fa449067ac5f4e8dbfde89b49e96167e68d2fbcad4e64fa91ee4b2171a6908f7",
+    "tools/build_game_apk.py": "c4ceccb8a20891a28a756c1e899c40723247363b0c4751decd8f58e03c816753",
     "tools/editions.py": "6e2bfdfad721cfba7f052612eb7d5b5faf40f31e5d3f5c6ffbc4751e8b3b92af",
     "tools/lift_homm5.py": "4df9027a199c145caa065ccc4be9ca65c7bbe23104488cc15fe0d64e076aba62",
     "tools/port_patches.py": "584a86694cc1990013b71245b10552006b7c8a69cd3203f03c62df8f28232a37",
-    "tools/port_ui.py": "b506443a67e9575ffb4174e7645626e6bcb983ddd3276389bcf2c8e5c2f2258b",
+    "tools/port_ui.py": "70dbc674cb89dafdade902822dddbd8a744e1197575b66b8daedc6dc0f41a381",
     "tools/profile_defaults.py": "f021a2960897b74b338fc294ca762b0c1c42e11b16e14196e203196076b206dc",
     "android/host/fsr1.h": "1a31c2405f64040fa3818e0724bb458214ef764891ef377ddf21579227a7cfc5",
-    "android/host/d3d9_filter.h": "5f5d055ef1a1c3917331021923baad763a4657e2ff41978449a92d153226e68d",
+    "android/host/d3d9_filter.h": "deb9f7c51d875302f71f6cdd6d40bbb15fe488e965e6249d372be67ff6dea33b",
     "android/host/d3d9_filter.c": "e1d08e8834670a86570f91515088d672d1f740a91b0318f83d2ae5240820ae5e",
     "android/host/d3d9_thread.c": "e9314409ec952bb4e6602d1ae971286bdb32d1785f36e0f7deaa118c14e21fc3",
     "android/host/d3d9_thread.inc": "e8f3702d739a2d7b46edb96143ce8ddb896fa8c930c917fd4fbbb9f1a0ded673",
     "android/host/d3d9_thread_check.inc": "c21e26b871761849c510caa129fe61e3ca9c0e13cb39ba9f3c090c011fac1f4f",
     "android/host/threads.c": "464880a52bd33a7862addce6c0363f8951ecb12b0c8ac97a52e31935921fe7da",
     "android/app/src/org/homm5/port/Assets.java": "0840b01c97ef4d9c8b6e40f116e9e60d173896893413c14256b1a288db5339b5",
-    "android/app/src/org/homm5/port/NativeLibrary.java": "8ba639dfe86b01abb2f2f686f3200638e8c43304eab661cb2b555cd1d9227ea6",
+    "android/app/src/org/homm5/port/NativeLibrary.java": "3e9dd1afbc8a6d3c9ed148fef9dc3051c6e111710a9c0765bf92519bd6fed03f",
     "android/host/kernel32.c": "47bc5fcb96205a4549bd98f37251243fa1c6db1f542599338df891746718711e",
     "android/host/memory.c": "0003b4870dd543b1fefd9aef93e678e23b0e2f0778c1c7671375e804170f2c08",
     "android/host/script.c": "4bf060b0c1a31878f812070728f358bb5e7a54442ed01ab3d564902d2e3ceb6f",
@@ -187,7 +197,7 @@
     "android/host/vector_native.c": "eab9c600a0d2c6f5a01bee7ed99121772841e458b292356e08801d7562836e1c",
     "android/host/skin_native.c": "f78874f18b3086cb87a198e263cee151eb9bd73f29475e9cfd2803379bb4e5cb",
     "android/host/leaves_native.c": "159281d663b744a64c12c5d7ce8c33a44e25c292ea0d4c7291308984777d1b18",
-    "tools/native_routes.py": "33d23f4014af8fba07a746befe103f176ff7f082ad280ec9d3dcde09e219f15e",
+    "tools/native_routes.py": "fb2c747254cebba609f1f3166db0b771e38b1312539175f5f045458366301ba8",
     "android/host/curves_native.c": "67e451a45963537abaa885540ac0cfeca00ac472205e62035d864f77d779e3e7",
     "android/host/skin_math_native.c": "5ef7c678d06c47e0e611b6508ce058e085bccb84bbf7f89c1e7f60be593c0026",
     "android/host/object_refs_native.c": "029d622b4ba4dfdeca8826daa5ab8299388bd28aaeceb78cb53607cee262a52a",
@@ -200,9 +210,33 @@
     "android/host/touch_combat.h": "953c5a96c6e3623b94e17497ae45461c227ac1399120440ab34881714b16ed79",
     "android/host/touch_combat.c": "f3ebf2ea51b11bf98b70fe6a763102ff755b12f78293601ef8641ab137957271",
     "android/host/touch_combat_query.inc": "b13021778d29a90f463688a60af4853d89ec6fdbc4a50d7dae130de20b9edba1",
-    "android/host/touch_combat_path.inc": "36d0ae43943f604cfb0ace7c27c64de0e93b6963062874837449ed59e366cd60"
+    "android/host/touch_combat_path.inc": "36d0ae43943f604cfb0ace7c27c64de0e93b6963062874837449ed59e366cd60",
+    "android/host/shadow_fit.c": "ed6f547df7d827b6901408743f8d4ddb14793264b234ce9ef1b520c103c08576",
+    "android/host/shadow_fit.h": "4824c242003a1419d93fed359b0e4c4712e3f4d3940870805c001b50b8831c92",
+    "android/host/shader_semantics.c": "8998adb75c12ee1f767a47e0cbe82f36037e2621738bae53715acfad72623ff3",
+    "android/host/vertex_native.c": "7f42871ace63e4b9928f2b28498ec1de061e7c6e2321e92df3b1ec80682434f3",
+    "android/host/lod_models.c": "fb0b46c98d7b65543fd38ea556519c2f0114c7eac4a805d1423bdef7a307d2f6",
+    "android/host/lod_models_table.h": "3464134045a4814af1aa93d32242407bccbd2912c3d1370833c07231a5e6a927",
+    "android/host/dilate_native.c": "ce48650e14ee3e257f877c85d8be6cee364e15c68cf707f1e33de9f688f724a8",
+    "android/host/zlib_deflate_native.c": "29c492d1c4cab4f1c31b67e675598c4beb663babdac66d8aaaf4b698bc75db07",
+    "android/host/zlib_deflate_native.h": "7b986f5fdee06b3c931458a30228745a35522ca017cadfefe474cac9319519a8",
+    "android/host/ai_turn_native.c": "3b61647844718da949045cb26f7995ca8a16e95b252196275003be93cbd402c6",
+    "android/host/ai_names_native.c": "8fa40d2b916c3518f5ae126c2caec99e513b4b090fc15ee54e49060bf6474ff1",
+    "android/host/ai_undo_native.c": "63e9a13705c98a00528cd8456ec277c710ad861d6d6e458fbd0ab335a15f7a13"
   },
   "addresses": {
+    "00CF8D80": "008FDD90",
+    "00CF8F30": "008FDF40",
+    "00C687C0": "00A46140",
+    "00CF92C0": "008FE2D0",
+    "00738840": "004584E0",
+    "00CF8AC0": "008FDAD0",
+    "00CF88F0": "008FD900",
+    "00E12F24": "00DECF84",
+    "00E951A0": "00E0E61C",
+    "010C5990": "00F93800",
+    "00B3EFB0": "00A712C0",
+    "004F8260": "00453C20",
     "004039A0": "009D01E0",
     "0040E960": "004038E0",
     "0041A760": "00437540",
@@ -310,6 +344,7 @@
     "0083F2B0": "007F7900",
     "00878FD0": "00A999A0",
     "008791F0": "00A99BC0",
+    "00404150": "00403870",
     "008863A0": "00BE5950",
     "00887BA0": "00A3C520",
     "008885D0": "00A3CDB0",
@@ -558,9 +593,52 @@
     "00AF4450": "00BC3680",
     "004E5790": "00B2C220",
     "00B3F2F0": "00A71540",
-    "00C52CC0": "00ABA2F0"
+    "00C52CC0": "00ABA2F0",
+    "00F44E06": "00EF253A",
+    "00F2D3A8": "00EF8B30",
+    "00F2D3AC": "00EF8B34",
+    "00F2D3B0": "00EF8B38",
+    "00F2D3B4": "00EF8B3C",
+    "00F2D3B8": "00EF8B40",
+    "00FD285C": "01032F90",
+    "00FD286C": "01032FA0",
+    "00F7ACF8": "00F23808",
+    "0086DD40": "00A801F0",
+    "00B62380": "009A9A50",
+    "00BD1150": "00B79FC0",
+    "004091D0": "004220E0",
+    "00404220": "00403200",
+    "00E0A2B0": "00DBA298",
+    "00BC5480": "00848150",
+    "0050C7C0": "004DC770",
+    "0050C550": "004DC500",
+    "0050C4A0": "004DC450",
+    "0050C3E0": "004DC390",
+    "00C01130": "009E3C60",
+    "00E8D7BC": "00E1A01C",
+    "00E93664": "00E0AF9C"
   },
   "reference_addresses": {
+    "android/host/lod_models.c": [
+      "00404150"
+    ],
+    "android/host/dilate_native.c": [
+      "004F8260",
+      "00879240",
+      "00B3EFB0"
+    ],
+    "android/host/vertex_native.c": [
+      "00738840",
+      "00C687C0",
+      "00CF88F0",
+      "00CF8AC0",
+      "00CF8D80",
+      "00CF8F30",
+      "00CF92C0",
+      "00E12F24",
+      "00E951A0",
+      "010C5990"
+    ],
     "android/host/cutscene.c": [
       "008385A0",
       "00CF64F0",
@@ -1031,6 +1109,38 @@
       "00B3F2F0",
       "00C52CC0",
       "00C53F60"
+    ],
+    "android/host/shadow_fit.c": [
+      "00F44E06",
+      "00F2D3A8",
+      "00F2D3AC",
+      "00F2D3B0",
+      "00F2D3B4",
+      "00F2D3B8",
+      "00FD285C",
+      "00FD286C",
+      "00F7ACF8"
+    ],
+    "android/host/ai_turn_native.c": [
+      "0086DD40",
+      "00B62380"
+    ],
+    "android/host/ai_names_native.c": [
+      "00BD1150",
+      "00404150",
+      "004091D0",
+      "00404220",
+      "00E0A2B0"
+    ],
+    "android/host/ai_undo_native.c": [
+      "00BC5480",
+      "0050C7C0",
+      "0050C550",
+      "0050C4A0",
+      "0050C3E0",
+      "00C01130",
+      "00E8D7BC",
+      "00E93664"
     ]
   },
   "layout_patches": {
@@ -1454,6 +1564,13 @@
       {
         "old": "        /* BASE_CONVERSION_BEGIN */\n        REF_TEST(eax,eax);\n        if(eax) {\n            ecx=MEM32(MEM32(eax)-4);\n            edx=LOCATOR(ecx)->offset;\n            REF_TEST(edx,edx);\n            if(edx) {\n                ecx=eax;REF_CMP(ecx,edx);ecx-=edx;\n                edx=MEM32(MEM32(ecx)-4);\n                REF_TEST(edx,edx);\n                if(edx) {\n                    REF_CMP(LOCATOR(edx)->type,0x00F272C0u);\n                    if(LOCATOR(edx)->type==0x00F272C0u)eax=ecx;\n                }\n            }\n        }\n        /* BASE_CONVERSION_END */",
         "new": "        edx=0;REF_TEST(0,0);ecx=eax;\n        RECOMP_CALL_P(reference_hof_base,0x17u,0x17u,0,0x0047B357u);\n        RECOMP_FLAGS_IN();",
+        "count": 1
+      }
+    ],
+    "android/host/shadow_fit.c": [
+      {
+        "old": "#define SHADOW_FIT_REQUEST 0x1Cu",
+        "new": "#define SHADOW_FIT_REQUEST 0u",
         "count": 1
       }
     ]
@@ -2064,6 +2181,42 @@
       "function": "sub_004FAF80",
       "old": "    RECOMP_CALL(sub_004FABC0); /* 0x004FAFAC: call 0x4fabc0 */",
       "new": "    RECOMP_CALL(sub_004FABC0); /* 0x004FAFAC: call 0x4fabc0 */\n    { extern void void_initial_seed_entropy(uint32_t); void_initial_seed_entropy(esp + 0x14u); }"
+    },
+    {
+      "module": "game",
+      "function": "sub_00C03730",
+      "old": "    RECOMP_CALL(sub_00A31BC0); /* 0x00C03802: call 0xa31bc0 */",
+      "new": "    { extern void void_shadow_fit_begin(uint32_t, uint32_t); void_shadow_fit_begin(ecx, esp); }\n    RECOMP_CALL(sub_00A31BC0); /* 0x00C03802: call 0xa31bc0 */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00C03730",
+      "old": "    eax = esi + 0x2C; /* 0x00C03807: lea eax, [esi + 0x2c] */",
+      "new": "    { extern void void_shadow_fit_end(void); void_shadow_fit_end(); }\n    eax = esi + 0x2C; /* 0x00C03807: lea eax, [esi + 0x2c] */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00A31BC0",
+      "old": "    RECOMP_CALL(sub_00A33690); /* 0x00A3278D: call 0xa33690 */",
+      "new": "    { extern void void_shadow_fit_point(uint32_t); void_shadow_fit_point(esp); }\n    RECOMP_CALL(sub_00A33690); /* 0x00A3278D: call 0xa33690 */"
+    },
+    {
+      "module": "game",
+      "function": "sub_00B92A40",
+      "old": "    RECOMP_CALL(sub_004EA5A0); /* 0x00B92CB2: call 0x4ea5a0 */",
+      "new": "    { extern void void_lod_reference(uint32_t);\n      RECOMP_FLAGS_OUT(); RECOMP_REGS_OUT();\n      void_lod_reference(MEM32(esp));\n      RECOMP_REGS_IN(); RECOMP_FLAGS_IN(); }\n    RECOMP_CALL(sub_004EA5A0); /* 0x00B92CB2: call 0x4ea5a0 */"
+    },
+    {
+      "module": "game",
+      "function": "sub_004E9800",
+      "old": "    RECOMP_CALL(sub_00AB10E0); /* 0x004E9B20: call 0xab10e0 */",
+      "new": "    { extern void void_lod_reference(uint32_t);\n      RECOMP_FLAGS_OUT(); RECOMP_REGS_OUT();\n      void_lod_reference(MEM32(esp));\n      RECOMP_REGS_IN(); RECOMP_FLAGS_IN(); }\n    RECOMP_CALL(sub_00AB10E0); /* 0x004E9B20: call 0xab10e0 */"
+    },
+    {
+      "module": "game",
+      "function": "sub_004E9800",
+      "old": "    RECOMP_CALL(sub_004EA5A0); /* 0x004E9BA0: call 0x4ea5a0 */",
+      "new": "    { extern void void_lod_reference(uint32_t);\n      RECOMP_FLAGS_OUT(); RECOMP_REGS_OUT();\n      void_lod_reference(MEM32(esp));\n      RECOMP_REGS_IN(); RECOMP_FLAGS_IN(); }\n    RECOMP_CALL(sub_004EA5A0); /* 0x004E9BA0: call 0x4ea5a0 */"
     }
   ],
   "pending_features": [],

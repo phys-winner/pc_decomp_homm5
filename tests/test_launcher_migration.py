@@ -99,7 +99,7 @@ public final class Assets {
         classes = out / "classes"
         if classes.exists():
             shutil.rmtree(classes)
-        javac(classes, [*map(Path, prepared["sources"]), APP / "LauncherHooks.java", APP / "Games.java", assets, source])
+        javac(classes, [*map(Path, prepared["sources"]), APP / "LauncherHooks.java", APP / "Games.java", APP / "DxvkRuntime.java", APP / "NativeLibrary.java", assets, source])
         state = out / "state"
         if state.exists():
             shutil.rmtree(state)

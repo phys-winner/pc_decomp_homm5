@@ -2,7 +2,10 @@
 
     python tools/build_game_apk.py [--install] [--serial SERIAL]
 The libraries come from tools/build_android.py --shared and travel as ARM64-filtered
-XZ assets, unpacked once per build. Game data and profiles live under /sdcard/HeroesV.
+XZ assets, unpacked once per build. The engines are the ones linked against
+libhomm5_common.so (<build>/common/), which travels the same way and is named in their index
+rows (tools/common_lib.py); --monolithic packages whole engines (<build>/) instead.
+Game data and profiles live under /sdcard/HeroesV.
 The home-screen entry is the shared launcher base (../launcher, found through
 PORT_LAUNCHER, the android/launcher submodule or a checkout beside this project), built into the
 APK from android/port.json: its sources in org.homm5.port.launcher, the manifest's two markers
@@ -70,13 +73,15 @@ LICENSE_FILES = {
 
 CHUNK = 128 << 20
 APK_BUDGET = 190_000_000
+# The engines share libhomm5_common.so unless --monolithic (tools/common_lib.py).
+COMMON_LIB_DEFAULT = True
 
 
 def dxvk_runtime():
-    """DXVK renderer as tools/build_dxvk.py staged it: the libraries for
-    lib/arm64-v8a (extracted by the installer, where adrenotools and the engine's dlopen find
-    them) and their licenses, both checked against the receipt, which must match the current
-    bridge sources."""
+    """DXVK renderer as tools/build_dxvk.py staged it: the libraries, packed XZ in assets/native
+    like the engines (DxvkRuntime.java installs them on the first DXVK start, so a player who
+    never chooses DXVK does not carry them installed), and their licenses, both checked against
+    the receipt, which must match the current bridge sources."""
     stage = ROOT / "build/dxvk"
     receipt_path = stage / "build-receipt.json"
     if not receipt_path.is_file():
@@ -239,9 +244,17 @@ def main():
     parser.add_argument("--protocol-check", action="store_true", help="build_android.py validation build (see there)")
     parser.add_argument("--dxvk", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--no-dxvk", action="store_true", help="omit the optional DXVK/Turnip runtime")
+    parser.add_argument("--common-lib", dest="common_lib", action="store_true", default=None,
+                        help="package the engines linked against libhomm5_common.so (build_android.py --common-lib)")
+    parser.add_argument("--monolithic", dest="common_lib", action="store_false",
+                        help="package whole engines (build_android.py --monolithic)")
     args = parser.parse_args()
     if args.thinlto_jobs is not None and (not args.thinlto or args.thinlto_jobs < 1):
         parser.error("--thinlto-jobs must be positive and requires --thinlto")
+    if args.common_lib is None:
+        args.common_lib = COMMON_LIB_DEFAULT and not args.pgo_generate
+    if args.common_lib and args.pgo_generate:
+        parser.error("the instrumented engines keep their own code (--monolithic)")
     if not os.environ.get("JAVA_HOME"):
         parser.error("set JAVA_HOME to a JDK installation")
     for tool in (TOOLS / "aapt2.exe", TOOLS / "d8.bat", TOOLS / "zipalign.exe",
@@ -278,28 +291,54 @@ def main():
                                                  ("--protocol-check", "check", args.protocol_check)) if on]
     pgo_flags = ["--pgo-use", args.pgo_use] if args.pgo_use is not None else ["--no-pgo"] if args.no_pgo else []
     lto_flags = ["--thinlto-jobs", str(args.thinlto_jobs)] if args.thinlto_jobs is not None else []
+    link_flags = ["--common-lib"] if args.common_lib else ["--monolithic"] if COMMON_LIB_DEFAULT else []
     if not args.skip_native:
+        if args.common_lib:
+            subprocess.run([sys.executable, str(ROOT / "tools/build_android.py"), "--common", "--shared", "--jobs", "12",
+                            *(flag for flag, _ in modes), *(["--no-pgo"] if args.no_pgo else []), *lto_flags], check=True)
         for edition in EDITION_IDS:
             edition_pgo_flags = pgo_flags if edition == "toe" or args.pgo_use is None else []
             subprocess.run([sys.executable, str(ROOT / "tools/build_android.py"), "--shared", "--jobs", "12", "--edition", edition,
                             *(flag for flag, _ in modes), *(["--rt-check"] if args.rt_check else []),
-                            *edition_pgo_flags, *lto_flags], check=True)
+                            *edition_pgo_flags, *lto_flags, *link_flags], check=True)
     libraries, receipts = [], {}
+    import common_lib
     for edition in EDITION_IDS:
-        library = build_root(edition, [name for _, name in modes], ROOT) / ("lib" + edition_spec(edition, ROOT)["library"] + ".so")
+        out = build_root(edition, [name for _, name in modes], ROOT)
+        library = (common_lib.engine_root(out) if args.common_lib else out) / ("lib" + edition_spec(edition, ROOT)["library"] + ".so")
         if not library.is_file():
-            raise SystemExit(f"Native library does not exist: {library}; all three patched engines are required")
+            raise SystemExit(f"Native library does not exist: {library}; all three patched engines are required"
+                             + (" (linked with build_android.py --common-lib)" if args.common_lib else ""))
         try:
             receipts[edition] = {"native": validate_packaged_native(edition, library, root=ROOT)}
         except (ValueError, RuntimeError, OSError) as failure:
             raise SystemExit(f"{edition}: mandatory native patches are incomplete: {failure}") from failure
         libraries.append(library)
-    dxvk_libraries, dxvk_licenses = dxvk_runtime() if args.dxvk and not args.no_dxvk else ([], [])
+    common = None
+    if args.common_lib:
+        try:
+            common = common_lib.validate_package(dict(zip(EDITION_IDS, libraries)), [name for _, name in modes], CLANG, ROOT)
+        except (ValueError, RuntimeError, OSError) as failure:
+            raise SystemExit(f"{common_lib.LIBRARY}: {failure}") from failure
+        for edition in EDITION_IDS:
+            receipts[edition]["common"] = {key: common[1][key] for key in ("library_sha256", "modules", "sources_sha256", "config_sha256")}
+    # The DXVK/Turnip runtime travels whenever android/port.json offers a Vulkan renderer; --no-dxvk
+    # leaves it out (the launcher then names the missing libraries of those modes).
+    vulkan_modes = any(mode.get("kind") in ("vulkan", "turnip") for mode in
+                       (json.loads((ROOT / "android/port.json").read_text(encoding="utf-8")).get("renderers") or {}).get("modes", []))
+    dxvk_libraries, dxvk_licenses = dxvk_runtime() if (args.dxvk or vulkan_modes) and not args.no_dxvk else ([], [])
     # The launcher's texture converter (android/texconv) is its own small library.
     subprocess.run([sys.executable, str(ROOT / "tools/build_texconv.py")], check=True)
     texconv = ROOT / "build/arm64-texconv/libtexconv.so"
     unpacker = build_unpacker()
     payloads = [compress_library(library) for library in libraries]
+    if common:
+        # An engine row's sixth field: the libraries NativeLibrary.java installs beside it.
+        payloads = [(packed, row.rstrip("\n") + " " + common_lib.LIBRARY + "\n") for packed, row in payloads]
+        payloads.append(compress_library(common[0]))
+    # The DXVK/Turnip runtime: rows without dependencies, installed together by DxvkRuntime.java
+    # (files/dxvk) and, for the launcher's Turnip check, into the cache (LauncherHooks.checkLibraries).
+    payloads += [compress_library(library) for library in dxvk_libraries]
     OUT.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="apk-assets-", dir=OUT.parent) as temporary:
         staged = Path(temporary) / "assets"
@@ -337,8 +376,9 @@ def main():
         compiled_resources = [archive]
     run(TOOLS / "aapt2.exe", "link", "-I", ANDROID_JAR, "--manifest", prepared["manifest"],
         "-A", assets, *compiled_resources, "-o", OUT / "base.apk")
-    # Probe Vulkan support in the launcher's separate process before loading the game.
-    probe = port_launcher.build_probe(OUT / "probe", prepared["package"]) if prepared["probe"] else None
+    # Probe Vulkan support in the launcher's separate process before loading the game; with the
+    # project's NDK (CLANG's), not whatever ANDROID_NDK_HOME names.
+    probe = port_launcher.build_probe(OUT / "probe", prepared["package"], ndk=CLANG.parents[5]) if prepared["probe"] else None
     sources = sorted((ROOT / "android/app/src").rglob("*.java")) + [Path(p) for p in prepared["sources"]]
     run(JAVA_HOME / "bin/javac.exe", "--release", "8", "-encoding", "UTF-8", "-cp", ANDROID_JAR, "-d", OUT / "classes", *sources)
     classes = sorted((OUT / "classes").rglob("*.class"))
@@ -357,6 +397,13 @@ def main():
                     raise ValueError("Native patch receipt changed during packaging")
             except (ValueError, RuntimeError, OSError) as failure:
                 raise SystemExit(f"{edition}: native patches changed during packaging: {failure}") from failure
+        if common:
+            try:
+                if common_lib.validate_package(dict(zip(EDITION_IDS, libraries)), [name for _, name in modes],
+                                               CLANG, ROOT)[1] != common[1]:
+                    raise ValueError("its receipt changed during packaging")
+            except (ValueError, RuntimeError, OSError) as failure:
+                raise SystemExit(f"{common_lib.LIBRARY} changed during packaging: {failure}") from failure
         for packed, row in payloads:
             apk.write(packed, "assets/native/" + row.split()[0] + ".xz", compress_type=zipfile.ZIP_STORED)
         apk.writestr("assets/native/index.txt", "".join(row for _, row in payloads))
@@ -364,9 +411,6 @@ def main():
         apk.write(texconv, "lib/arm64-v8a/libtexconv.so")
         if installer is not None:
             apk.write(installer, "lib/arm64-v8a/libinnoextract.so")
-        # DXVK, its bridge, libc++_shared and the adrenotools/Turnip set; deflated, like the others.
-        for library in dxvk_libraries:
-            apk.write(library, "lib/arm64-v8a/" + library.name)
         if probe is not None:
             apk.write(probe, "lib/arm64-v8a/" + probe.name)
     aligned = OUT / "aligned.apk"

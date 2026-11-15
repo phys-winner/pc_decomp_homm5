@@ -28,7 +28,7 @@ static inline char *d3d_ui_filter_source(const char *source)
         return copy;
     }
     const char *macros =
-        "\nuniform int vpUiFilter;\n"
+        "\nuniform int vpUiFilter;\nuniform highp vec4 vpUiBlur,vpUiBlurRect;\n"
         "#define FSR_ALPHA 1\n"
         "#define FSR_EASU_BASE(fp) ivec2 vpBase=ivec2(fp);\n"
         "#define T(x,y) vpPremulTexel(image,vpBase+ivec2(x,y))\n"
@@ -39,8 +39,26 @@ static inline char *d3d_ui_filter_source(const char *source)
     const char *replacement = "vec4 vpEasu(highp sampler2D image,highp vec2 src)";
     const char *samples =
         "\n#undef T\n#undef FSR_EASU_BASE\n"
+        /* 4: a battle-transition layer (d3d9_gl.c, xt_layers). d is the step to the neighbouring
+         * layer; the layer covers the box from half a step back to half a step on: n taps evenly
+         * along it (two, up to six for steps over 128 texels), each on the mip level whose texels
+         * span 1/n of the step, never sharper than the screen footprint. Copies a step apart then
+         * merge without gaps, and long steps streak instead of turning into blobs. The layer fades
+         * out over one step inside its own edges (vpUiBlurRect, uv; +-1e4 where an edge is the
+         * viewport's), so the edges of the shrinking layers leave no straight seams. */
+        "vec4 vpZoomBlur(highp sampler2D image,highp vec2 uv){\n"
+        " highp vec2 size=vec2(textureSize(image,0)),d=vpUiBlur.xy*uv+vpUiBlur.zw,dx=dFdx(uv)*size,dy=dFdy(uv)*size;\n"
+        " highp float base=0.5*log2(max(max(dot(dx,dx),dot(dy,dy)),1e-8)),len=length(d*size);\n"
+        " highp vec2 e=min(uv-vpUiBlurRect.xy,vpUiBlurRect.zw-uv)/max(abs(d),1.0/size);float f=clamp(min(e.x,e.y),0.0,1.0);\n"
+        " vec4 sum=vec4(0.0);\n"
+        " if(len<2.0)sum=textureLod(image,uv,base);\n"
+        " else{int n=int(clamp(ceil(len/64.0),2.0,6.0));highp float lod=max(base,log2(len/float(n)));\n"
+        "  for(int i=0;i<6;++i){if(i>=n)break;sum+=textureLod(image,uv+d*((float(i)+0.5)/float(n)-0.5),lod);}\n"
+        "  sum/=float(n);}\n"
+        " sum.a*=f;return sum;}\n"
         "vec4 vpTexture(highp sampler2D image,highp vec2 uv){\n"
         " if(vpUiFilter<0||vpUiFilter==1)return texture(image,uv);\n"
+        " if(vpUiFilter==4)return vpZoomBlur(image,uv);\n"
         " vec2 size=vec2(textureSize(image,0));\n"
         " if(vpUiFilter==0)return texture(image,(floor(uv*size)+.5)/size);\n"
         " if(vpUiFilter==2)return vpCubicSample(image,uv);\n"
@@ -59,11 +77,9 @@ static inline char *d3d_ui_filter_source(const char *source)
     w += sprintf(w, "%s%s%.*s%s%s%s", macros, d3d_cubic_glsl, (int)easu_head, fsr1_easu_glsl,
                  replacement, at + strlen(signature), samples);
     for (const char *p = main; *p;) {
-#ifndef HOMM5_LEGACY_UI
+        /* MojoShader's GLES 3 profile keeps texture2D( in main and #defines it to texture. */
         if (!strncmp(p, "texture2D(", 10)) { memcpy(w, "vpTexture(", 10); w += 10; p += 10; }
-        else
-#endif
-        if (!strncmp(p, "texture(", 8)) { memcpy(w, "vpTexture(", 10); w += 10; p += 8; }
+        else if (!strncmp(p, "texture(", 8)) { memcpy(w, "vpTexture(", 10); w += 10; p += 8; }
         else *w++ = *p++;
     }
     *w = 0;

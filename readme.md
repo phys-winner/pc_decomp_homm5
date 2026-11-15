@@ -3,7 +3,7 @@
 Heroes of Might and Magic V, Hammers of Fate and Tribes of the East on Android ARM64 through static
 x86 recompilation, with native touch controls and a Direct3D 9 to OpenGL ES bridge.
 
-**Current version: 0.7-dev.** All three engines use ThinLTO and their own device-trained PGO profiles.
+**Current version: 0.8-dev.** All three engines use ThinLTO and their own device-trained PGO profiles.
 This is an experimental port for sideloading.
 The original game's menus, adventure maps, towns, battles, sound and saves run
 through a local Win32 compatibility host. The game and eight DLLs are translated
@@ -100,9 +100,26 @@ prepared DLLs. Town music uses the original resources and pause settings.
 
 ## Renderers
 
-OpenGL ES 3.2 is the only enabled renderer for all editions. Renderer choices
-saved by older launchers are ignored. The APK excludes DXVK and Turnip libraries
-and does not run a Vulkan driver probe.
+OpenGL ES 3.2 is the default renderer of all three editions. The launcher also
+offers **DXVK (Turnip)** (Android 11+, Adreno 600–799, textures not converted by the
+launcher) and **DXVK (Vulkan)** (a system Vulkan 1.3 driver) when the phone qualifies;
+it never selects them by itself, and a DXVK start that shows no first frame makes the
+launcher offer OpenGL ES again. DXVK 2.4.1 runs the game's Direct3D 9 calls through a
+worker thread; Turnip (Mesa) is loaded through adrenotools, and Heroes V 1.6 and
+Hammers of Fate render in Turnip's system-memory mode (their battle entry hung the GPU
+in tiled mode; `TU_DEBUG=nolrz` also avoids it). The DXVK runtime travels XZ-packed in
+the APK (2.8 MB): the game installs it (about 19 MB) in its private files at the first
+DXVK start, and the launcher's Turnip check unpacks only the Turnip part into the cache
+and removes it afterwards. Players who never choose DXVK do not carry it installed.
+
+Measured on Snapdragon 865 / Adreno 650 at 2400x1080 with a 120 FPS cap (15 November
+2026): OpenGL ES reaches about 38 FPS in Heroes V 1.6's dense adventure view after
+the upload-ring fix, versus 30–34 FPS under DXVK. DXVK is roughly equal in Tribes
+of the East's adventure map and battles, but
+slower in the Tribes of the East main menu (33 vs 45 FPS, GPU-bound) and in Hammers of
+Fate's near view (82 vs 102 FPS: about 3 ms more game-thread time per frame). The port's
+OpenGL ES effects (fog switch, smooth battle-entry blur, scene/UI filters, sharpness)
+do not apply under DXVK, and a render scale below 100% also lowers the UI resolution.
 
 OpenGL ES spatial filters independently reconstruct the
 scene (bilinear, bicubic, or FSR 1 EASU plus adjustable RCAS) and UI textures
@@ -231,11 +248,11 @@ python -X utf8 tools/build_game_apk.py --thinlto --no-pgo
 
 Output: **`build/android-game/heroes-v.apk`**.
 
-The archived DXVK/Turnip source and pinned dependencies remain in the repository
-for development. Shipping engines compile the GLES stubs, the launcher exposes
-only GLES, and the default APK omits the Vulkan runtime. `tools/build_dxvk.py`
-and the APK builder's internal `--dxvk` staging option do not enable that backend
-in a shipping engine.
+The DXVK renderer is staged by `python -X utf8 tools/build_dxvk.py` (pinned DXVK
+Native, adrenotools and Turnip binaries from the sibling ut3 port, the bridge
+`android/dxvk/bridge.cpp` built here; the Turnip driver is stripped with its segment
+layout kept). `tools/build_game_apk.py` packs it into `assets/native` beside the engines
+whenever `android/port.json` offers a Vulkan mode; `--no-dxvk` builds an APK without it.
 
 Packaging requires XZ Utils 5.4+ for its ARM64 branch filter (`XZ`, `PATH`, or
 Git for Windows' `mingw64/bin/xz.exe`). All three engines are stored as XZ
@@ -522,13 +539,31 @@ alternative upgrades are offered only in ToE.
 
 ## In-game Android settings
 
-**Настройки → Дополнительные** holds the port's options. Render and interface
-scales use native sliders with fixed percentage steps. The frame rate dropdown is
-built from the display's own refresh rates (30 FPS and every supported rate from
-45 to 240 Hz). The touch cursor and **LAN через Tailscale/VPN** are checkboxes.
-All three editions include the console switch, separate
-OpenGL ES scene/UI filters and the FSR sharpness slider. Each edition keeps its
-own profile settings. All three editions keep the original battle camera distance and aim,
+The port's options are in two categories of the game's own **Настройки**, the same
+in all three editions; each edition keeps its own profile settings:
+
+- **Дополнительные**: page **Интерфейс и сеть** (interface scale, **LAN через
+  Tailscale/VPN**, the console switch) and page **Управление** (camera sensitivity,
+  cursor offsets, touch cursor, troop-split tips and zones, battle confirmation,
+  special-attack hints, route and attack direction).
+- **Доп. графика**: page **Изображение** (render scale, frame rate, OpenGL ES scene
+  filter, FSR sharpness, interface filter) and page **Эффекты**:
+  - **Подробные модели на карте** (on by default): creatures and heroes on the
+    adventure map use their full models and textures instead of the reduced `_LOD`
+    ones the original data assigns there. It applies after the game restarts.
+  - **Туман** (on by default): the engine's Direct3D 9 fog (battle arenas, towns,
+    underground and snowy scenes) is drawn under OpenGL ES; DXVK draws it itself.
+  - **Плавное размытие входа в бой** (off by default): a smooth zoom-streak version
+    of the adventure-to-battle transition instead of the original blocky one, at the
+    same frame rate.
+
+In battle the game disables the first page of each category, so everything that can
+change during a battle sits on the second page. Render and interface scales use native
+sliders with fixed percentage steps. The frame rate dropdown is built from the
+display's own refresh rates (30 FPS and every supported rate from 45 to 240 Hz).
+The game's own video options now work under OpenGL ES as well: **Гамма** (applied
+in the final presentation pass), **Сглаживание** 2x/4x (multisampled rendering; it
+costs a lot of GPU time, so keep it off on weaker phones) and anisotropic filtering. All three editions keep the original battle camera distance and aim,
 with the vertical coverage of its 16:9 PC view on wider displays, including attack
 close-ups. Above 100% UI scale, deployment keeps the entire available placement
 grid above the reserve bar without zooming out; the battle overview compensates
@@ -597,18 +632,49 @@ send `homm5.1.log` (the session that crashed) together with `homm5.log`.
 
 ## Versions and local release files
 
-The current version is `0.7-dev` / code `12`. Earlier development builds used
-`0.1-dev`, `0.2-dev`, `0.3-dev`, `0.3.1-dev`, `0.3.2-dev`, `0.4-dev`, `0.5-dev`, `0.5.1-dev` and `0.6-dev`. The version is stored in
+The current version is `0.8-dev` / code `13`. Earlier development builds used
+`0.1-dev`, `0.2-dev`, `0.3-dev`, `0.3.1-dev`, `0.3.2-dev`, `0.4-dev`, `0.5-dev`, `0.5.1-dev`, `0.6-dev` and `0.7-dev`. The version is stored in
 `android/app/AndroidManifest.xml`; increase `android:versionCode` for every
 subsequent published build. Version `0.3-dev` uses code `5` (the replacement
 build supersedes the earlier code `4` APK); `0.3.1-dev` uses code `6`, and
 `0.3.2-dev` uses code `7`, `0.4-dev` uses code `8`, `0.5-dev` uses code `9`, and
-`0.5.1-dev` uses code `10`, and `0.6-dev` uses code `11`.
+`0.5.1-dev` uses code `10`, `0.6-dev` uses code `11`, and `0.7-dev` uses code `12`.
 
-Local release copies use `heroes-v-0.7-dev-<sha256-prefix>.apk`, where the suffix
+Local release copies use `heroes-v-0.8-dev-<sha256-prefix>.apk`, where the suffix
 is the first eight characters of the APK's SHA-256, with a companion `.sha256`
 file. The `pub/` directory is ignored. Building and naming an APK does not
 automatically publish it or create a Git tag.
+
+## Changes in 0.8-dev
+
+For all three editions:
+
+- Faster AI turns on huge maps: **Быстрый ход ИИ** (on by default) stops the AI from
+  saving and checksumming the whole map's object-name table again in every rollback of
+  a simulated visit; on a 256x256 map the AI's own time fell by about a third and the
+  wait after ending a turn by about a fifth. Each rollback checks that it restored the
+  same state, and the original path returns for the rest of the session once a network
+  socket opens (LAN games).
+- Dense adventure views under OpenGL ES: the upload ring now grows when frames keep
+  outgrowing it; a dense Heroes V 1.6 map view went from about 8 to about 38 FPS.
+- New **Доп. графика** settings: full adventure-map models instead of the reduced LOD
+  ones, Direct3D 9 fog, a smooth battle-entry blur; the game's gamma, anti-aliasing and
+  anisotropic filtering options now work under OpenGL ES.
+- Taller settings-category scrolls keep all four categories and the Back button
+  inside the paper panel, including at 200% UI scale.
+- Save lists with many saves open faster; saving compresses with a native deflate that
+  writes the same bytes as the original `zlib1.dll`.
+- Native lighting, skinning and battle-grid code raise battle and far-view frame rates
+  by about 3–6%. Common DLL code lives in one shared library (`libhomm5_common.so`),
+  saving about 43 MB when all three editions are installed.
+- Audio reopens its output with the unplayed tail kept when the route changes.
+- Heroes V 1.6 and Hammers of Fate: the console opens with one hold of the settings
+  button after the render scale changes; shadow and water fixes of Tribes of the East.
+- The DXVK (Turnip) and DXVK (Vulkan) renderers are offered again for manual choice
+  (see Renderers). The runtime is installed only at the first DXVK start: installed
+  native libraries 21.7 → 2.8 MB for everyone else, APK 77.0 → 75.3 MB.
+
+- Set Android version to `0.8-dev` / code `13`.
 
 ## Changes in 0.7-dev
 

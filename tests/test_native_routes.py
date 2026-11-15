@@ -27,6 +27,20 @@ EXPECTED = {
     "skin_math_three": (("00C683E0", "008C5480", "00A45D60"), "void_skin_math_three_dispatch", "void_skin_math_three"),
     "reference_object": (("004FA280", "00459100", "0047B340"), "void_reference_native_object_dispatch", "void_reference_native_object"),
     "reference_tile": (("00C05AC0", "00A44BE0", "008078A0"), "void_reference_native_tile_dispatch", "void_reference_native_tile"),
+    "vertex_point": (("00CF8D80", "00BE3F50", "008FDD90"), "void_vertex_point_dispatch", "void_vertex_point"),
+    "vertex_curve": (("00CF8F30", "00BE4100", "008FDF40"), "void_vertex_curve_dispatch", "void_vertex_curve"),
+    "vertex_blend": (("00C687C0", "008C5860", "00A46140"), "void_vertex_blend_dispatch", "void_vertex_blend"),
+    "vertex_light": (("00CF92C0", "00BE4490", "008FE2D0"), "void_vertex_light_dispatch", "void_vertex_light"),
+    "dilate_grid": (("00B3EFB0", "0083D910", "00A712C0"), "void_dilate_grid_dispatch", "void_dilate_grid"),
+    "ai_step": (("0086DD40", "00A33E60", "00A801F0"), "void_ai_step_dispatch", "void_ai_step"),
+    "ai_name_find": (("00BD1150", "0083AC00", "00B79FC0"), "void_ai_name_find_dispatch", "void_ai_name_find"),
+    "ai_string_assign": (("00404150", "00405200", "00403870"), "void_ai_string_assign_dispatch", "void_ai_string_assign"),
+    "ai_estimate": (("00BC5480", "004847F0", "00848150"), "void_ai_estimate_dispatch", "void_ai_estimate"),
+    "ai_undo_rollback": (("0050C7C0", "00A566E0", "004DC770"), "void_ai_rollback_dispatch", "void_ai_rollback"),
+    "ai_undo_commit": (("0050C550", "00A56470", "004DC500"), "void_ai_commit_dispatch", "void_ai_commit"),
+    "ai_undo_full": (("0050C4A0", "00A563C0", "004DC450"), "void_ai_full_snapshot_dispatch", "void_ai_full_snapshot"),
+    "ai_undo_snapshot": (("0050C3E0", "00A56300", "004DC390"), "void_ai_snapshot_dispatch", "void_ai_snapshot"),
+    "ai_names_serialize": (("00C01130", "00B5AAA0", "009E3C60"), "void_ai_names_serialize_dispatch", "void_ai_names_serialize"),
 }
 
 
@@ -106,11 +120,12 @@ class NativeCatalogTest(unittest.TestCase):
     def test_catalog_selected_body_ids_and_explicit_source_policy(self):
         self.assertEqual(set(routes.ROUTE_GROUPS), set(EXPECTED))
         self.assertEqual(routes.NATIVE_SOURCES, {"scene_native.c", "grid_native.c", "observer_native.c",
-            "vector_native.c", "skin_native.c", "leaves_native.c", "curves_native.c", "skin_math_native.c", "object_refs_native.c"})
+            "vector_native.c", "skin_native.c", "leaves_native.c", "curves_native.c", "skin_math_native.c", "object_refs_native.c",
+            "vertex_native.c", "dilate_native.c", "ai_turn_native.c", "ai_names_native.c", "ai_undo_native.c"})
         for edition in ("toe", "vanilla", "hof"):
             records = routes.algorithm_entries(edition)
-            self.assertEqual(len(records), {"toe": 274, "vanilla": 18, "hof": 19}[edition])
-            self.assertEqual(sum(r["global_route"] for r in records), 268 if edition == "toe" else 12)
+            self.assertEqual(len(records), {"toe": 288, "vanilla": 32, "hof": 33}[edition])
+            self.assertEqual(sum(r["global_route"] for r in records), 282 if edition == "toe" else 26)
             contextual = {"grid_field", "vector_field", "reference_tile_cast", "reference_tile_assign", "reference_release", "reference_virtual_base"}
             if edition == "hof":
                 contextual.add("reference_hof_base")
@@ -139,7 +154,7 @@ class NativeCatalogTest(unittest.TestCase):
                 if edition == "toe":
                     expected += [(va, "void_leaf_dispatch_" + va, "void_leaf_native_" + va) for va in routes.LEAF_ENTRIES]
                 count = len(expected)
-                self.assertEqual(count, 268 if edition == "toe" else 12)
+                self.assertEqual(count, 282 if edition == "toe" else 26)
                 prefix = """
 #include <assert.h>
 #include <stdint.h>

@@ -30,6 +30,8 @@ static GLenum face_target(d3d_texture *t, uint32_t face)
 
 static int is_render_target_usage(uint32_t usage) { return (usage & (D3DUSAGE_RENDERTARGET | D3DUSAGE_DEPTHSTENCIL)) != 0; }
 
+void d3d_gl_transition_forget(GLuint key);   /* d3d9_gl.c: a supersampled transition target */
+
 static void apply_swizzle(GLenum target, const d3d_format *f, uint32_t usage)
 {
     GLint sw[4] = { f->swizzle[0], f->swizzle[1], f->swizzle[2], f->swizzle[3] };
@@ -217,6 +219,7 @@ static void run_set_storage(void *args)
                    (GLsizei)t->height);
     glTexParameteri(t->target, GL_TEXTURE_MAX_LEVEL, (GLint)t->levels - 1);
     apply_swizzle(t->target, t->fmt, t->usage);
+    d3d_gl_transition_forget(old);
     d3d_gl_forget_texture(old);
     glDeleteTextures(1, &old);
     GLenum e = glGetError();
@@ -405,7 +408,7 @@ static void_com_class texture_class, cube_class, volume_class;
 static void run_texture_free(void *args)
 {
     d3d_texture *t = *(d3d_texture **)args;
-    if (t->gl) { d3d_gl_forget_texture(t->gl); glDeleteTextures(1, &t->gl); }
+    if (t->gl) { d3d_gl_transition_forget(t->gl); d3d_gl_forget_texture(t->gl); glDeleteTextures(1, &t->gl); }
     free(t->surfaces);
     free(t);
 }

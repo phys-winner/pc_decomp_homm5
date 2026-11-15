@@ -146,7 +146,8 @@ class LauncherMenuTest(unittest.TestCase):
         processes = {service.get(android + "name"): service.get(android + "process") for service in app.findall("service")}
         # Import, cleanup and texture work live in the launcher's memory (Work.current, kept by its service).
         self.assertEqual(processes.pop("org.homm5.port.launcher.Work$WorkService"), launcher.get(android + "process"))
-        self.assertEqual(processes, {})
+        # The DXVK modes' Vulkan driver check runs apart: a driver that crashes takes only the probe down.
+        self.assertEqual(processes, {"org.homm5.port.launcher.Probe": ":probe"})
 
     def test_native_menu(self):
         source = (ROOT / "android/host/touch_engine.c").read_text(encoding="utf8")

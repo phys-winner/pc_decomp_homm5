@@ -183,6 +183,10 @@ typedef struct Context
     int texm3x3pad_src0;
     int texm3x3pad_dst1;
     int texm3x3pad_src1;
+    /* Heroes V: source modifiers (t0_bx2) of the TEXM3X*PAD sources. */
+    int texm3x2pad_src0_mod;
+    int texm3x3pad_src0_mod;
+    int texm3x3pad_src1_mod;
     MOJOSHADER_preshader *preshader;
 
 #if SUPPORT_PROFILE_ARB1_NV

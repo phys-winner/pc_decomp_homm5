@@ -19,6 +19,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/* d3d9_gl.c: vpUiBlur of UI filter 4 (a battle-transition layer). */
+const float *d3d_gl_ui_blur(void);
+
 /* Operand counts from MojoShader's instruction table; SM1 has no length field. */
 static const int8_t sm1_operands[] = {
      0,  2,  3,  3,  4,  3,  2,  2,  3,  3,  3,  3,  3,  3,  2,  2, /* 0..15 */
@@ -165,6 +168,70 @@ static char *fix_pixel_varyings(const char *src)
 }
 
 static char *patch_shader(const char *src, int pixel);
+
+/* Direct3D 9 fog: after a pre-3.0 pixel shader the fixed-function stage blends
+ * rgb toward D3DRS_FOGCOLOR by a factor f, alpha unchanged (before the alpha
+ * test and blending). Wine's rules (state_fog_fragpart, wined3d_ffp_get_fs_settings),
+ * checked against Windows there: f = (end - c) * scale for LINEAR, exp(-d c) for
+ * EXP, exp(-(d c)^2) for EXP2, clamped to [0, 1]. c is the fog coordinate:
+ * a vs_1_x/2_x shader's oFog (MojoShader's io_11_1.x; with FOGTABLEMODE NONE
+ * that is LINEAR with start 1, end 0, i.e. f = oFog; an unwritten oFog reads 0,
+ * fully fogged), the fixed-function vertex stage's (d3d9_ff.c), or the depth
+ * for table fog. vpFogParams = (end, scale, density, 0). */
+enum { FOG_OFF, FOG_LINEAR, FOG_EXP, FOG_EXP2 };
+#define FOG_VARYING "io_11_1"
+
+static void fog_factor_glsl(char *out, size_t cap, int mode, const char *coordinate)
+{
+    if (mode == FOG_EXP) snprintf(out, cap, "exp(-vpFogParams.z * %s)", coordinate);
+    else if (mode == FOG_EXP2)
+        snprintf(out, cap, "exp(-(vpFogParams.z * %s) * (vpFogParams.z * %s))", coordinate, coordinate);
+    else snprintf(out, cap, "(vpFogParams.x - %s) * vpFogParams.y", coordinate);
+}
+
+/* The pixel shader with fog `mode` applied before every alpha test call (the
+ * patched main tests at each return and at its end), so it works with any alpha
+ * variant made from it afterwards. FOG_OFF returns an unchanged copy. */
+static char *fog_source(const char *src, int mode)
+{
+    const char *call = "void_alpha_test();", *anchor = strstr(src, "uniform int vpAlphaFunc;");
+    if (mode <= FOG_OFF || mode > FOG_EXP2 || !anchor || !strstr(src, call)) return strdup(src);
+    char factor[160], helper[640];
+    fog_factor_glsl(factor, sizeof factor, mode, FOG_VARYING ".x");
+    snprintf(helper, sizeof helper, "%suniform vec4 vpFogColor;\nuniform vec4 vpFogParams;\n"
+        "void void_fog() {\n\tps_oC0.rgb = mix(vpFogColor.rgb, ps_oC0.rgb, clamp(%s, 0.0, 1.0));\n}\n",
+        strstr(src, "in highp vec4 " FOG_VARYING ";") ? "" : "in highp vec4 " FOG_VARYING ";\n", factor);
+    size_t calls = 0, len = strlen(src), extra = strlen("void_fog(); ");
+    for (const char *p = strstr(src, call); p; p = strstr(p + 1, call)) ++calls;
+    char *out = (char *)malloc(len + strlen(helper) + calls * extra + 1), *w = out;
+    size_t head = (size_t)(anchor - src);
+    memcpy(w, src, head); w += head;
+    strcpy(w, helper); w += strlen(helper);
+    for (const char *p = anchor; *p;) {
+        /* Calls only: the helper's own definition is "void_alpha_test() {". */
+        if (!strncmp(p, call, strlen(call))) {
+            memcpy(w, "void_fog(); ", extra); w += extra;
+            memcpy(w, call, strlen(call)); w += strlen(call); p += strlen(call);
+        } else {
+            *w++ = *p++;
+        }
+    }
+    *w = 0;
+    return out;
+}
+
+/* Table fog drawn by a vertex shader takes the D3D clip-space z as its
+ * coordinate (Wine: VS_FOG_Z, gl_Position.z before the GL depth remap). */
+static char *fog_depth_source(const char *src)
+{
+    const char *flip = "\tgl_Position.y = gl_Position.y * vpFlip;";
+    if (!strstr(src, flip)) return strdup(src);
+    const char *decl = "out highp vec4 " FOG_VARYING ";";
+    char *declared = strstr(src, decl) ? strdup(src) : insert_before(src, "void main()", "out highp vec4 " FOG_VARYING ";\n");
+    char *out = insert_before(declared, flip, "\t" FOG_VARYING " = vec4(gl_Position.z);\n");
+    free(declared);
+    return out;
+}
 
 static int alpha_test_mode(const uint32_t *rs)
 {
@@ -504,10 +571,13 @@ typedef struct program {
     uint32_t bgra_mask;           /* low 16: BGRA attributes; high 16: SM1 sampler types */
     uint32_t ff_id;               /* the generated half (d3d9_ff.c), 0 for none */
     int alpha_mode;
+    int fog;                      /* FOG_* formula | FOG_DEPTH_VS: the variant the program was made for */
+    GLint loc_fog_color, loc_fog_params;
+    float last_fog[8];
     GLuint gl, vs_gl, ps_gl;
     int owns_vs, owns_ps;
     GLint loc_vs_f, loc_vs_i, loc_vs_b, loc_ps_f, loc_ps_i, loc_ps_b;
-    GLint loc_flip, loc_half, loc_alpha_func, loc_alpha_ref, loc_ui_filter;
+    GLint loc_flip, loc_half, loc_alpha_func, loc_alpha_ref, loc_ui_filter, loc_ui_blur;
     umap_t vs_map[256], ps_map[256];
     int vs_map_count, ps_map_count;
     int vs_f_count, vs_i_count, vs_b_count, ps_f_count, ps_i_count, ps_b_count;
@@ -722,9 +792,13 @@ static void reconcile_varyings(const char *vs_src, const char *ps_src, char **vs
 
 /* d3d9_ff.c */
 void d3d_ff_attributes(int *attr_count, int *usage, int *index);
-GLuint d3d_ff_vertex_stage(d3d_device *d, const char *ps_source, uint32_t *id);
-GLuint d3d_ff_pixel_stage(d3d_device *d, const char *vs_source, uint32_t *id, uint32_t *stage_mask);
+GLuint d3d_ff_vertex_stage(d3d_device *d, const char *ps_source, uint32_t fog_coord, uint32_t *id);
+GLuint d3d_ff_pixel_stage(d3d_device *d, const char *vs_source, uint32_t fog, int fog_depth, uint32_t *id,
+    uint32_t *stage_mask);
 void d3d_ff_uniforms(d3d_device *d, GLuint program, int vertex, int pixel);
+int d3d_fog_state(d3d_device *d, int vs_major, int ps_major, uint32_t *coord, float params[4], float color[4]);
+#define FOG_DEPTH_VS 4            /* program fog flag: the vertex shader writes its clip z (table fog) */
+#define FFOG_SHADER_DEPTH 6       /* d3d9_ff.c's coordinate source of that case */
 
 /* ------------------------------------------------- program binary cache */
 /* A program is named by its final GLSL, its attribute bindings and the GL
@@ -916,11 +990,28 @@ static void binary_store(GLuint gl, const uint64_t key[2])
 
 /* Link vs and ps; a missing one is replaced by the generated shader object
  * ff_gl (named by ff_id), whose samplers are the stages in ff_samplers. */
+/* The vertex shader's GLSL for a BGRA mask and the fog depth variant; NULL
+ * when the plain source applies (or on failure, *failed set). */
+static char *vertex_text(d3d_shader *vs, uint32_t mask, int fog_depth, int *failed)
+{
+    *failed = 0;
+    if (!(mask & 0xFFFFu) && !fog_depth) return NULL;
+    char *text = vertex_source(vs, mask);
+    if (!text) { *failed = 1; return NULL; }
+    if (fog_depth) {
+        char *depth = fog_depth_source(text);
+        free(text);
+        text = depth;
+    }
+    return text;
+}
+
 static program_t *link_program(d3d_shader *vs, d3d_shader *ps, uint32_t bgra_mask, GLuint ff_gl, uint32_t ff_id,
-    uint32_t ff_samplers, int alpha_mode)
+    uint32_t ff_samplers, int alpha_mode, int fog)
 {
     program_t *p = (program_t *)calloc(1, sizeof *p);
-    p->vs = vs; p->ps = ps; p->bgra_mask = bgra_mask; p->ff_id = ff_id; p->alpha_mode = alpha_mode;
+    p->vs = vs; p->ps = ps; p->bgra_mask = bgra_mask; p->ff_id = ff_id; p->alpha_mode = alpha_mode; p->fog = fog;
+    int fog_depth = vs && (fog & FOG_DEPTH_VS);
     if (vs) {
         const MOJOSHADER_parseData *vpd = vs->parse;
         p->attr_count = vpd->attribute_count < 16 ? vpd->attribute_count : 16;
@@ -935,18 +1026,28 @@ static program_t *link_program(d3d_shader *vs, d3d_shader *ps, uint32_t bgra_mas
     uint32_t sampler_types = bgra_mask >> 16;
     char *ps_text = ps && sampler_types ? pixel_source(ps, sampler_types) : NULL;
     if (sampler_types && !ps_text) { destroy_program(p); return NULL; }
+    if (ps && (fog & 3)) {
+        /* Before the varyings are matched: an oFog the vertex stage never writes reads 0. */
+        char *fogged = fog_source(ps_text ? ps_text : ps->source, fog & 3);
+        free(ps_text);
+        ps_text = fogged;
+    }
     const char *ps_base = ps_text ? ps_text : ps ? ps->source : NULL;
     char *vs_fixed = NULL, *ps_fixed = NULL, *vs_text = NULL, *ff_text = NULL;
-    if (vs && ps) reconcile_varyings(vs->source, ps_base, &vs_fixed, &ps_fixed);
+    int vs_failed = 0;
+    char *vs_depth = fog_depth ? fog_depth_source(vs->source) : NULL;
+    if (vs && ps) reconcile_varyings(vs_depth ? vs_depth : vs->source, ps_base, &vs_fixed, &ps_fixed);
+    free(vs_depth);
     int vs_ok = 1;
     if (vs_fixed) {
-        /* The same fix applied to the BGRA variant's source. */
-        char *variant = vertex_source(vs, bgra_mask), *ignored = NULL;
+        /* The same fix applied to the BGRA (and fog depth) variant's source. */
+        char *variant = vertex_text(vs, bgra_mask, fog_depth, &vs_failed), *ignored = NULL;
+        if (!variant && !vs_failed) variant = strdup(vs->source);
         if (variant) reconcile_varyings(variant, ps_base, &vs_text, &ignored);
         free(variant); free(ignored); free(vs_fixed);
         vs_ok = vs_text != NULL;
-    } else if (vs && (bgra_mask & 0xFFFFu)) {
-        vs_text = vertex_source(vs, bgra_mask);
+    } else if (vs && ((bgra_mask & 0xFFFFu) || fog_depth)) {
+        vs_text = vertex_text(vs, bgra_mask, fog_depth, &vs_failed);
         vs_ok = vs_text != NULL;
     }
     if (!vs_ok) { free(ps_fixed); free(ps_text); destroy_program(p); return NULL; }
@@ -1025,6 +1126,10 @@ static program_t *link_program(d3d_shader *vs, d3d_shader *ps, uint32_t bgra_mas
     p->loc_alpha_func = glGetUniformLocation(p->gl, "vpAlphaFunc");
     p->loc_alpha_ref = glGetUniformLocation(p->gl, "vpAlphaRef");
     p->loc_ui_filter = glGetUniformLocation(p->gl, "vpUiFilter");
+    p->loc_ui_blur = glGetUniformLocation(p->gl, "vpUiBlur");
+    p->loc_fog_color = (fog & 3) ? glGetUniformLocation(p->gl, "vpFogColor") : -1;
+    p->loc_fog_params = (fog & 3) ? glGetUniformLocation(p->gl, "vpFogParams") : -1;
+    for (int i = 0; i < 8; ++i) p->last_fog[i] = -1.0e30f;
     if (p->loc_flip >= 0) glUniform1f(p->loc_flip, -1.0f);
     p->last_alpha_func = -1;
     if (vs) build_map(vs->parse, p->vs_map, &p->vs_map_count, &p->vs_f_count, &p->vs_i_count, &p->vs_b_count);
@@ -1110,7 +1215,11 @@ void d3d_shader_upload(d3d_device *dev, float half_x, float half_y, int alpha_fu
 {
     program_t *p = current_program;
     if (!p) return;
-    if (p->loc_ui_filter >= 0) glUniform1i(p->loc_ui_filter, d3d_gl_ui_drawing() ? d3d_gl_ui_filter() : -1);
+    if (p->loc_ui_filter >= 0) {
+        int filter = d3d_gl_ui_drawing() ? d3d_gl_ui_filter() : -1;
+        glUniform1i(p->loc_ui_filter, filter);
+        if (filter == 4 && p->loc_ui_blur >= 0) glUniform4fv(p->loc_ui_blur, 1, d3d_gl_ui_blur());
+    }
     if (p->uploaded_generation != d3d_constant_generation) {
         /* D3D9 limits: 256 vertex and 224 pixel float registers, 16 int and 16 bool each. */
         static float vs_f[256 * 4 + 4], ps_f[256 * 4 + 4];
@@ -1262,12 +1371,16 @@ static void prelink_created(d3d_shader *s)
         if ((s->pixel ? e->ps : e->vs) != h) continue;
         d3d_shader *vs = s->pixel ? live_find(e->vs, 0) : s, *ps = s->pixel ? s : live_find(e->ps, 1);
         if (!vs || !ps || !vs->parse || !ps->parse) continue;
-        uintptr_t slot = ((uintptr_t)vs * 31u + (uintptr_t)ps * 17u + e->bgra + (uint32_t)e->alpha * 13u) % 1024u;
+        /* A recorded pair's variant: alpha mode in the low 4 bits, the fog variant above. */
+        int alpha = e->alpha & 15, fog = e->alpha >> 4;
+        uintptr_t slot = ((uintptr_t)vs * 31u + (uintptr_t)ps * 17u + e->bgra + (uint32_t)alpha * 13u +
+                          (uint32_t)fog * 101u) % 1024u;
         program_t *p = programs[slot];
-        while (p && !(p->vs == vs && p->ps == ps && p->bgra_mask == e->bgra && p->ff_id == 0 && p->alpha_mode == e->alpha))
+        while (p && !(p->vs == vs && p->ps == ps && p->bgra_mask == e->bgra && p->ff_id == 0 && p->alpha_mode == alpha &&
+                      p->fog == fog))
             p = p->next;
         if (p) continue;
-        p = link_program(vs, ps, e->bgra, 0, 0, 0, e->alpha);
+        p = link_program(vs, ps, e->bgra, 0, 0, 0, alpha, fog);
         if (!p) continue;
         p->next = programs[slot];
         programs[slot] = p;
@@ -1296,23 +1409,42 @@ int d3d_shader_bind2(d3d_device *dev, d3d_shader *vs, d3d_shader *ps, int (*bgra
     for (int i = 0; vs && i < vs->parse->attribute_count && i < 16; ++i)
         if (bgra_of(dev, vs->parse->attributes[i].usage, vs->parse->attributes[i].index)) mask |= 1u << i;
     mask |= legacy_sampler_types(dev, ps) << 16;
+    /* Fog (D3DRS_FOGENABLE) after a pre-3.0 pixel stage; off: the programs are the former ones. */
+    uint32_t fog_coord;
+    float fog_params[4], fog_color[4];
+    int fog_formula = d3d_fog_state(dev, vs ? (int)vs->parse->major_ver : 0, ps ? (int)ps->parse->major_ver : 0,
+                                    &fog_coord, fog_params, fog_color);
+    int fog = fog_formula | (vs && fog_coord == FFOG_SHADER_DEPTH ? FOG_DEPTH_VS : 0);
     /* A missing shader is replaced by the fixed-function half for the current state. */
-    if (!vs) ff_gl = d3d_ff_vertex_stage(dev, ps->source, &ff_id);
-    else if (!ps) ff_gl = d3d_ff_pixel_stage(dev, vs->source, &ff_id, &ff_samplers);
+    if (!vs) ff_gl = d3d_ff_vertex_stage(dev, ps->source, fog_formula ? fog_coord : 0, &ff_id);
+    else if (!ps) ff_gl = d3d_ff_pixel_stage(dev, vs->source, (uint32_t)fog_formula, (fog & FOG_DEPTH_VS) != 0, &ff_id,
+                                             &ff_samplers);
     if ((!vs || !ps) && !ff_gl) return 0;
     int alpha_mode = ps ? alpha_test_mode(dev->st.rs) : 9;
-    uintptr_t h = ((uintptr_t)vs * 31u + (uintptr_t)ps * 17u + mask + ff_id * 7u + (uint32_t)alpha_mode * 13u) % 1024u;
+    /* The fixed-function pixel half carries its fog in its own key; only the depth variant is ours. */
+    if (!ps) fog &= FOG_DEPTH_VS;
+    uintptr_t h = ((uintptr_t)vs * 31u + (uintptr_t)ps * 17u + mask + ff_id * 7u + (uint32_t)alpha_mode * 13u +
+                   (uint32_t)fog * 101u) % 1024u;
     program_t *p = programs[h];
-    while (p && !(p->vs == vs && p->ps == ps && p->bgra_mask == mask && p->ff_id == ff_id && p->alpha_mode == alpha_mode)) p = p->next;
+    while (p && !(p->vs == vs && p->ps == ps && p->bgra_mask == mask && p->ff_id == ff_id && p->alpha_mode == alpha_mode &&
+                  p->fog == fog)) p = p->next;
     if (!p) {
-        p = link_program(vs, ps, mask, ff_gl, ff_id, ff_samplers, alpha_mode);
+        p = link_program(vs, ps, mask, ff_gl, ff_id, ff_samplers, alpha_mode, fog);
         if (!p) return 0;
         p->next = programs[h];
         programs[h] = p;
-        if (vs && ps && !ff_id) prelink_record(vs, ps, mask, alpha_mode);
+        if (vs && ps && !ff_id) prelink_record(vs, ps, mask, alpha_mode | fog << 4);
     }
     if (current_program != p) glUseProgram(p->gl);
     current_program = p;
+    if ((p->fog & 3) && p->loc_fog_color >= 0 && memcmp(p->last_fog, fog_color, 16)) {
+        glUniform4fv(p->loc_fog_color, 1, fog_color);
+        memcpy(p->last_fog, fog_color, 16);
+    }
+    if ((p->fog & 3) && p->loc_fog_params >= 0 && memcmp(p->last_fog + 4, fog_params, 16)) {
+        glUniform4fv(p->loc_fog_params, 1, fog_params);
+        memcpy(p->last_fog + 4, fog_params, 16);
+    }
     if (!vs || !ps) d3d_ff_uniforms(dev, p->gl, !vs, !ps);
     *attr_count = p->attr_count;
     *attr_usage = p->attr_usage;
@@ -1355,7 +1487,7 @@ void d3d_shader_trace(void)
     for (int i = 0; i < shown_count; ++i) if (shown[i] == p) seen = 1;
     if (!seen && shown_count < 256) {
         shown[shown_count++] = p;
-        void_log("[trace]   program %u injected alpha mode %d", p->gl, p->alpha_mode);
+        void_log("[trace]   program %u injected alpha mode %d fog %d", p->gl, p->alpha_mode, p->fog);
         if (p->vs) void_log("[trace]   vertex GLSL of program %u:\n%s", p->gl, p->vs->source);
         if (p->ps) void_log("[trace]   pixel GLSL of program %u:\n%s", p->gl, p->ps->source);
     }

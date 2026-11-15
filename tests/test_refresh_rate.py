@@ -23,6 +23,11 @@ public class RefreshRateCheck extends RefreshRateCheckBase {
     void releaseAll() { releases++; }
     void nativePause(boolean paused) { assert !paused; pauses++; }
     void nativeSurface(Object value) { nativeSurfaces++; lastNativeSurface=(Surface)value; }
+    /* onResume's other duties: the combat overlay (none here) and the next touch hint. */
+    static class Overlay { void setRunning(boolean running) {} }
+    private Overlay combatOverlay;
+    void showNextTouchHint() {}
+    boolean dxvkSurface() { return false; }
     static class Build { static class VERSION { static int SDK_INT=30; } }
     static class WindowManager {
         static class LayoutParams { int preferredDisplayModeId; }
@@ -200,6 +205,7 @@ class RefreshRateTest(unittest.TestCase):
             "    @Override public void surfaceChanged(",
             "    @Override public void surfaceDestroyed(",
             "    @Override protected void onResume(",
+            "    private void showDxvkSurface(",
             "    @Override public void onWindowFocusChanged(",
         ))
         methods = methods.replace("android.view.Surface", "Surface")

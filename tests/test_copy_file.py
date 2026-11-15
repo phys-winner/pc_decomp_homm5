@@ -110,6 +110,9 @@ static void listing_forget_parent(const char *path, int subtree) {
     for(int i=3;i<32;++i)assert(!fds[i].file);
     ++forget_calls;forgot_subtree=subtree;strcpy(forgotten,path);
 }
+/* Parked read handles of the destination are dropped before it is written. */
+static unsigned drop_calls;
+static void parked_drop(const char *path) { assert(path);for(int i=3;i<32;++i)assert(!fds[i].file);++drop_calls; }
 #include "copy.h"
 static void no_leaks(void) { for(int i=3;i<32;++i)assert(!fds[i].file); }
 static uint32_t copy_a(const char *from, const char *to, int fail) {

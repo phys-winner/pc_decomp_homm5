@@ -1,12 +1,14 @@
-"""Execute original category spacing with actual legacy menu resources.
+"""Execute original category spacing with actual menu resources.
 
 Vanilla places categories above CombatReplay, while HoF uses Template. Moving
 Back alone increased Vanilla's row spacing and clipped Game and Video above the
-panel. Keep both the resource regression and the native positioning oracle.
+panel. All four categories must also clear the scroll's rolled top edge.
 """
+import io
 import sys
 import unittest
 import xml.etree.ElementTree as ET
+from PIL import Image
 
 from test_legacy_ui import generated_body
 from test_static_tls import ROOT, compile_probe
@@ -19,6 +21,9 @@ import prepare_windows_runtime
 
 
 ENGINES = {
+    "toe": {"function": 0x75D3C0, "registry": 0xA4AA50, "cast": 0xD119FC,
+            "builder": 0x75D0F0, "ANCHOR": 0x1D8, "BACK": 0x190,
+            "resource": "CombatReplay"},
     "vanilla": {"function": 0x70C000, "registry": 0x9CD400, "cast": 0xC0D69E,
                 "builder": 0x70BD30, "ANCHOR": 0x1D0, "BACK": 0x188,
                 "resource": "CombatReplay"},
@@ -33,6 +38,16 @@ class LegacyOptionsMenuTest(unittest.TestCase):
         native = ENGINES[edition]
         game = game_directory(edition)
         patched = port_ui.launcher_buttons(game, edition)
+        constants = port_ui.source_resource(game, port_ui.UICONSTS, edition)[0]
+        categories = ET.fromstring(port_ui.patch_uiconsts(constants, edition)).findall("GameOptions/Categories/Item")
+        self.assertEqual(len(categories), 4)
+        panel = ET.fromstring(patched["UI/GameOptions/MenuPanel.(WindowSimple).xdb"])
+        self.assertEqual(panel.findtext("Placement/Size/First/y"), "327")
+        background = ET.fromstring(patched["UI/GameOptions/PortMenu.(BackgroundSimpleScallingTexture).xdb"])
+        texture = background.find("Texture").get("href").split("#", 1)[0].lstrip("/")
+        image, _ = port_ui.source_resource(game, texture.replace(".xdb", ".dds"), edition)
+        with Image.open(io.BytesIO(image)) as source:
+            self.assertEqual(source.getbbox(), (0, 0, 328, int(background.findtext("Size/y"))))
         positions = {}
         for label, name in (("ANCHOR", native["resource"]), ("BACK", "Back")):
             path = "UI/GameOptions/" + name + ".(WindowMSButton).xdb"
@@ -51,9 +66,9 @@ class LegacyOptionsMenuTest(unittest.TestCase):
         harness = (ROOT / "tests/fixtures/legacy_options_menu_probe.c").read_text(encoding="utf-8")
         harness = (harness.replace("/* STATE */", state).replace("/* GENERATED */", body)
                    .replace("ORIGINAL()", "sub_%08X()" % native["function"]))
-        values = dict(positions, ANCHOR=native["ANCHOR"], BACK=native["BACK"])
+        values = dict(positions, ANCHOR=native["ANCHOR"], BACK=native["BACK"], CATEGORY_COUNT=len(categories))
         defines = "\n".join("#define %s %d" % item for item in values.items()) + "\n"
-        if edition == "vanilla":
+        if edition != "hof":
             defines += "#define VANILLA 1\n"
         compiler, _, _ = build_windows.compiler_environment()
         header = prepare_windows_runtime.platform_header(
@@ -64,10 +79,13 @@ class LegacyOptionsMenuTest(unittest.TestCase):
                                    "/clang:-Wno-unused-label",
                                    "/clang:-Wno-unused-function"])
 
-    def test_vanilla_combat_replay_anchor_keeps_three_categories_visible(self):
+    def test_toe_combat_replay_anchor_keeps_four_categories_inside_scroll(self):
+        self.run_native_spacing("toe")
+
+    def test_vanilla_combat_replay_anchor_keeps_four_categories_inside_scroll(self):
         self.run_native_spacing("vanilla")
 
-    def test_hof_template_anchor_keeps_three_categories_visible(self):
+    def test_hof_template_anchor_keeps_four_categories_inside_scroll(self):
         self.run_native_spacing("hof")
 
 

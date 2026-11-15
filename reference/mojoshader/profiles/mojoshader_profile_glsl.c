@@ -5,7 +5,8 @@
  * Please see the file LICENSE.txt in the source's root directory.
  *
  *  This file written by Ryan C. Gordon.
- *  Altered locally for Heroes V: Shader Model 1.x texture GLSL translation.
+ *  Altered locally for Heroes V: Shader Model 1.x texture GLSL translation,
+ *  including the Direct3D 9 texture-matrix (TEXM3X*) semantics.
  */
 
 #define __MOJOSHADER_INTERNAL__ 1
@@ -2092,6 +2093,38 @@ EMIT_GLSL_OPCODE_UNIMPLEMENTED_FUNC(TEXREG2AR) // !!! FIXME
 EMIT_GLSL_OPCODE_UNIMPLEMENTED_FUNC(TEXREG2GB) // !!! FIXME
 
 
+// Heroes V: Direct3D 9 semantics of the SM1 texture-matrix opcodes, chosen by
+//  the host per engine (void_mojoshader_texm_semantics, 0 keeps the output
+//  above byte for byte). Upstream drops the source modifier of the normal
+//  register (texm3x2pad t1, t0_bx2), so an unsigned normal map is used as if it
+//  were signed, and builds the TEXM3X3SPEC/VSPEC reflection from component-wise
+//  products, which reduces 2(N.E)/(N.N)N - E to the eye ray itself.
+int void_mojoshader_texm_semantics(void);
+
+static void make_GLSL_texm_source(Context *ctx, const int regnum,
+                                  const int mod, char *buf, const size_t len)
+{
+    char name[64];
+    get_GLSL_varname_in_buf(ctx, REG_TYPE_TEXTURE, regnum, name, sizeof (name));
+    const char *fmt = "%s.xyz";
+    if (void_mojoshader_texm_semantics())
+    {
+        switch ((SourceMod) mod)
+        {
+            case SRCMOD_NEGATE: fmt = "(-%s.xyz)"; break;
+            case SRCMOD_BIAS: fmt = "(%s.xyz - 0.5)"; break;
+            case SRCMOD_BIASNEGATE: fmt = "(-(%s.xyz - 0.5))"; break;
+            case SRCMOD_SIGN: fmt = "((%s.xyz - 0.5) * 2.0)"; break;
+            case SRCMOD_SIGNNEGATE: fmt = "(-((%s.xyz - 0.5) * 2.0))"; break;
+            case SRCMOD_COMPLEMENT: fmt = "(1.0 - %s.xyz)"; break;
+            case SRCMOD_X2: fmt = "(%s.xyz * 2.0)"; break;
+            case SRCMOD_X2NEGATE: fmt = "(-(%s.xyz * 2.0))"; break;
+            default: break;
+        } // switch
+    } // if
+    snprintf(buf, len, fmt, name);
+} // make_GLSL_texm_source
+
 void emit_GLSL_TEXM3X2PAD(Context *ctx)
 {
     // no-op ... work happens in emit_GLSL_TEXM3X2TEX().
@@ -2104,25 +2137,25 @@ void emit_GLSL_TEXM3X2TEX(Context *ctx)
 
     DestArgInfo *info = &ctx->dest_arg;
     char dst[64];
-    char src0[64];
+    char src0[80];
     char src1[64];
-    char src2[64];
+    char src2[80];
     char sampler[64];
     char code[512];
 
     // !!! FIXME: this code counts on the register not having swizzles, etc.
     get_GLSL_varname_in_buf(ctx, REG_TYPE_SAMPLER, info->regnum,
                             sampler, sizeof (sampler));
-    get_GLSL_varname_in_buf(ctx, REG_TYPE_TEXTURE, ctx->texm3x2pad_src0,
-                            src0, sizeof (src0));
+    make_GLSL_texm_source(ctx, ctx->texm3x2pad_src0, ctx->texm3x2pad_src0_mod,
+                          src0, sizeof (src0));
     get_GLSL_varname_in_buf(ctx, REG_TYPE_TEXTURE, ctx->texm3x2pad_dst0,
                             src1, sizeof (src1));
-    get_GLSL_varname_in_buf(ctx, REG_TYPE_TEXTURE, ctx->source_args[0].regnum,
-                            src2, sizeof (src2));
+    make_GLSL_texm_source(ctx, ctx->source_args[0].regnum,
+                          ctx->source_args[0].src_mod, src2, sizeof (src2));
     get_GLSL_destarg_varname(ctx, dst, sizeof (dst));
 
     make_GLSL_destarg_assign(ctx, code, sizeof (code),
-        "texture2D(%s, vec2(dot(%s.xyz, %s.xyz), dot(%s.xyz, %s.xyz)))",
+        "texture2D(%s, vec2(dot(%s, %s.xyz), dot(%s, %s.xyz)))",
         sampler, src0, src1, src2, dst);
 
     output_line(ctx, "%s", code);
@@ -2141,10 +2174,10 @@ void emit_GLSL_TEXM3X3TEX(Context *ctx)
     DestArgInfo *info = &ctx->dest_arg;
     char dst[64];
     char src0[64];
-    char src1[64];
+    char src1[80];
     char src2[64];
-    char src3[64];
-    char src4[64];
+    char src3[80];
+    char src4[80];
     char sampler[64];
     char code[512];
 
@@ -2154,14 +2187,14 @@ void emit_GLSL_TEXM3X3TEX(Context *ctx)
 
     get_GLSL_varname_in_buf(ctx, REG_TYPE_TEXTURE, ctx->texm3x3pad_dst0,
                             src0, sizeof (src0));
-    get_GLSL_varname_in_buf(ctx, REG_TYPE_TEXTURE, ctx->texm3x3pad_src0,
-                            src1, sizeof (src1));
+    make_GLSL_texm_source(ctx, ctx->texm3x3pad_src0, ctx->texm3x3pad_src0_mod,
+                          src1, sizeof (src1));
     get_GLSL_varname_in_buf(ctx, REG_TYPE_TEXTURE, ctx->texm3x3pad_dst1,
                             src2, sizeof (src2));
-    get_GLSL_varname_in_buf(ctx, REG_TYPE_TEXTURE, ctx->texm3x3pad_src1,
-                            src3, sizeof (src3));
-    get_GLSL_varname_in_buf(ctx, REG_TYPE_TEXTURE, ctx->source_args[0].regnum,
-                            src4, sizeof (src4));
+    make_GLSL_texm_source(ctx, ctx->texm3x3pad_src1, ctx->texm3x3pad_src1_mod,
+                          src3, sizeof (src3));
+    make_GLSL_texm_source(ctx, ctx->source_args[0].regnum,
+                          ctx->source_args[0].src_mod, src4, sizeof (src4));
     get_GLSL_destarg_varname(ctx, dst, sizeof (dst));
 
     RegisterList *sreg = reglist_find(&ctx->samplers, REG_TYPE_SAMPLER,
@@ -2171,9 +2204,9 @@ void emit_GLSL_TEXM3X3TEX(Context *ctx)
 
     make_GLSL_destarg_assign(ctx, code, sizeof (code),
         "texture%s(%s,"
-            " vec3(dot(%s.xyz, %s.xyz),"
-            " dot(%s.xyz, %s.xyz),"
-            " dot(%s.xyz, %s.xyz)))",
+            " vec3(dot(%s.xyz, %s),"
+            " dot(%s.xyz, %s),"
+            " dot(%s.xyz, %s)))",
         ttypestr, sampler, src0, src1, src2, src3, dst, src4);
 
     output_line(ctx, "%s", code);
@@ -2189,7 +2222,11 @@ void emit_GLSL_TEXM3X3SPEC_helper(Context *ctx)
     push_output(ctx, &ctx->helpers);
     output_line(ctx, "vec3 TEXM3X3SPEC_reflection(const vec3 normal, const vec3 eyeray)");
     output_line(ctx, "{"); ctx->indent++;
-    output_line(ctx,   "return (2.0 * ((normal * eyeray) / (normal * normal)) * normal) - eyeray;"); ctx->indent--;
+    if (void_mojoshader_texm_semantics())  // Heroes V: R = 2(N.E)/(N.N)N - E.
+        output_line(ctx, "return (2.0 * (dot(normal, eyeray) / dot(normal, normal)) * normal) - eyeray;");
+    else
+        output_line(ctx, "return (2.0 * ((normal * eyeray) / (normal * normal)) * normal) - eyeray;");
+    ctx->indent--;
     output_line(ctx, "}");
     output_blank_line(ctx);
     pop_output(ctx);
@@ -2203,10 +2240,10 @@ void emit_GLSL_TEXM3X3SPEC(Context *ctx)
     DestArgInfo *info = &ctx->dest_arg;
     char dst[64];
     char src0[64];
-    char src1[64];
+    char src1[80];
     char src2[64];
-    char src3[64];
-    char src4[64];
+    char src3[80];
+    char src4[80];
     char src5[64];
     char sampler[64];
     char code[512];
@@ -2219,16 +2256,22 @@ void emit_GLSL_TEXM3X3SPEC(Context *ctx)
 
     get_GLSL_varname_in_buf(ctx, REG_TYPE_TEXTURE, ctx->texm3x3pad_dst0,
                             src0, sizeof (src0));
-    get_GLSL_varname_in_buf(ctx, REG_TYPE_TEXTURE, ctx->texm3x3pad_src0,
-                            src1, sizeof (src1));
+    make_GLSL_texm_source(ctx, ctx->texm3x3pad_src0, ctx->texm3x3pad_src0_mod,
+                          src1, sizeof (src1));
     get_GLSL_varname_in_buf(ctx, REG_TYPE_TEXTURE, ctx->texm3x3pad_dst1,
                             src2, sizeof (src2));
-    get_GLSL_varname_in_buf(ctx, REG_TYPE_TEXTURE, ctx->texm3x3pad_src1,
-                            src3, sizeof (src3));
-    get_GLSL_varname_in_buf(ctx, REG_TYPE_TEXTURE, ctx->source_args[0].regnum,
-                            src4, sizeof (src4));
-    get_GLSL_varname_in_buf(ctx, REG_TYPE_TEXTURE, ctx->source_args[1].regnum,
-                            src5, sizeof (src5));
+    make_GLSL_texm_source(ctx, ctx->texm3x3pad_src1, ctx->texm3x3pad_src1_mod,
+                          src3, sizeof (src3));
+    make_GLSL_texm_source(ctx, ctx->source_args[0].regnum,
+                          ctx->source_args[0].src_mod, src4, sizeof (src4));
+    // Heroes V: the eye ray is the constant register of the second source;
+    //  upstream named it as a texture register and left a trailing comma.
+    const int d3d = void_mojoshader_texm_semantics();
+    if (d3d)
+        get_GLSL_srcarg_varname(ctx, 1, src5, sizeof (src5));
+    else
+        get_GLSL_varname_in_buf(ctx, REG_TYPE_TEXTURE, ctx->source_args[1].regnum,
+                                src5, sizeof (src5));
     get_GLSL_destarg_varname(ctx, dst, sizeof (dst));
 
     RegisterList *sreg = reglist_find(&ctx->samplers, REG_TYPE_SAMPLER,
@@ -2240,14 +2283,15 @@ void emit_GLSL_TEXM3X3SPEC(Context *ctx)
         "texture%s(%s, "
             "TEXM3X3SPEC_reflection("
                 "vec3("
-                    "dot(%s.xyz, %s.xyz), "
-                    "dot(%s.xyz, %s.xyz), "
-                    "dot(%s.xyz, %s.xyz)"
+                    "dot(%s.xyz, %s), "
+                    "dot(%s.xyz, %s), "
+                    "dot(%s.xyz, %s)"
                 "),"
-                "%s.xyz,"
+                "%s.xyz%s"
             ")"
         ")",
-        ttypestr, sampler, src0, src1, src2, src3, dst, src4, src5);
+        ttypestr, sampler, src0, src1, src2, src3, dst, src4, src5,
+        d3d ? "" : ",");
 
     output_line(ctx, "%s", code);
 } // emit_GLSL_TEXM3X3SPEC
@@ -2260,10 +2304,10 @@ void emit_GLSL_TEXM3X3VSPEC(Context *ctx)
     DestArgInfo *info = &ctx->dest_arg;
     char dst[64];
     char src0[64];
-    char src1[64];
+    char src1[80];
     char src2[64];
-    char src3[64];
-    char src4[64];
+    char src3[80];
+    char src4[80];
     char sampler[64];
     char code[512];
 
@@ -2275,14 +2319,14 @@ void emit_GLSL_TEXM3X3VSPEC(Context *ctx)
 
     get_GLSL_varname_in_buf(ctx, REG_TYPE_TEXTURE, ctx->texm3x3pad_dst0,
                             src0, sizeof (src0));
-    get_GLSL_varname_in_buf(ctx, REG_TYPE_TEXTURE, ctx->texm3x3pad_src0,
-                            src1, sizeof (src1));
+    make_GLSL_texm_source(ctx, ctx->texm3x3pad_src0, ctx->texm3x3pad_src0_mod,
+                          src1, sizeof (src1));
     get_GLSL_varname_in_buf(ctx, REG_TYPE_TEXTURE, ctx->texm3x3pad_dst1,
                             src2, sizeof (src2));
-    get_GLSL_varname_in_buf(ctx, REG_TYPE_TEXTURE, ctx->texm3x3pad_src1,
-                            src3, sizeof (src3));
-    get_GLSL_varname_in_buf(ctx, REG_TYPE_TEXTURE, ctx->source_args[0].regnum,
-                            src4, sizeof (src4));
+    make_GLSL_texm_source(ctx, ctx->texm3x3pad_src1, ctx->texm3x3pad_src1_mod,
+                          src3, sizeof (src3));
+    make_GLSL_texm_source(ctx, ctx->source_args[0].regnum,
+                          ctx->source_args[0].src_mod, src4, sizeof (src4));
     get_GLSL_destarg_varname(ctx, dst, sizeof (dst));
 
     RegisterList *sreg = reglist_find(&ctx->samplers, REG_TYPE_SAMPLER,
@@ -2294,9 +2338,9 @@ void emit_GLSL_TEXM3X3VSPEC(Context *ctx)
         "texture%s(%s, "
             "TEXM3X3SPEC_reflection("
                 "vec3("
-                    "dot(%s.xyz, %s.xyz), "
-                    "dot(%s.xyz, %s.xyz), "
-                    "dot(%s.xyz, %s.xyz)"
+                    "dot(%s.xyz, %s), "
+                    "dot(%s.xyz, %s), "
+                    "dot(%s.xyz, %s)"
                 "), "
                 "vec3(%s.w, %s.w, %s.w)"
             ")"
@@ -2405,27 +2449,27 @@ void emit_GLSL_TEXM3X3(Context *ctx)
 
     char dst[64];
     char src0[64];
-    char src1[64];
+    char src1[80];
     char src2[64];
-    char src3[64];
-    char src4[64];
+    char src3[80];
+    char src4[80];
     char code[512];
 
     // !!! FIXME: this code counts on the register not having swizzles, etc.
     get_GLSL_varname_in_buf(ctx, REG_TYPE_TEXTURE, ctx->texm3x3pad_dst0,
                             src0, sizeof (src0));
-    get_GLSL_varname_in_buf(ctx, REG_TYPE_TEXTURE, ctx->texm3x3pad_src0,
-                            src1, sizeof (src1));
+    make_GLSL_texm_source(ctx, ctx->texm3x3pad_src0, ctx->texm3x3pad_src0_mod,
+                          src1, sizeof (src1));
     get_GLSL_varname_in_buf(ctx, REG_TYPE_TEXTURE, ctx->texm3x3pad_dst1,
                             src2, sizeof (src2));
-    get_GLSL_varname_in_buf(ctx, REG_TYPE_TEXTURE, ctx->texm3x3pad_src1,
-                            src3, sizeof (src3));
-    get_GLSL_varname_in_buf(ctx, REG_TYPE_TEXTURE, ctx->source_args[0].regnum,
-                            src4, sizeof (src4));
+    make_GLSL_texm_source(ctx, ctx->texm3x3pad_src1, ctx->texm3x3pad_src1_mod,
+                          src3, sizeof (src3));
+    make_GLSL_texm_source(ctx, ctx->source_args[0].regnum,
+                          ctx->source_args[0].src_mod, src4, sizeof (src4));
     get_GLSL_destarg_varname(ctx, dst, sizeof (dst));
 
     make_GLSL_destarg_assign(ctx, code, sizeof (code),
-        "vec4(dot(%s.xyz, %s.xyz), dot(%s.xyz, %s.xyz), dot(%s.xyz, %s.xyz), 1.0)",
+        "vec4(dot(%s.xyz, %s), dot(%s.xyz, %s), dot(%s.xyz, %s), 1.0)",
         src0, src1, src2, src3, dst, src4);
 
     output_line(ctx, "%s", code);

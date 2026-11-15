@@ -1,6 +1,6 @@
-/* Tribes of the East's DXVK renderer (android/host/d3d9_dxvk.c) as the rest of the host sees
- * it. Only ToE code (#ifndef HOMM5_LEGACY_UI) uses these; without a DXVK mode, and in the
- * command-line build, void_dxvk_create9 returns 0 and nothing else is reached. */
+/* The DXVK renderer of all three editions (android/host/d3d9_dxvk.c) as the rest of the host sees
+ * it. Without a DXVK mode, and in the command-line build, void_dxvk_create9 returns 0 and nothing
+ * else is reached. */
 #ifndef VOID_DXVK_H
 #define VOID_DXVK_H
 #include <stdint.h>

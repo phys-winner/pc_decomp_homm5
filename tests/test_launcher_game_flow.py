@@ -167,19 +167,33 @@ class LauncherGameFlowTest(unittest.TestCase):
         for old in ("Launcher.", "RendererPolicy", "Renderers.", "markStarted", "startupMarker"):
             self.assertNotIn(old, re.sub(r"/\*.*?\*/", "", self.activity, flags=re.S))
 
-    def test_every_edition_uses_gles_even_with_a_saved_vulkan_choice(self):
-        choose = function(self.activity, "    private void chooseRenderer()")
-        self.assertIn('renderer = GLES;', choose)
-        self.assertNotIn('launch.renderer()', choose)
-        # The backend source remains available, but shipping engines compile its GLES stubs.
+    def test_every_edition_renders_with_the_launchers_choice(self):
+        # 2026-11-14: the launcher's renderer for every edition; DXVK needs Android 11 and the APK's
+        # bridge, and anything else (or a DXVK start that fails in d3d9_dxvk.c) renders with OpenGL ES.
+        # 2026-11-15: the runtime travels packed; the library thread installs it for a DXVK start
+        # (DxvkRuntime) and a start without it renders with OpenGL ES.
+        choose = function(self.activity, "    private void chooseRenderer(File runtime)")
+        self.assertIn('launch.renderer()', choose)
+        self.assertIn('"turnip".equals(chosen)', choose)
+        self.assertIn('Build.VERSION.SDK_INT >= 30 && runtime != null ? chosen : GLES;', choose)
+        self.assertNotIn('edition', choose.lower())                     # the same rule for all three editions
+        install = function(self.activity, "    private File dxvkRuntime()")
+        self.assertIn('DxvkRuntime.available(this)', install)
+        self.assertIn('return DxvkRuntime.install(this);', install)
+        self.assertIn('return null;', install)                        # a runtime that cannot be installed: OpenGL ES
+        self.assertNotIn('edition', install.lower())
+        self.assertIn('nativeRenderer(nativeMode(renderer), dxvkRuntime.getAbsolutePath()', self.activity)
+        # Every APK engine compiles the DXVK side; -DHOMM5_NO_DXVK alone keeps the GLES stubs.
         bridge = (ROOT / "android/host/d3d9_dxvk.c").read_text(encoding="utf-8")
         guard = "#if defined(VOID_ANDROID_APP) && defined(HOMM5_DXVK)"
         self.assertEqual(bridge.count(guard), 1)
-        head = bridge[:bridge.index(guard)]
-        self.assertNotIn("HOMM5_DXVK", re.sub(r"/\*.*?\*/", "", head, flags=re.S))
-        self.assertNotIn('"-DHOMM5_DXVK"', (ROOT / "tools/build_android.py").read_text())
+        head = re.sub(r"/\*.*?\*/", "", bridge[:bridge.index(guard)], flags=re.S)
+        self.assertIn("#if !defined(HOMM5_DXVK) && !defined(HOMM5_NO_DXVK)\n#define HOMM5_DXVK 1\n#endif", head)
+        self.assertNotIn('"-DHOMM5_NO_DXVK"', (ROOT / "tools/build_android.py").read_text())
         spec = json.loads((ROOT / "android/port.json").read_text(encoding="utf-8"))
-        self.assertEqual([m['id'] for m in spec['renderers']['modes']], ['gles'])
+        self.assertEqual([m['id'] for m in spec['renderers']['modes']], ['gles', 'turnip', 'dxvk'])
+        self.assertEqual(spec['renderers']['default'], 'gles')
+        self.assertEqual({tuple(d['renderers']) for d in spec['distributions']}, {('gles', 'turnip', 'dxvk')})
 
 
 if __name__ == "__main__":

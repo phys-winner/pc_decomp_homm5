@@ -43,7 +43,7 @@
       "title": {"en": "Tribes of the East", "ru": "Повелители Орды"},
       "version": "3.1",
       "activity": "org.homm5.port.GameActivity",
-      "renderers": ["gles"],
+      "renderers": ["gles", "turnip", "dxvk"],
       "intro": {"default": true},
       "parts": [
         {
@@ -71,7 +71,7 @@
       "title": {"en": "Hammers of Fate", "ru": "Владыки Севера"},
       "version": "2.1",
       "activity": "org.homm5.port.HofGameActivity",
-      "renderers": ["gles"],
+      "renderers": ["gles", "turnip", "dxvk"],
       "intro": {"default": true},
       "parts": [
         {
@@ -100,7 +100,7 @@
       "title": "Heroes of Might and Magic V",
       "version": "1.6",
       "activity": "org.homm5.port.VanillaGameActivity",
-      "renderers": ["gles"],
+      "renderers": ["gles", "turnip", "dxvk"],
       "intro": {"default": true},
       "parts": [
         {
@@ -124,7 +124,17 @@
     "modes": [
       {"id": "gles", "kind": "gles", "title": "OpenGL ES",
        "description": {"en": "The port's own Direct3D 9 on OpenGL ES 3.2: works everywhere.",
-                       "ru": "Собственный рендерер порта: Direct3D 9 на OpenGL ES 3.2, работает везде."}}
+                       "ru": "Собственный рендерер порта: Direct3D 9 на OpenGL ES 3.2, работает везде."}},
+      {"id": "turnip", "kind": "turnip", "title": "DXVK (Turnip)", "vulkan": "1.3", "needsBC": true, "minSdk": 30,
+       "adreno": [600, 799], "driver": "libh5turnip.so",
+       "libraries": ["libh5dxvk.so", "libdxvk_d3d9.so", "libc++_shared.so", "libadrenotools.so", "libh5turnip.so",
+                     "libhook_impl.so", "libmain_hook.so", "libfile_redirect_hook.so", "libgsl_alloc_hook.so"],
+       "description": {"en": "DXVK on the Mesa Turnip driver shipped with the port: Vulkan 1.3 on Adreno 6xx/7xx, the game's DXT textures without conversion.",
+                       "ru": "DXVK на драйвере Mesa Turnip из порта: Vulkan 1.3 на Adreno 6xx/7xx, текстуры DXT игры без конвертации."}},
+      {"id": "dxvk", "kind": "vulkan", "title": "DXVK (Vulkan)", "vulkan": "1.3", "needsBC": true, "minSdk": 30,
+       "libraries": ["libh5dxvk.so", "libdxvk_d3d9.so", "libc++_shared.so"],
+       "description": {"en": "DXVK on the GPU's system Vulkan driver. Needs Vulkan 1.3 and DXT (BC) textures in the driver.",
+                       "ru": "DXVK на системном драйвере Vulkan. Нужны Vulkan 1.3 и поддержка текстур DXT (BC) в драйвере."}}
     ]
   },
   "options": [

@@ -36,6 +36,10 @@ static d3d_surface *d3d_surface_new(d3d_device *dev, uint32_t w, uint32_t h, uin
     assert(surface_count < 32);
     d3d_surface *s = &surfaces[surface_count++]; s->width = w; s->height = h; return s;
 }
+/* Swap chain MSAA (d3d9_gl.c): unavailable here, so every back buffer is single sample. */
+static int d3d_gl_msaa_count(uint32_t type, uint32_t quality) { (void)type; (void)quality; return 0; }
+static void d3d_gl_set_msaa(d3d_surface *color, d3d_surface *depth, int samples) { (void)color; (void)depth; assert(!samples); }
+static void void_log(const char *format, ...) { (void)format; }
 #include "backbuffer.h"
 static int native_w = 2944, native_h = 1750;
 static int window_lock;

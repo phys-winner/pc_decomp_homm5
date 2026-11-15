@@ -214,8 +214,9 @@ class ApkPGORoutingTest(unittest.TestCase):
                 def launcher_tool(base):
                     tool = real_launcher_tool(base)
 
-                    def build_probe(directory, package):
+                    def build_probe(directory, package, ndk=None):
                         self.assertEqual(package, "org.homm5.port.launcher")
+                        self.assertEqual(Path(ndk), module.CLANG.parents[5])   # the NDK of the engines' clang
                         library = Path(directory) / "libportprobe.so"
                         library.parent.mkdir(parents=True, exist_ok=True)
                         library.write_bytes(b"vulkan-driver-probe")
@@ -244,12 +245,12 @@ class ApkPGORoutingTest(unittest.TestCase):
                 stack.enter_context(patch.object(sys, "path", list(sys.path)))   # stage_assets adds tools/
                 yield module, root, out, native_calls, sdk_calls, removed
 
-    def library(self, root, mode, payload):
+    def library(self, root, mode, payload, folder=""):
         result = None
         for edition, row in EDITIONS.items():
             suffix = "" if edition == "toe" else "-" + edition
             directory = "arm64" + suffix + mode.removeprefix("arm64")
-            path = root / "build" / directory / ("lib" + row["library"] + ".so")
+            path = root / "build" / directory / folder / ("lib" + row["library"] + ".so")
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(payload + (b"" if edition == "toe" else edition.encode()))
             path.with_suffix(".patches.json").write_text(json.dumps({"edition": edition, "native_sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "mandatory": True}))
@@ -265,10 +266,11 @@ class ApkPGORoutingTest(unittest.TestCase):
                 index = selected.index("--pgo-use")
                 del selected[index:index + 2]
             commands.append([sys.executable, str(root / "tools/build_android.py"), "--shared", "--jobs", "12",
-                             "--edition", edition, *selected])
+                             "--edition", edition, *selected, "--monolithic"])   # whole engines, named explicitly
         return commands
 
-    def invoke(self, module, args):
+    def invoke(self, module, args, whole=True):
+        args = [*args, *(["--monolithic"] if whole and "--pgo-generate" not in args else [])]
         with patch.object(sys, "argv", ["build_game_apk.py", *args]), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             module.main()
 
@@ -281,8 +283,14 @@ class ApkPGORoutingTest(unittest.TestCase):
             # The launcher's texture converter ships beside the game library.
             self.assertEqual(archive.read("lib/arm64-v8a/libtexconv.so"), TEXCONV)
             self.assertEqual(archive.read("lib/arm64-v8a/libhomm5xz.so"), b"native-xz-decoder")
-            self.assertFalse(set("lib/arm64-v8a/" + name for name in DXVK_RUNTIME) & set(archive.namelist()))
-            self.assertNotIn("lib/arm64-v8a/libportprobe.so", archive.namelist())
+            # android/port.json offers the DXVK modes: the staged runtime travels packed in assets/native
+            # (DxvkRuntime.java installs it), the launcher's driver probe in lib/.
+            index = archive.read("assets/native/index.txt").decode()
+            for name, data in DXVK_RUNTIME.items():
+                self.assertEqual(lzma.decompress(archive.read("assets/native/" + name + ".xz")), data)
+                self.assertNotIn("lib/arm64-v8a/" + name, archive.namelist())
+                self.assertEqual(len(next(row for row in index.splitlines() if row.split()[0] == name).split()), 5)
+            self.assertEqual(archive.read("lib/arm64-v8a/libportprobe.so"), b"vulkan-driver-probe")
             original = lzma.decompress(archive.read("assets/native/libhomm5.so.xz"))
             for edition in ("vanilla", "hof"):
                 self.assertEqual(lzma.decompress(archive.read("assets/native/lib" + EDITIONS[edition]["library"] + ".so.xz")), original + edition.encode())
@@ -294,6 +302,43 @@ class ApkPGORoutingTest(unittest.TestCase):
                 self.assertEqual(entry.compress_type, zipfile.ZIP_STORED)
                 self.assertEqual((len(data), hashlib.sha256(data).hexdigest(), entry.file_size), (int(size), digest, int(packed)))
             return original
+
+    def test_common_library_is_built_first_and_packaged_beside_the_engines(self):
+        for skip in (False, True):
+            with self.subTest(skip_native=skip), self.fixture() as (module, root, out, native, sdk, removed):
+                self.library(root, "arm64", b"whole-engine-must-not-be-packaged")
+                self.library(root, "arm64", b"engine-linked-against-common", folder="common")
+                common = root / "build/arm64-common/libhomm5_common.so"
+                common.parent.mkdir(parents=True)
+                common.write_bytes(b"shared-dll-code")
+                receipt = {"library_sha256": hashlib.sha256(b"shared-dll-code").hexdigest(), "modules": ["fmod"],
+                           "sources_sha256": "sources", "config_sha256": "config", "imports": ["h5x_g_eax"]}
+                checked = []
+
+                def validate(engines, modes, clang, base):
+                    checked.append((dict(engines), list(modes), Path(base)))
+                    return common, receipt
+
+                with patch("common_lib.validate_package", side_effect=validate):
+                    self.invoke(module, [] if skip is False else ["--skip-native"], whole=False)
+                engines = {edition: root / "build" / ("arm64" + ("" if edition == "toe" else "-" + edition)) / "common" /
+                           ("lib" + row["library"] + ".so") for edition, row in EDITIONS.items()}
+                self.assertEqual(checked, [(engines, [], root)] * 2)   # before staging and while signing
+                if not skip:
+                    self.assertEqual(native[0], [sys.executable, str(root / "tools/build_android.py"), "--common", "--shared", "--jobs", "12"])
+                    self.assertEqual(native[1:4], [[sys.executable, str(root / "tools/build_android.py"), "--shared", "--jobs", "12",
+                                                    "--edition", edition, "--common-lib"] for edition in EDITIONS])
+                with zipfile.ZipFile(out / "heroes-v.apk") as archive:
+                    self.assertEqual(lzma.decompress(archive.read("assets/native/libhomm5_common.so.xz")), b"shared-dll-code")
+                    self.assertEqual(lzma.decompress(archive.read("assets/native/libhomm5.so.xz")), b"engine-linked-against-common")
+                    rows = [line.split() for line in archive.read("assets/native/index.txt").decode().splitlines()]
+                    self.assertEqual([row[0] for row in rows], ["lib" + row["library"] + ".so" for row in EDITIONS.values()] + ["libhomm5_common.so"] + sorted(DXVK_RUNTIME))
+                    self.assertTrue(all(len(row) == 6 and row[5] == "libhomm5_common.so" for row in rows[:3]))
+                    self.assertEqual(len(rows[3]), 5)
+                    receipts = json.loads(archive.read("assets/edition-patches.json"))
+                    for edition in EDITIONS:
+                        self.assertEqual(receipts[edition]["common"], {key: receipt[key] for key in
+                                         ("library_sha256", "modules", "sources_sha256", "config_sha256")})
 
     def test_gog_reader_is_built_and_packaged_only_when_enabled(self):
         for enabled in (False, True):
@@ -334,7 +379,7 @@ class ApkPGORoutingTest(unittest.TestCase):
             text = manifest.read_text(encoding="utf-8")
             self.assertIn('android:name="org.homm5.port.launcher.LauncherActivity"', text)
             self.assertNotIn("<!-- launcher:", text)
-            self.assertNotIn(".Probe", text)
+            self.assertIn('android:name="org.homm5.port.launcher.Probe"', text)   # the Vulkan driver check
             javac = next(call for call in sdk if Path(call[0]).name == "javac.exe")
             self.assertEqual(javac[javac.index("-encoding") + 1], "UTF-8")
             self.assertEqual(javac[javac.index("--release") + 1], "8")
@@ -346,7 +391,7 @@ class ApkPGORoutingTest(unittest.TestCase):
             self.assertEqual(d8[d8.index("--min-api") + 1], "26")
             self.assertEqual(self.packaged_library(out), b"ordinary-library")
             with zipfile.ZipFile(out / "heroes-v.apk") as apk:
-                self.assertNotIn("lib/arm64-v8a/libportprobe.so", apk.namelist())
+                self.assertEqual(apk.read("lib/arm64-v8a/libportprobe.so"), b"vulkan-driver-probe")
 
     def test_signing_key_launcher_base_and_spec_are_checked_before_any_work(self):
         defects = {"keystore": lambda root: (root / "build/android/debug.keystore").unlink(),
@@ -379,6 +424,7 @@ class ApkPGORoutingTest(unittest.TestCase):
                 return [f"{name} {len(data)} {hashlib.sha256(data).hexdigest()}" for name, data in sorted(entries.items())]
 
             expected = {"assets/licenses/" + name: (ROOT / relative).read_bytes() for name, relative in module.LICENSE_FILES.items()}
+            expected.update({"assets/licenses/" + name: data for name, data in DXVK_LICENSES.items()})   # the DXVK modes' runtime
             receipts = json.loads(files.pop("assets/edition-patches.json"))
             # The launcher base's assets: the specification as written and this build's identity.
             self.assertEqual(json.loads(files.pop("assets/launcher/port.json")), json.loads((root / "android/port.json").read_bytes()))
@@ -426,33 +472,52 @@ class ApkPGORoutingTest(unittest.TestCase):
                 self.assertFalse(removed)
                 self.assertFalse(sdk)
 
-    def test_default_package_omits_dxvk_and_internal_opt_in_is_validated(self):
+    def test_vulkan_modes_carry_dxvk_and_no_dxvk_or_a_gles_spec_omits_it(self):
+        def dxvk_files(names):
+            return [name for name in names if name.endswith(tuple(DXVK_RUNTIME)) or name.endswith(tuple(n + ".xz" for n in DXVK_RUNTIME))
+                    or name.endswith(tuple(DXVK_LICENSES))]
         with self.fixture() as (module, root, out, native, sdk, removed):
             self.library(root, "arm64", b"ordinary-library")
-            self.invoke(module, ["--skip-native"])
-            with zipfile.ZipFile(out / "heroes-v.apk") as archive:
-                self.assertFalse([name for name in archive.namelist()
-                                  if name.endswith(tuple(DXVK_RUNTIME)) or name.endswith(tuple(DXVK_LICENSES))])
-            self.invoke(module, ["--skip-native", "--dxvk"])
-            with zipfile.ZipFile(out / "heroes-v.apk") as archive:
-                for name, data in DXVK_RUNTIME.items():
-                    self.assertEqual(archive.read("lib/arm64-v8a/" + name), data)
-                for name, data in DXVK_LICENSES.items():
-                    self.assertEqual(archive.read("assets/licenses/" + name), data)
-        with self.fixture() as (module, root, out, native, sdk, removed):
-            self.library(root, "arm64", b"ordinary-library")
-            (root / "build/dxvk/build-receipt.json").unlink()
-            with self.assertRaises(SystemExit) as failure:
-                self.invoke(module, ["--skip-native", "--dxvk"])
-            self.assertIn("tools/build_dxvk.py", str(failure.exception))
-            self.assertEqual((out / "keep-until-valid-library").read_bytes(), b"previous-apk")
-            self.assertEqual((native, sdk, removed), ([], [], []))
+            for args in (["--skip-native"], ["--skip-native", "--dxvk"]):   # --dxvk: the old opt-in, now the default
+                self.invoke(module, args)
+                with zipfile.ZipFile(out / "heroes-v.apk") as archive:
+                    for name, data in DXVK_RUNTIME.items():
+                        self.assertEqual(lzma.decompress(archive.read("assets/native/" + name + ".xz")), data)
+                    for name, data in DXVK_LICENSES.items():
+                        self.assertEqual(archive.read("assets/licenses/" + name), data)
             for args in (["--skip-native", "--no-dxvk"], ["--skip-native", "--dxvk", "--no-dxvk"]):
                 self.invoke(module, args)
                 with zipfile.ZipFile(out / "heroes-v.apk") as archive:
                     names = archive.namelist()
-                self.assertFalse([name for name in names if name.endswith(tuple(DXVK_RUNTIME)) or name.endswith(tuple(DXVK_LICENSES))])
+                self.assertFalse(dxvk_files(names))
                 self.assertIn("lib/arm64-v8a/libtexconv.so", names)
+                self.assertIn("lib/arm64-v8a/libportprobe.so", names)   # the launcher still names the missing libraries
+        with self.fixture() as (module, root, out, native, sdk, removed):
+            self.library(root, "arm64", b"ordinary-library")
+            (root / "build/dxvk/build-receipt.json").unlink()
+            for args in (["--skip-native"], ["--skip-native", "--dxvk"]):
+                with self.assertRaises(SystemExit) as failure:
+                    self.invoke(module, args)
+                self.assertIn("tools/build_dxvk.py", str(failure.exception))
+                self.assertEqual((out / "keep-until-valid-library").read_bytes(), b"previous-apk")
+                self.assertEqual((native, sdk, removed), ([], [], []))
+            self.invoke(module, ["--skip-native", "--no-dxvk"])
+            with zipfile.ZipFile(out / "heroes-v.apk") as archive:
+                self.assertFalse(dxvk_files(archive.namelist()))
+        with self.fixture() as (module, root, out, native, sdk, removed):
+            # A spec with OpenGL ES alone (the 0.4-0.7 policy): neither the runtime nor the probe travels.
+            spec_path = root / "android/port.json"
+            port_spec = json.loads(spec_path.read_text(encoding="utf-8"))
+            port_spec["renderers"]["modes"] = [m for m in port_spec["renderers"]["modes"] if m["kind"] == "gles"]
+            for distribution in port_spec["distributions"]:
+                distribution["renderers"] = ["gles"]
+            spec_path.write_text(json.dumps(port_spec), encoding="utf-8")
+            self.library(root, "arm64", b"ordinary-library")
+            self.invoke(module, ["--skip-native"])
+            with zipfile.ZipFile(out / "heroes-v.apk") as archive:
+                names = archive.namelist()
+            self.assertFalse(dxvk_files(names))
+            self.assertNotIn("lib/arm64-v8a/libportprobe.so", names)
 
     def test_stale_or_changed_dxvk_stage_stops_packaging(self):
         for defect in ("source", "library", "license"):
@@ -523,7 +588,7 @@ class ApkPGORoutingTest(unittest.TestCase):
                 self.assertEqual(self.packaged_library(out), b"combined-instrumented")
                 self.assertEqual(len(native), 1 if skip else 4)
                 if not skip:
-                    self.assertEqual(native[0][-3:], flags)
+                    self.assertEqual(native[0][-4:], [*flags, "--monolithic"])
 
     def test_conflicting_modes_preserve_previous_apk_directory(self):
         for flags in (("--pgo-generate", "--no-pgo"),

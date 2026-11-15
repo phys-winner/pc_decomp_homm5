@@ -52,7 +52,7 @@
     "revision": "cf2661bcb55d9a8732e86f79922592d7efdf5383",
     "directory": "reference/mojoshader",
     "license": "zlib",
-    "note": "Last revision with assembler/preprocessor (removed in 7c3fbde). Marked local extensions implement PS1.1/1.4 TEXCRD/TEXLD, PS1.4 implicit sampler metadata, scalar legacy VS fog, and explicit-DCL input semantics for SM1 BGRA swizzles. The vendored snapshot includes the marked local changes; upstream checkout alone is insufficient."
+    "note": "Last revision with assembler/preprocessor (removed in 7c3fbde). Marked local extensions implement PS1.1/1.4 TEXCRD/TEXLD, PS1.4 implicit sampler metadata, scalar legacy VS fog, explicit-DCL input semantics for SM1 BGRA swizzles, and engine-selected Direct3D 9 semantics of the SM1 texture-matrix opcodes (TEXM3X* source modifiers, TEXM3X3SPEC reflection). The vendored snapshot includes the marked local changes; upstream checkout alone is insufficient."
   },
   "dlmalloc": {
     "url": "https://gee.cs.oswego.edu/pub/misc/malloc.c",
@@ -106,7 +106,7 @@
     "version": "1.3.1",
     "directory": "reference/zlib",
     "license": "Zlib",
-    "note": "Vendored inflate/CRC subset for desktop texture tests; Android links the NDK libz."
+    "note": "Vendored 1.3.1: inflate/CRC subset for desktop texture tests; deflate.c, trees.c, adler32.c, crc32.c and zutil.c are also compiled into the Android engines (android/host/zlib_deflate_native.c, z_ prefix) for save compression; Android otherwise links the NDK libz."
   },
   "dxvk": {
     "url": "https://github.com/doitsujin/dxvk",

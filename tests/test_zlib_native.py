@@ -15,9 +15,10 @@ HARNESS = r'''
 #include <windows.h>
 #include <zlib.h>
 #include "fixtures.h"
-static unsigned char memory[0x200000];
+static unsigned char guest_memory[0x200000];
 #undef GPTR
-#define GPTR(va) (memory + (uint32_t)(va))
+#define GPTR(va) (guest_memory + (uint32_t)(va))
+#define GVA(p) ((uint32_t)((const unsigned char *)(p) - guest_memory))
 #define MEM32(va) (*(uint32_t *)GPTR(va))
 #define MEM8(va) (*GPTR(va))
 typedef void (*void_fn)(void);
@@ -32,7 +33,7 @@ static void bridge_free(void *p) { if (p) --host_live; free(p); }
 static uint32_t void_galloc(uint32_t size) {
     if (fail_guest) return 0;
     uint32_t out = heap_top; heap_top += (size + 7u) & ~7u;
-    assert(heap_top < sizeof memory); ++guest_allocs; memset(GPTR(out), 0, size); return out;
+    assert(heap_top < sizeof guest_memory); ++guest_allocs; memset(GPTR(out), 0, size); return out;
 }
 static void void_gfree(uint32_t va) { assert(va >= 0x180000); ++guest_frees; }
 static uint32_t void_gstrdup(const char *text) {
@@ -40,10 +41,18 @@ static uint32_t void_gstrdup(const char *text) {
     if (out) strcpy((char *)GPTR(out), text); return out;
 }
 static int void_vm_readable(uint32_t va, uint32_t size) {
-    return va >= 0x100 && (uint64_t)va + size <= sizeof memory;
+    return va >= 0x100 && (uint64_t)va + size <= sizeof guest_memory;
 }
 static int void_vm_writable(uint32_t va, uint32_t size) { return void_vm_readable(va, size); }
 static void void_log(const char *fmt, ...) { (void)fmt; }
+/* The deflate side of zlib_native.c (zlib_deflate_native.c, native_mode.h) is tested by
+   tests/test_deflate_native.py; here its hooks stay unregistered and these only link. */
+static const char *void_data_dir(void) { return NULL; }
+static uint64_t void_perf_now_ns(void) { return 0; }
+typedef int void_native_mode_cache;
+#define VOID_NATIVE_MODE_CACHE_INIT (-1)
+static int void_native_mode_get(void_native_mode_cache *cache, const char *file, const char *format)
+{ (void)file; (void)format; *cache = 0; return 0; }
 static void_fn dispatch[5];
 static int dispatch_slot(uint32_t va) {
     switch (va) {
@@ -98,7 +107,7 @@ static uint32_t void_call_guest(uint32_t va, int n, const uint32_t *args, int po
         assert(n == 2 && args[0] == 123 && void_vm_writable(args[1], 4));
         ++input_calls;
         if (input_stop || input_used == input_size) { MEM32(args[1]) = 0; return 0; }
-        if (invalid_input) { MEM32(args[1]) = sizeof memory - 2; return UINT32_MAX; }
+        if (invalid_input) { MEM32(args[1]) = sizeof guest_memory - 2; return UINT32_MAX; }
         uint32_t amount = input_size - input_used;
         if (amount > input_chunk) amount = input_chunk;
         MEM32(args[1]) = DATA_IN + input_used; input_used += amount; return amount;
@@ -230,8 +239,13 @@ class ZlibNativeTest(unittest.TestCase):
         fixtures = "\n".join(f"static const unsigned char {key}[] = {{" + ",".join(map(str, value)) + "};" for key, value in blobs.items())
         fixtures += '\n#define ZLIB_DLL "' + dll.as_posix() + '"\n'
         source = (ROOT / "android/host/zlib_native.c").read_text().replace('#include "host.h"', "")
-        compile_probe("zlib_native", HARNESS, {"actual_zlib_native.h": source, "fixtures.h": fixtures},
-                      ["/I" + str(ROOT / "reference/zlib"), "/wd4459"])
+        source = source.replace('#include "native_mode.h"', "")
+        deflate_stubs = ("int h5z_deflate_init(h5z_stream **out, int level, int method, int bits, int memory, int strategy)"
+                         " { (void)level; (void)method; (void)bits; (void)memory; (void)strategy; *out = NULL; return -2; }\n"
+                         "int h5z_deflate(h5z_stream *s, h5z_io *io, int flush) { (void)s; (void)io; (void)flush; return -2; }\n"
+                         "int h5z_deflate_end(h5z_stream *s) { (void)s; return -2; }\n")
+        compile_probe("zlib_native", HARNESS, {"actual_zlib_native.h": source + deflate_stubs, "fixtures.h": fixtures},
+                      ["/I" + str(ROOT / "reference/zlib"), "/I" + str(ROOT / "android/host"), "/wd4459"])
 
     def test_dispatch_and_system_library_integration(self):
         core = (ROOT / "android/host/core.c").read_text()

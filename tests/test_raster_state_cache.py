@@ -34,7 +34,7 @@ enum { GL_FALSE=0, GL_TRUE=1, GL_ZERO=0, GL_ONE=1,
  GL_NONE=0, GL_FRAMEBUFFER=0x8D40, GL_READ_FRAMEBUFFER=0x8CA8, GL_DRAW_FRAMEBUFFER=0x8CA9,
  GL_COLOR_ATTACHMENT0=0x8CE0, GL_DEPTH_ATTACHMENT=0x8D00, GL_DEPTH_STENCIL_ATTACHMENT=0x821A,
  GL_FRAMEBUFFER_COMPLETE=0x8CD5, GL_COLOR_WRITEMASK=0xC23, GL_READ_BUFFER=0xC02, GL_DRAW_BUFFER0=0x8825,
- GL_LINEAR=0x2601, GL_NEAREST=0x2600 };
+ GL_LINEAR=0x2601, GL_NEAREST=0x2600, GL_TEXTURE_2D=0xDE1 };
 typedef struct { int stencil, bits, depth; } d3d_format;
 typedef struct { const d3d_format *fmt; uint32_t width,height,format; } d3d_surface;
 typedef struct { uint32_t rs[256], viewport[4], scissor[4]; float viewport_z[2]; } d3d_state;
@@ -103,6 +103,15 @@ static void glBlitFramebuffer(GLint a,GLint b,GLint c,GLint d,GLint e,GLint f,GL
 static void ui_rect(d3d_device *d,const uint32_t in[4],uint32_t out[4]) { (void)d;memcpy(out,in,16); }
 static void ui_scissor(d3d_device *d,int x,int y,int w,int h) { (void)d;glScissor(x,y,w,h); }
 static d3d_surface *ui_surface(d3d_device *d,d3d_surface *s) { (void)d;return s; }
+/* port_battle_blur off: no capture smoothing, no transition targets (d3d9_gl.c gl_blit_ex). */
+static GLuint aa_tex;
+static uint32_t aa_w,aa_h;
+static GLint aa_downsample(d3d_surface *s,const uint32_t *sr,d3d_surface *t,const uint32_t *dr,uint32_t f) { (void)s;(void)sr;(void)t;(void)dr;(void)f;return 0; }
+static GLuint xt_blit_target(d3d_surface *s,const uint32_t *r,uint32_t *o) { (void)s;(void)r;(void)o;return 0; }
+static int fbo_multisampled(void) { return 0; }
+static void xt_canvas_resolve(void) {}
+static void glFramebufferTexture2D(GLenum a,GLenum b,GLenum c,GLuint d,GLint e) { (void)a;(void)b;(void)c;(void)d;(void)e; }
+static void glReadBuffer(GLenum a) { (void)a; }
 #include "state.h"
 #include "uncached.h"
 #include "clear.h"
@@ -200,7 +209,7 @@ def sources():
     harness = HARNESS.replace("CONSUMED", ",".join(map(str, sorted(indices))))
     return source, harness, {"state.h": valid + invalidate + helpers, "uncached.h": reference,
                              "clear.h": function(source, "void d3d_gl_clear_rects("),
-                             "blit.h": function(source, "static void gl_blit("),
+                             "blit.h": function(source, "static void gl_blit_ex(") + function(source, "static void gl_blit("),
                              "fill.h": function(source, "static void gl_fill(")}
 
 

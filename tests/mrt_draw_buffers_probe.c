@@ -33,8 +33,8 @@ __declspec(dllexport) unsigned probe_case(unsigned color0,unsigned color1,unsign
  dev.fbo_dirty=1;g_d3d_device=&dev;
  if(fbo)glDeleteFramebuffers(1,&fbo);if(read_fbo)glDeleteFramebuffers(1,&read_fbo);if(draw_fbo)glDeleteFramebuffers(1,&draw_fbo);
  fbo=read_fbo=draw_fbo=0;
- for(unsigned i=0;i<4;++i)fb_color[i]=(fb_attachment){FB_UNKNOWN,0,0,0};
- fb_depth=(fb_attachment){FB_UNKNOWN,0,0,0};fb_depth_point=FB_UNKNOWN;fb_buf_count=-1;
+ for(unsigned i=0;i<4;++i)fb_color[i]=(fb_attachment){FB_UNKNOWN,0,0,0,0};
+ fb_depth=(fb_attachment){FB_UNKNOWN,0,0,0,0};fb_depth_point=FB_UNKNOWN;fb_buf_count=-1;
  memset(fb_bufs,0,sizeof fb_bufs);fb_depth_w=fb_depth_h=0;
  d3d_gl_bind_targets(&dev);
  uint32_t rect[4]={0,0,8,8};

@@ -187,12 +187,22 @@ COM_METHOD(d3d9, CheckDeviceFormat, 7)
     return ok ? D3D_OK : D3DERR_NOTAVAILABLE;
 }
 
+/* d3d9_gl.c: the swap chain's multisampling (GL_EXT_multisampled_render_to_texture2). */
+uint32_t d3d_gl_msaa_levels(void);
+int d3d_gl_msaa_count(uint32_t type, uint32_t quality);
+void d3d_gl_set_msaa(d3d_surface *color, d3d_surface *depth, int samples);
+
 COM_METHOD(d3d9, CheckDeviceMultiSampleType, 7)
 {
-    uint32_t type = ARG(5), quality = ARG(6);
+    uint32_t format = ARG(3), type = ARG(5), quality = ARG(6);
     if (type == 0) { if (quality) MEM32(quality) = 1; return D3D_OK; }
-    if (type == 2 || type == 4) { if (quality) MEM32(quality) = 1; return D3DERR_NOTAVAILABLE; }
-    return D3DERR_NOTAVAILABLE;
+    /* Only the swap chain multisamples: 8-bit colour and depth-stencil formats. */
+    const d3d_format *f = d3d_format_find(format);
+    int drawable = f && !f->is_float && !f->block_bytes && (f->depth || (f->render_target && f->bits == 32));
+    uint32_t levels = type == 1 ? d3d_gl_msaa_levels() : d3d_gl_msaa_count(type, 0) ? 1u : 0u;
+    if (quality) MEM32(quality) = drawable ? levels : 0;
+    VLOG("[d3d9] CheckDeviceMultiSampleType(format %u, type %u) = %u level(s)", format, type, drawable ? levels : 0);
+    return drawable && levels ? D3D_OK : D3DERR_NOTAVAILABLE;
 }
 
 COM_METHOD(d3d9, CheckDepthStencilMatch, 6) { return D3D_OK; }
@@ -337,9 +347,14 @@ static void make_backbuffer(d3d_device *dev)
     uint32_t format = dev->pp[2] ? dev->pp[2] : 22;
     if (format == 0) format = 22;
     if (dev->backbuffer) void_com_release(&dev->backbuffer->com);
-    dev->backbuffer = d3d_surface_new(dev, w, h, format, D3DUSAGE_RENDERTARGET, D3DPOOL_DEFAULT, 0);
+    /* D3DPRESENT_PARAMETERS MultiSampleType/Quality: drawn multisampled when the GPU can. */
+    int samples = d3d_gl_msaa_count(dev->pp[4], dev->pp[5]);
+    uint32_t type = samples ? dev->pp[4] : 0;
+    dev->backbuffer = d3d_surface_new(dev, w, h, format, D3DUSAGE_RENDERTARGET, D3DPOOL_DEFAULT, type);
     if (dev->auto_depth) { void_com_release(&dev->auto_depth->com); dev->auto_depth = NULL; }
-    if (dev->pp[9]) dev->auto_depth = d3d_surface_new(dev, w, h, dev->pp[10], D3DUSAGE_DEPTHSTENCIL, D3DPOOL_DEFAULT, 0);
+    if (dev->pp[9]) dev->auto_depth = d3d_surface_new(dev, w, h, dev->pp[10], D3DUSAGE_DEPTHSTENCIL, D3DPOOL_DEFAULT, type);
+    d3d_gl_set_msaa(dev->backbuffer, dev->auto_depth, samples);
+    if (dev->pp[4] && !samples) void_log("[d3d9] multisample type %u quality %u unavailable: single sample", dev->pp[4], dev->pp[5]);
     for (int i = 0; i < 4; ++i) bind_surface(&dev->rt[i], NULL);
     bind_surface(&dev->ds, NULL);
     bind_surface(&dev->rt[0], dev->backbuffer);
@@ -443,11 +458,27 @@ COM_METHOD(dev, GetBackBuffer, 5)
 
 COM_METHOD(dev, GetRasterStatus, 3) { MEM32(ARG(2)) = 0; MEM32(ARG(2) + 4) = 0; return D3D_OK; }
 COM_METHOD(dev, SetDialogBoxMode, 2) { return D3D_OK; }
-COM_METHOD(dev, SetGammaRamp, 4) { return 0; }
+/* D3DGAMMARAMP (red, green, blue: 256 WORDs each) of the swap chain: the
+ * game's gamma option (gfx_gamma, 0x00A40440) sets x^(1/gamma) in fullscreen.
+ * The present pass applies it (d3d9_gl.c); identity costs nothing. */
+static uint16_t gamma_ramp[768];
+static int gamma_ramp_set;
+void d3d_gl_set_gamma(const uint16_t *ramp);
+
+COM_METHOD(dev, SetGammaRamp, 4)
+{
+    uint32_t ramp = ARG(3);
+    if (ARG(1) || !ramp) return 0;
+    for (uint32_t i = 0; i < 768; ++i) gamma_ramp[i] = MEM16(ramp + 2 * i);
+    gamma_ramp_set = 1;
+    d3d_gl_set_gamma(gamma_ramp);
+    return 0;
+}
 COM_METHOD(dev, GetGammaRamp, 3)
 {
     uint32_t ramp = ARG(2);
-    for (uint32_t i = 0; i < 256; ++i) MEM16(ramp + 2 * i) = MEM16(ramp + 512 + 2 * i) = MEM16(ramp + 1024 + 2 * i) = (uint16_t)(i * 257);
+    for (uint32_t i = 0; i < 768; ++i)
+        MEM16(ramp + 2 * i) = gamma_ramp_set ? gamma_ramp[i] : (uint16_t)((i & 255) * 257);
     return 0;
 }
 

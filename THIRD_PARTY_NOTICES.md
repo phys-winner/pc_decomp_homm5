@@ -14,16 +14,19 @@ does not grant rights to original game code or data.
 | astcenc | 5.7.0 library subset | Apache-2.0 | [Upstream](https://github.com/ARM-software/astc-encoder), [LICENSE.txt](reference/astcenc/LICENSE.txt) |
 | etcpak | `3d716e1550023dc5ff8b602636af8b76584e0b66` subset | BSD-3-Clause | [Upstream](https://github.com/wolfpld/etcpak), [LICENSE.txt](reference/etcpak/LICENSE.txt) |
 | bcdec | 0.96, bundled with etcpak | MIT OR Unlicense; MIT used here | [Upstream](https://github.com/iOrange/bcdec), both licenses in [bcdec.h](reference/etcpak/bcdec.h) |
-| zlib | 1.3.1 inflate/CRC subset for desktop tests | Zlib | [Upstream](https://github.com/madler/zlib), [LICENSE](reference/zlib/LICENSE) |
+| zlib | 1.3.1 deflate/trees/adler32/crc32/zutil compiled into the Android engines (save compression); inflate/CRC subset for desktop tests | Zlib | [Upstream](https://github.com/madler/zlib), [LICENSE](reference/zlib/LICENSE) |
 | XZ Embedded | `ae63ae3a36ed01724674e8f3d750dc47bf125410` decoder subset | 0BSD | [Upstream](https://github.com/tukaani-project/xz-embedded), [COPYING](reference/xz-embedded/COPYING) |
 
-## Binary runtime of the ToE DXVK renderer
+## Binary runtime of the DXVK renderer
 
-The DXVK renderer is disabled for now: the default APK contains none of these
-binaries. Only an APK built with `tools/build_game_apk.py --dxvk` carries them:
-`tools/build_dxvk.py` stages these unchanged binaries for `lib/arm64-v8a`,
-checked against their hashes in [`dependencies.json`](dependencies.json), and their
-license texts are then copied into the APK's `assets/licenses`.
+The DXVK renderer (all three editions) is an optional launcher choice, and the
+APK carries these binaries whenever `android/port.json` offers a Vulkan mode
+(`tools/build_game_apk.py --no-dxvk` leaves them out): `tools/build_dxvk.py`
+stages them for `lib/arm64-v8a`, checked against their hashes in
+[`dependencies.json`](dependencies.json), with the symbol tables and debug
+sections of `libdxvk_d3d9.so` and `libhook_impl.so` stripped (the code is
+unchanged; the Turnip driver is packaged as pinned), and their license texts are
+then copied into the APK's `assets/licenses`.
 
 | Component | Version or revision | License | Source |
 | --- | --- | --- | --- |
@@ -43,7 +46,8 @@ and `android/runtime/`. The Win32 compatibility host was adapted from the
 project's existing The Void port; no checkout of that project is required.
 
 The vendored MojoShader files include port extensions for legacy PS1.1/1.4
-instructions, implicit PS1.4 samplers, vertex fog and legacy input semantics.
+instructions, implicit PS1.4 samplers, vertex fog, legacy input semantics and
+the Direct3D 9 semantics of the SM1 texture-matrix (TEXM3X*) instructions.
 These altered sources must not be represented as an unmodified upstream release.
 
 Copyright notices include: pcrecomp, copyright 2026 sp00nz; MojoShader, copyright

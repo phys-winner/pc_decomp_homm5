@@ -49,6 +49,46 @@ ROUTE_GROUPS = {
                              ("reference_hof_base",{"hof":"00456050"})]},
     "reference_tile": {"source":"object_refs_native.c", "router":"void_reference_native_tile_dispatch", "algorithm":"void_reference_native_tile",
                        "entries":{"toe":"sub_00C05AC0","vanilla":"sub_00A44BE0","hof":"sub_008078A0"}, "contextual":[]},
+    # NGScene software vertex lighting/skinning loops (vertex_native.c). Legacy
+    # entries matched by normalized original bytes (relocations and rel32 masked).
+    "vertex_point": {"source":"vertex_native.c", "router":"void_vertex_point_dispatch", "algorithm":"void_vertex_point",
+                     "entries":{"toe":"sub_00CF8D80","vanilla":"sub_00BE3F50","hof":"sub_008FDD90"}, "contextual":[]},
+    "vertex_curve": {"source":"vertex_native.c", "router":"void_vertex_curve_dispatch", "algorithm":"void_vertex_curve",
+                     "entries":{"toe":"sub_00CF8F30","vanilla":"sub_00BE4100","hof":"sub_008FDF40"}, "contextual":[]},
+    "vertex_blend": {"source":"vertex_native.c", "router":"void_vertex_blend_dispatch", "algorithm":"void_vertex_blend",
+                     "entries":{"toe":"sub_00C687C0","vanilla":"sub_008C5860","hof":"sub_00A46140"}, "contextual":[]},
+    "vertex_light": {"source":"vertex_native.c", "router":"void_vertex_light_dispatch", "algorithm":"void_vertex_light",
+                     "entries":{"toe":"sub_00CF92C0","vanilla":"sub_00BE4490","hof":"sub_008FE2D0"}, "contextual":[]},
+    # Battle grid dilation (dilate_native.c); legacy entries matched by normalized original bytes.
+    "dilate_grid": {"source":"dilate_native.c", "router":"void_dilate_grid_dispatch", "algorithm":"void_dilate_grid",
+                    "entries":{"toe":"sub_00B3EFB0","vanilla":"sub_0083D910","hof":"sub_00A712C0"}, "contextual":[]},
+    # Adventure AI step NWorld::CPlayerAI vtable slot 0 (ai_turn_native.c): turn markers around the
+    # unchanged lifted body; legacy entries found by the step-name table 00866550 and its callers.
+    "ai_step": {"source":"ai_turn_native.c", "router":"void_ai_step_dispatch", "algorithm":"void_ai_step",
+                "entries":{"toe":"sub_0086DD40","vanilla":"sub_00A33E60","hof":"sub_00A801F0"}, "contextual":[]},
+    # Names-table leaves of the AI's undo snapshots (ai_names_native.c): the string-keyed hash map
+    # find (the same code in all three) and the string assign (legacy entries append through
+    # 004091D0's counterparts; both matched by normalized original bytes).
+    "ai_name_find": {"source":"ai_names_native.c", "router":"void_ai_name_find_dispatch", "algorithm":"void_ai_name_find",
+                     "entries":{"toe":"sub_00BD1150","vanilla":"sub_0083AC00","hof":"sub_00B79FC0"}, "contextual":[]},
+    "ai_string_assign": {"source":"ai_names_native.c", "router":"void_ai_string_assign_dispatch", "algorithm":"void_ai_string_assign",
+                         "entries":{"toe":"sub_00404150","vanilla":"sub_00405200","hof":"sub_00403870"}, "contextual":[]},
+    # The names table's snapshots in the AI's estimate rollbacks (ai_undo_native.c): the estimate,
+    # the world's rollback/commit slots, its full and single snapshots and the names table's
+    # serializer slot; legacy entries matched by normalized original bytes (the estimate by its
+    # call sequence).
+    "ai_estimate": {"source":"ai_undo_native.c", "router":"void_ai_estimate_dispatch", "algorithm":"void_ai_estimate",
+                    "entries":{"toe":"sub_00BC5480","vanilla":"sub_004847F0","hof":"sub_00848150"}, "contextual":[]},
+    "ai_undo_rollback": {"source":"ai_undo_native.c", "router":"void_ai_rollback_dispatch", "algorithm":"void_ai_rollback",
+                         "entries":{"toe":"sub_0050C7C0","vanilla":"sub_00A566E0","hof":"sub_004DC770"}, "contextual":[]},
+    "ai_undo_commit": {"source":"ai_undo_native.c", "router":"void_ai_commit_dispatch", "algorithm":"void_ai_commit",
+                       "entries":{"toe":"sub_0050C550","vanilla":"sub_00A56470","hof":"sub_004DC500"}, "contextual":[]},
+    "ai_undo_full": {"source":"ai_undo_native.c", "router":"void_ai_full_snapshot_dispatch", "algorithm":"void_ai_full_snapshot",
+                     "entries":{"toe":"sub_0050C4A0","vanilla":"sub_00A563C0","hof":"sub_004DC450"}, "contextual":[]},
+    "ai_undo_snapshot": {"source":"ai_undo_native.c", "router":"void_ai_snapshot_dispatch", "algorithm":"void_ai_snapshot",
+                         "entries":{"toe":"sub_0050C3E0","vanilla":"sub_00A56300","hof":"sub_004DC390"}, "contextual":[]},
+    "ai_names_serialize": {"source":"ai_undo_native.c", "router":"void_ai_names_serialize_dispatch", "algorithm":"void_ai_names_serialize",
+                           "entries":{"toe":"sub_00C01130","vanilla":"sub_00B5AAA0","hof":"sub_009E3C60"}, "contextual":[]},
 }
 # Explicit root-admitted whitelist from the observed ToE world census. No legacy aliases.
 LEAF_ENTRIES = (

@@ -735,36 +735,51 @@ static uint32_t console_focused(uint32_t root)
 
 static struct { uint32_t screen, root; uint64_t deadline, frame; unsigned retries; } console_open_request;
 
+/* Closes the console shown on this screen; 0 when none is shown. */
+static int console_close(uint32_t screen)
+{
+    if (!screen) return 0;
+    uint32_t provider = read32(screen + 0xA0), window = virtual_base(provider, 8);
+    const uint32_t cast[] = {window, 0, 0x00F2DAF4u, 0x00F2DA88u, 0};
+    uint32_t root = window ? void_call_guest(0x00D119FCu, 5, cast, 0) : 0;
+    if (!console_entry_visible(console_focused(root))) return 0;
+    uint32_t pop = object_method(provider, 0x34);
+    if (!scratch) scratch = void_galloc(512);
+    if (pop && scratch && void_vm_writable(scratch + 384, 32)) {
+        /* Pop the original ShowConsole state, including its reversible movement and focus. */
+        uint32_t message = scratch + 384, name = scratch + 400;
+        memcpy((void *)ADDR(name), "ShowConsole", 12);
+        MEM32(message) = name; MEM32(message + 4) = name + 11; MEM32(message + 8) = name + 12;
+        void_call_guest_this(pop, provider, 1, &message);
+    }
+    text_target.screen = 0;
+    void_touch_text_cancel();
+    return 1;
+}
+
+/* 1.6/2.1 resize and re-lay their screens with their own layout calls (touch_scale.c), which put a
+   shown console back at its base place above the screen while ShowConsole stays pushed: it vanished
+   (render scale 75% set from the console, for one), and the next gear hold only closed it unseen.
+   ToE's original resize 0x00B295D0 and relayout 0x0066A4D0 close it first; the legacy relayout calls this. */
+void void_touch_console_close(void)
+{
+    console_open_request.screen = 0;
+    console_close(current_screen());
+}
+
 static void console_toggle(void)
 {
     console_open_request.screen = 0;
     if (!void_port_console_enabled()) return;
     uint32_t screen = current_screen(), unused = 0;
-    if (!screen) return;
-    uint32_t provider = read32(screen + 0xA0), window = virtual_base(provider, 8);
-    uint32_t cast[] = {window, 0, 0x00F2DAF4u, 0x00F2DA88u, 0};
-    uint32_t root = window ? void_call_guest(0x00D119FCu, 5, cast, 0) : 0;
-    uint32_t focused = console_focused(root);
-    if (console_entry_visible(focused)) {
-        uint32_t pop = object_method(provider, 0x34);
-        if (!scratch) scratch = void_galloc(512);
-        if (pop && scratch && void_vm_writable(scratch + 384, 32)) {
-            /* Pop the original ShowConsole state, including its reversible movement and focus. */
-            uint32_t message = scratch + 384, name = scratch + 400;
-            memcpy((void *)ADDR(name), "ShowConsole", 12);
-            MEM32(message) = name; MEM32(message + 4) = name + 11; MEM32(message + 8) = name + 12;
-            void_call_guest_this(pop, provider, 1, &message);
-        }
-        text_target.screen = 0;
-        void_touch_text_cancel();
-        return;
-    }
+    if (!screen || console_close(screen)) return;
     /* The original action also owns console visibility and keyboard focus. */
     void_call_guest_this(0x00669F50u, screen, 1, &unused);
     screen = current_screen();
-    provider = read32(screen + 0xA0); window = virtual_base(provider, 8); cast[0] = window;
-    root = window ? void_call_guest(0x00D119FCu, 5, cast, 0) : 0;
-    focused = console_focused(root);
+    uint32_t provider = read32(screen + 0xA0), window = virtual_base(provider, 8);
+    const uint32_t cast[] = {window, 0, 0x00F2DAF4u, 0x00F2DA88u, 0};
+    uint32_t root = window ? void_call_guest(0x00D119FCu, 5, cast, 0) : 0;
+    uint32_t focused = console_focused(root);
     if (!console_entry_visible(focused)) {
         /* The original console's first construction and focus can finish on a later frame. */
         console_open_request.screen = screen; console_open_request.root = provider;

@@ -5,7 +5,8 @@
  * Please see the file LICENSE.txt in the source's root directory.
  *
  *  This file written by Ryan C. Gordon.
- *  Altered locally for Heroes V: Shader Model 1.x texture inputs and samplers.
+ *  Altered locally for Heroes V: Shader Model 1.x texture inputs and samplers,
+ *  and the source modifiers of TEXM3X*PAD.
  */
 
 // !!! FIXME: this file really needs to be split up.
@@ -1845,6 +1846,7 @@ static void state_TEXM3X2PAD(Context *ctx)
     state_texops(ctx, "TEXM3X2PAD", 0, 0);
     // !!! FIXME: check for correct opcode existance and order more rigorously?
     ctx->texm3x2pad_src0 = ctx->source_args[0].regnum;
+    ctx->texm3x2pad_src0_mod = (int) ctx->source_args[0].src_mod;
     ctx->texm3x2pad_dst0 = ctx->dest_arg.regnum;
 } // state_TEXM3X2PAD
 
@@ -1877,11 +1879,13 @@ static void state_TEXM3X3PAD(Context *ctx)
     if (ctx->texm3x3pad_dst0 == -1)
     {
         ctx->texm3x3pad_src0 = ctx->source_args[0].regnum;
+        ctx->texm3x3pad_src0_mod = (int) ctx->source_args[0].src_mod;
         ctx->texm3x3pad_dst0 = ctx->dest_arg.regnum;
     } // if
     else if (ctx->texm3x3pad_dst1 == -1)
     {
         ctx->texm3x3pad_src1 = ctx->source_args[0].regnum;
+        ctx->texm3x3pad_src1_mod = (int) ctx->source_args[0].src_mod;
         ctx->texm3x3pad_dst1 = ctx->dest_arg.regnum;
     } // else
 } // state_TEXM3X3PAD
@@ -2127,6 +2131,9 @@ static int parse_instruction_token(Context *ctx)
         ctx->texm3x3pad_src0 = -1;
         ctx->texm3x3pad_dst1 = -1;
         ctx->texm3x3pad_src1 = -1;
+        ctx->texm3x2pad_src0_mod = SRCMOD_NONE;
+        ctx->texm3x3pad_src0_mod = SRCMOD_NONE;
+        ctx->texm3x3pad_src1_mod = SRCMOD_NONE;
         ctx->reset_texmpad = 0;
     } // if
 
@@ -2984,6 +2991,9 @@ static Context *build_context(const char *profile,
     ctx->texm3x3pad_src0 = -1;
     ctx->texm3x3pad_dst1 = -1;
     ctx->texm3x3pad_src1 = -1;
+    ctx->texm3x2pad_src0_mod = SRCMOD_NONE;
+    ctx->texm3x3pad_src0_mod = SRCMOD_NONE;
+    ctx->texm3x3pad_src1_mod = SRCMOD_NONE;
 
     ctx->errors = errorlist_create(MallocBridge, FreeBridge, ctx);
     if (ctx->errors == NULL)

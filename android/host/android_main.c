@@ -658,6 +658,70 @@ static unsigned audio_bad_chunks;
 /* Keep the server-mixed route that survives the tested MMAP stalls; tune its
  * active queue too, rather than inheriting the device's maximum buffer. */
 static int audio_normal_output = 1;
+/* A changed output route (a headset or Bluetooth device, the system capturing
+ * the output) or a restarted audio server disconnects the stream: a write or an
+ * open fails. The next chunk reopens; an open that fails, or a stream that fails
+ * within a second of opening, retries 20 ms, 40 ms, ... up to 2 s later, while
+ * the mixer keeps pacing the game's buffers. Losses and returns are logged, at
+ * most 8 lines per 10 s. */
+#define AUDIO_RETRY_FIRST_NS 20000000LL
+#define AUDIO_RETRY_MAX_NS 2000000000LL
+static int64_t audio_retry_at, audio_retry_delay, audio_stream_opened, audio_lost_at, audio_log_window;
+static unsigned audio_lost_attempts, audio_log_count;
+static uint64_t audio_lost_frames, audio_reconnects;
+/* The unwritten tail of a chunk whose write failed starts the next stream of
+ * the same foreground epoch: a disconnect drops no PCM the mixer produced. */
+#define AUDIO_PENDING_FRAMES 480u
+static int16_t audio_pending[2 * AUDIO_PENDING_FRAMES];
+static uint32_t audio_pending_frames;
+static uint64_t audio_pending_state;
+/* Debug: <userdata>/audio_fault, read at most once a second, holds "disconnect [n]"
+ * (the next n writes fail with AAUDIO_ERROR_DISCONNECTED) or "unavailable [n]"
+ * (the next n opens fail with AAUDIO_ERROR_UNAVAILABLE). The file is removed;
+ * where it cannot be, the same text does not apply again. */
+static unsigned audio_fault_writes, audio_fault_opens;
+static int64_t audio_fault_polled;
+static char audio_fault_last[64];
+
+static int64_t audio_now(void)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (int64_t)now.tv_sec * 1000000000LL + now.tv_nsec;
+}
+
+static int audio_may_log(int64_t now)
+{
+    if (!audio_log_window || now - audio_log_window >= 10000000000LL) {
+        if (audio_log_count > 8) void_log("[audio] %u more loss/return lines suppressed", audio_log_count - 8);
+        audio_log_window = now;
+        audio_log_count = 0;
+    }
+    return ++audio_log_count <= 8;
+}
+
+static void audio_fault_poll(int64_t now)
+{
+    if (audio_fault_polled && now - audio_fault_polled < 1000000000LL) return;
+    audio_fault_polled = now;
+    char path[1200], line[64] = "", kind[16] = "";
+    snprintf(path, sizeof path, "%s/audio_fault", void_data_dir());
+    FILE *file = fopen(path, "r");
+    if (!file) return;
+    if (!fgets(line, sizeof line, file)) line[0] = 0;
+    fclose(file);
+    if (unlink(path)) {
+        if (!strcmp(line, audio_fault_last)) return;
+        snprintf(audio_fault_last, sizeof audio_fault_last, "%s", line);
+    }
+    unsigned count = 1;
+    if (sscanf(line, "%15s %u", kind, &count) < 1) return;
+    if (count > 1000) count = 1000;
+    if (!strcmp(kind, "disconnect")) audio_fault_writes = count;
+    else if (!strcmp(kind, "unavailable")) audio_fault_opens = count;
+    else { void_log("[audio] fault injection: unknown request '%s'", kind); return; }
+    void_log("[audio] fault injection: %s x%u", kind, count);
+}
 
 static void audio_close_stream(void)
 {
@@ -671,14 +735,50 @@ static void audio_close_stream(void)
     audio_bad_chunks = 0;
 }
 
+static void audio_mark_lost(int64_t now)
+{
+    if (audio_lost_at) return;
+    audio_lost_at = now;
+    audio_lost_attempts = 0;
+    audio_lost_frames = 0;
+}
+
+/* An open, prime or start failed: the output is unavailable for now. */
+static void audio_open_failed(aaudio_result_t error)
+{
+    int64_t now = audio_now();
+    ++audio_errors;
+    audio_mark_lost(now);
+    ++audio_lost_attempts;
+    audio_retry_delay = !audio_retry_delay ? AUDIO_RETRY_FIRST_NS :
+        audio_retry_delay < AUDIO_RETRY_MAX_NS / 2 ? audio_retry_delay * 2 : AUDIO_RETRY_MAX_NS;
+    audio_retry_at = now + audio_retry_delay;
+    if (audio_may_log(now))
+        void_log("[audio] output unavailable: error %d (%s); next attempt in %lld ms", (int)error,
+                 AAudio_convertResultToText(error), (long long)(audio_retry_delay / 1000000));
+    audio_close_stream();
+}
+
+/* A running stream failed (a write: the route changed): reopen at the next chunk. */
 static void audio_close_failed(aaudio_result_t error)
 {
-    if (++audio_errors <= 4) void_log("[audio] stream error %d; reopening on next chunk", (int)error);
+    int64_t now = audio_now();
+    if (stream && audio_stream_opened && now - audio_stream_opened < 1000000000LL) {
+        audio_open_failed(error);
+        return;
+    }
+    ++audio_errors;
+    audio_mark_lost(now);
+    audio_retry_at = 0;
+    audio_retry_delay = 0;
+    if (audio_may_log(now))
+        void_log("[audio] stream error %d (%s); reopening on next chunk", (int)error, AAudio_convertResultToText(error));
     audio_close_stream();
 }
 
 /* A timed-out write can accept a prefix. Never resend it or silently discard
- * the suffix; retry within a bounded budget, with no guest VM lock held. */
+ * the suffix; retry within a bounded budget, with no guest VM lock held. After
+ * a failed write the suffix waits for the next stream (audio_pending). */
 static uint32_t audio_write_frames(const int16_t *frames, uint32_t count)
 {
     struct timespec now;
@@ -686,21 +786,40 @@ static uint32_t audio_write_frames(const int16_t *frames, uint32_t count)
     int64_t deadline = (int64_t)now.tv_sec * 1000000000LL + now.tv_nsec + 100000000LL;
     uint32_t written = 0;
     uint64_t pause = stream_pause_state;
+    int failed = 0;
     while (written < count && void_audio_pause_state() == pause) {
         clock_gettime(CLOCK_MONOTONIC, &now);
         int64_t remaining = deadline - ((int64_t)now.tv_sec * 1000000000LL + now.tv_nsec);
         if (remaining <= 0) break;
-        aaudio_result_t result = AAudioStream_write(stream, frames + written * 2,
-            (int32_t)(count - written), remaining < 20000000LL ? remaining : 20000000LL);
-        if (result < 0) { audio_close_failed(result); break; }
+        aaudio_result_t result;
+        if (audio_fault_writes) {
+            --audio_fault_writes;
+            result = AAUDIO_ERROR_DISCONNECTED;
+            void_log("[audio] fault injection: write fails with %d", (int)result);
+        } else {
+            result = AAudioStream_write(stream, frames + written * 2,
+                (int32_t)(count - written), remaining < 20000000LL ? remaining : 20000000LL);
+        }
+        if (result < 0) { audio_close_failed(result); failed = 1; break; }
         if ((uint32_t)result < count - written) ++audio_short_writes;
         written += (uint32_t)result;
         if (!result) usleep(1000);
     }
     if (written < count && void_audio_pause_state() == pause) {
-        if (audio_dropped_frames < 1920)
-            void_log("[audio] discarded %u unwritten frames after timeout/error", count - written);
-        audio_dropped_frames += count - written;
+        uint32_t left = count - written;
+        if (failed && !audio_retry_at) {   /* kept only for an immediate reopen */
+            uint32_t keep = left < AUDIO_PENDING_FRAMES ? left : AUDIO_PENDING_FRAMES;
+            memmove(audio_pending, frames + (size_t)written * 2, (size_t)keep * 2 * sizeof *frames);
+            audio_pending_frames = keep;
+            audio_pending_state = pause;
+            left -= keep;
+        }
+        if (left) {
+            if (audio_dropped_frames < 1920)
+                void_log("[audio] discarded %u unwritten frames after timeout/error", left);
+            audio_dropped_frames += left;
+            if (failed) audio_lost_frames += left;
+        }
     }
     return written;
 }
@@ -711,14 +830,33 @@ uint32_t void_audio_output(const int16_t *frames, uint32_t count)
     uint64_t pause = void_audio_pause_state();
     /* Pause retains queued PCM; a fresh foreground epoch needs a fresh stream. */
     if (stream && pause != stream_pause_state) audio_close_stream();
+    if (audio_pending_frames && pause != audio_pending_state) audio_pending_frames = 0;
     if (pause & 1u) {
-        /* mixer_main already paces every chunk, including in the background. */
+        /* mixer_main already paces every chunk, including in the background;
+           the next foreground epoch opens on whatever route is current. */
+        audio_retry_at = 0;
+        audio_retry_delay = 0;
+        audio_lost_at = 0;
+        pthread_mutex_unlock(&audio_lock);
+        return 0;
+    }
+    int64_t now = audio_now();
+    audio_fault_poll(now);
+    if (!stream && audio_retry_at && now < audio_retry_at) {
+        /* The output is gone: the mixer's clock keeps the game's buffers moving. */
+        audio_dropped_frames += count + audio_pending_frames;
+        audio_lost_frames += count + audio_pending_frames;
+        audio_pending_frames = 0;
         pthread_mutex_unlock(&audio_lock);
         return 0;
     }
     if (!stream) {
         AAudioStreamBuilder *b = NULL;
-        aaudio_result_t created = AAudio_createStreamBuilder(&b);
+        aaudio_result_t created = AAUDIO_ERROR_UNAVAILABLE;
+        if (audio_fault_opens) {
+            --audio_fault_opens;
+            void_log("[audio] fault injection: open fails with %d", (int)created);
+        } else created = AAudio_createStreamBuilder(&b);
         if (created == AAUDIO_OK) {
             AAudioStreamBuilder_setFormat(b, AAUDIO_FORMAT_PCM_I16);
             AAudioStreamBuilder_setChannelCount(b, 2);
@@ -744,17 +882,42 @@ uint32_t void_audio_output(const int16_t *frames, uint32_t count)
                     if (void_audio_pause_state() == pause) result = AAudioStream_requestStart(stream);
                     else audio_close_stream();
                 }
-                if (result < 0) audio_close_failed(result);
-            } else { stream = NULL; audio_close_failed(result); }
+                if (result < 0) audio_open_failed(result);
+            } else { stream = NULL; audio_open_failed(result); }
             AAudioStreamBuilder_delete(b);
-        } else audio_close_failed(created);
+        } else audio_open_failed(created);
         if (!stream) {
-            if (void_audio_pause_state() == pause) audio_dropped_frames += count;
+            if (void_audio_pause_state() == pause) {
+                audio_dropped_frames += count + audio_pending_frames;
+                if (audio_lost_at) audio_lost_frames += count + audio_pending_frames;
+            }
+            audio_pending_frames = 0;
             pthread_mutex_unlock(&audio_lock);
             return 0;
         }
+        audio_stream_opened = audio_now();
+        audio_retry_at = 0;
+        if (audio_lost_at) {
+            ++audio_reconnects;
+            if (audio_may_log(audio_stream_opened))
+                void_log("[audio] output back after %lld ms: %u failed opens, %llu frames not played",
+                         (long long)((audio_stream_opened - audio_lost_at) / 1000000), audio_lost_attempts,
+                         (unsigned long long)audio_lost_frames);
+            audio_lost_at = 0;
+        }
     }
-    uint32_t written = audio_write_frames(frames, count);
+    if (audio_pending_frames) {
+        /* The tail of the chunk that hit the disconnect plays first. */
+        uint32_t pending = audio_pending_frames;
+        audio_pending_frames = 0;
+        audio_write_frames(audio_pending, pending);
+    }
+    uint32_t written = 0;
+    if (stream) written = audio_write_frames(frames, count);
+    else if (void_audio_pause_state() == pause) {
+        audio_dropped_frames += count;
+        audio_lost_frames += count;
+    }
     if (written || void_audio_pause_state() != pause) audio_zero_chunks = 0;
     else if (stream && count && !audio_normal_output && ++audio_zero_chunks == 3) {
         audio_normal_output = 1;
@@ -798,10 +961,10 @@ uint32_t void_audio_output(const int16_t *frames, uint32_t count)
     }
     level_frames += written;
     if (level_frames >= 48000u * 10u) {
-        void_log("[audio] last 10 s: peak %d, rms %.0f, underruns %d, short writes %llu, dropped frames %llu, errors %llu", level_peak,
-                 sqrt(level_sum / (2.0 * level_frames)), stream ? (int)AAudioStream_getXRunCount(stream) : -1,
+        void_log("[audio] last 10 s: peak %d, rms %.0f, underruns %d, short writes %llu, dropped frames %llu, errors %llu, reconnects %llu",
+                 level_peak, sqrt(level_sum / (2.0 * level_frames)), stream ? (int)AAudioStream_getXRunCount(stream) : -1,
                  (unsigned long long)audio_short_writes, (unsigned long long)audio_dropped_frames,
-                 (unsigned long long)audio_errors);
+                 (unsigned long long)audio_errors, (unsigned long long)audio_reconnects);
         level_frames = 0;
         level_sum = 0;
         level_peak = 0;

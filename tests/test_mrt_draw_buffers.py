@@ -48,10 +48,20 @@ def fixture(candidate):
         # Exact pre-fix production body, used as the meaningful negative control.
         source = source.replace(ANCHOR + LINE, ANCHOR, 1)
         source = source.replace("    glFramebufferTexture2D(fb_target, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, 0, 0);\n", "", 1)
-    start = source.index("typedef struct { GLuint tex; GLenum target; GLint level, layer; } fb_attachment;")
+    start = source.index("typedef struct { GLuint tex; GLenum target; GLint level, layer; GLsizei samples; } fb_attachment;")
     stop = source.index("void d3d_gl_forget_texture(", start)
-    functions = source[start:stop] + "\n" + "\n".join(function(source, signature) for signature in (
-        "static void attach(", "static GLenum depth_attachment(", "void d3d_gl_bind_targets(", "static void gl_blit("))
+    # The transition's smooth capture (port_battle_blur) is off in this fixture: no mip level to read.
+    smooth_off = ("static GLuint aa_tex;\nstatic uint32_t aa_w, aa_h;\n"
+                  "static GLint aa_downsample(d3d_surface *s, const uint32_t *sr, d3d_surface *d, const uint32_t *dr, uint32_t f)"
+                  " { (void)s; (void)sr; (void)d; (void)dr; (void)f; return 0; }\n"
+                  "static int xt_targets(d3d_device *d, fb_attachment *c, fb_attachment *z, GLenum *p)"
+                  " { (void)d; (void)c; (void)z; (void)p; return 0; }\n"
+                  "static GLuint xt_blit_target(d3d_surface *s, const uint32_t *r, uint32_t *o)"
+                  " { (void)s; (void)r; (void)o; return 0; }\n"
+                  "static int render_xt_blur;\nstatic void xt_canvas_resolve(void) {}\n")
+    functions = source[start:stop] + "\n" + smooth_off + "\n".join(function(source, signature) for signature in (
+        "static void attach(", "static GLenum depth_attachment(", "void d3d_gl_bind_targets(", "static int fbo_multisampled(",
+        "static void gl_blit_ex(", "static void gl_blit("))
     declarations, assignments = [], []
     for index,(name,ret,args,_,_) in enumerate(APIS):
         declarations += [f"static {ret} (*p_{name})({args});",f"#define {name} p_{name}"]
@@ -160,7 +170,7 @@ class MrtDrawBuffersTest(unittest.TestCase):
 
     def test_cache_invalidation_follows_temporary_main_fbo_mask(self):
         source=(ROOT/"android/host/d3d9_gl.c").read_text(encoding="utf-8")
-        blit=function(source,"static void gl_blit(")
+        blit=function(source,"static void gl_blit_ex(")
         self.assertEqual(blit.count(ANCHOR+LINE),1)
         self.assertLess(blit.index(ANCHOR+LINE),blit.index("    } else {"))
 

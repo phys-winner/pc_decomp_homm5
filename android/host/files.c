@@ -260,6 +260,9 @@ void void_files_stats(uint64_t *hits, uint64_t *loads)
     pthread_mutex_unlock(&listing_lock);
 }
 
+/* <userdata>/files_nocache and files_trace, read by void_files_init. */
+static int folder_cache_off, files_trace;
+
 static void mkdirs(const char *path)
 {
     char tmp[1024];
@@ -291,6 +294,14 @@ int void_files_init(const char *game, const char *data)
     add_mount("C:\\Games\\HeroesV", "%s", game);
     add_mount("C:", "%s/drive_c", data);
     struct stat st;
+    char flag[1100];
+    snprintf(flag, sizeof flag, "%s/files_nocache", data);
+    folder_cache_off = !stat(flag, &st);
+    snprintf(flag, sizeof flag, "%s/files_trace", data);
+    files_trace = !stat(flag, &st);
+    if (folder_cache_off || files_trace)
+        void_log("[files] user data: folder cache, parked read handles and mapped save views %s, trace %d",
+                 folder_cache_off ? "off" : "on", files_trace);
     if (stat(game_root, &st) || !S_ISDIR(st.st_mode)) {
         void_log("[void] game root %s is missing", game_root);
         return 0;
@@ -349,6 +360,163 @@ static int normalize(const char *in, char *out, size_t cap)
     return 1;
 }
 
+/* ---------------------------------------------------- user-data folders */
+/* Profiles and saves are not listed (the game changes them), so each path
+ * there resolves component by component: an lstat per folder, about ten per
+ * access, and a save list touches every save file three to seven times.
+ * Folders found once are remembered (case-folded Windows folder -> actual
+ * host folder). A folder change through this host forgets them all; a
+ * remembered folder that has gone (the player renamed it outside the game)
+ * is found when a lookup in it cannot open it, and is resolved again. On the
+ * test phone an lstat whose attributes the kernel holds costs about 5 us, so
+ * this saves 15-45 ms per 200-save list; the opens and whole-save views
+ * (parked read handles, MapViewOfFile) cost far more.
+ * <userdata>/files_nocache turns this off (A/B), with the parked handles and
+ * mapped save views; <userdata>/files_trace logs each burst of user-data lookups. */
+#define FOLDER_SLOTS 256u
+typedef struct { uint64_t key; char *folded; char *host; } folder_entry;
+static folder_entry folders[FOLDER_SLOTS];
+static unsigned folder_count;
+static pthread_mutex_t folder_lock = PTHREAD_MUTEX_INITIALIZER;
+static int folder_cache_off, files_trace;   /* also declared before void_files_init */
+/* Statistics only: plain counters, updated by whichever thread resolves. */
+static uint64_t user_lstats, user_scans, folder_hits, folder_misses;
+/* CreateFile: all calls, their time, and the part spent in the file system
+ * (the rest is handing the guest machine to other threads and back);
+ * descriptors taken back from the parked read handles, and parked ones
+ * found changed. */
+static uint64_t open_calls, open_total_ns, open_fs_ns, parked_reused, parked_stale;
+
+static uint64_t folder_key(const char *windows, char *folded, size_t cap)
+{
+    uint64_t h = 1469598103934665603ull;
+    size_t n = 0;
+    for (const char *p = windows; *p && n + 1 < cap; ++p) {
+        unsigned char c = (unsigned char)*p;
+        if (c >= 'A' && c <= 'Z') c = (unsigned char)(c + 32);
+        folded[n++] = (char)c;
+        h = (h ^ c) * 1099511628211ull;
+    }
+    folded[n] = 0;
+    return h;
+}
+
+static void folder_clear_locked(void)
+{
+    for (unsigned i = 0; i < FOLDER_SLOTS; ++i) {
+        free(folders[i].folded);
+        free(folders[i].host);
+        folders[i].folded = folders[i].host = NULL;
+    }
+    folder_count = 0;
+}
+
+static void folder_forget_all(void)
+{
+    pthread_mutex_lock(&folder_lock);
+    folder_clear_locked();
+    pthread_mutex_unlock(&folder_lock);
+}
+
+static int folder_lookup(const char *windows, char *host, size_t cap)
+{
+    char folded[1024];
+    uint64_t key = folder_key(windows, folded, sizeof folded);
+    int found = 0;
+    pthread_mutex_lock(&folder_lock);
+    for (unsigned i = 0; i < FOLDER_SLOTS; ++i) {
+        folder_entry *e = &folders[(key + i) & (FOLDER_SLOTS - 1)];
+        if (!e->folded) break;
+        if (e->key == key && !strcmp(e->folded, folded)) {
+            snprintf(host, cap, "%s", e->host);
+            found = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&folder_lock);
+    return found;
+}
+
+static void folder_store(const char *windows, const char *host)
+{
+    char folded[1024];
+    uint64_t key = folder_key(windows, folded, sizeof folded);
+    pthread_mutex_lock(&folder_lock);
+    if (folder_count >= FOLDER_SLOTS * 3 / 4) folder_clear_locked();
+    for (unsigned i = 0; i < FOLDER_SLOTS; ++i) {
+        folder_entry *e = &folders[(key + i) & (FOLDER_SLOTS - 1)];
+        if (e->folded && (e->key != key || strcmp(e->folded, folded))) continue;
+        if (!e->folded) {
+            e->folded = strdup(folded);
+            e->host = strdup(host);
+            if (!e->folded || !e->host) { free(e->folded); free(e->host); e->folded = e->host = NULL; break; }
+            e->key = key;
+            ++folder_count;
+        }
+        break;
+    }
+    pthread_mutex_unlock(&folder_lock);
+}
+
+/* `host` is a remembered folder: append the leaf, matched as NTFS would.
+ * 1 present, 0 absent, -1 the folder itself has gone. */
+static int folder_leaf(char *host, size_t cap, const char *name)
+{
+    size_t len = strlen(host);
+    snprintf(host + len, cap - len, "/%s", name);
+    struct stat st;
+    ++user_lstats;
+    if (!lstat(host, &st)) return 1;
+    host[len] = 0;
+    ++user_scans;
+    DIR *d = opendir(len ? host : "/");
+    if (!d) return -1;
+    int found = 0;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (!strcasecmp(e->d_name, name)) {
+            snprintf(host + len, cap - len, "/%s", e->d_name);
+            found = 1;
+            break;
+        }
+    }
+    closedir(d);
+    if (!found) snprintf(host + len, cap - len, "/%s", name);
+    return found;
+}
+
+/* files_trace: one line per burst of user-data lookups (a gap of 1 s ends
+ * one; a running line every 128 lookups), with the CreateFile calls of the
+ * same period: their time, and the part spent in the file system. */
+static void user_lookup_done(uint64_t start, uint64_t end)
+{
+    static uint64_t burst_first, burst_last, burst_resolving, burst_count, burst_lstats, burst_scans, burst_hits, burst_opens, burst_open_ns, burst_open_fs,
+                    burst_reused, burst_stale;
+    if (!files_trace) return;
+    pthread_mutex_lock(&folder_lock);
+    int ended = burst_count && start - burst_last > 1000000000ull;
+    if (ended || (burst_count && !(burst_count & 127)))
+        void_log("[files] user data%s: %llu lookups in %.1f ms (%.1f ms resolving: %llu lstat, %llu folder scans, %llu remembered folders); "
+                 "%llu CreateFile %.1f ms (%.1f ms in the file system), %llu parked handles reused, %llu changed%s",
+                 ended ? "" : " so far", (unsigned long long)burst_count, (double)(burst_last - burst_first) / 1e6, (double)burst_resolving / 1e6,
+                 (unsigned long long)(user_lstats - burst_lstats), (unsigned long long)(user_scans - burst_scans),
+                 (unsigned long long)(folder_hits - burst_hits), (unsigned long long)(open_calls - burst_opens),
+                 (double)(open_total_ns - burst_open_ns) / 1e6, (double)(open_fs_ns - burst_open_fs) / 1e6,
+                 (unsigned long long)(parked_reused - burst_reused), (unsigned long long)(parked_stale - burst_stale),
+                 folder_cache_off ? " [folder cache off]" : "");
+    if (ended) burst_count = 0;
+    if (!burst_count) {
+        burst_first = start; burst_resolving = 0;
+        burst_lstats = user_lstats; burst_scans = user_scans; burst_hits = folder_hits;
+        burst_opens = open_calls; burst_open_ns = open_total_ns; burst_open_fs = open_fs_ns;
+        burst_reused = parked_reused; burst_stale = parked_stale;
+    }
+    ++burst_count;
+    burst_resolving += end - start;
+    burst_last = end;
+    pthread_mutex_unlock(&folder_lock);
+}
+
 /* Append component `name` to host path `base`, matching an existing entry
  * case-insensitively. Returns 1 if the entry exists, 0 if it does not. */
 static int resolve_component(char *base, size_t cap, const char *name, unsigned char *kind, int cache_only)
@@ -364,11 +532,13 @@ static int resolve_component(char *base, size_t cap, const char *name, unsigned 
     if (kind) *kind = DT_UNKNOWN;
     snprintf(base + len, cap - len, "/%s", name);
     struct stat st;
+    ++user_lstats;
     if (!lstat(base, &st)) {
         if (kind) *kind = S_ISDIR(st.st_mode) ? DT_DIR : DT_REG;
         return 1;
     }
     base[len] = 0;
+    ++user_scans;
     DIR *d = opendir(len ? base : "/");
     int found = 0;
     if (d) {
@@ -458,6 +628,33 @@ static char *to_host_ex(const char *windows_path, int flags, int *parent_exists,
         }
     }
     int ok = 1;
+    /* User data: start from the remembered parent folder (see folder_leaf). */
+    const char *leaf_name = strrchr(rest, '\\');
+    if (!cache_only && !cacheable(best->host) && leaf_name && leaf_name > rest && leaf_name[1] &&
+        (size_t)(leaf_name - norm) < 1024) {
+        uint64_t start = void_perf_now_ns();
+        char parent[1024];
+        memcpy(parent, norm, (size_t)(leaf_name - norm));
+        parent[leaf_name - norm] = 0;
+        int present = -2;
+        if (!folder_cache_off && folder_lookup(parent, host, 2048)) {
+            present = folder_leaf(host, 2048, leaf_name + 1);
+            if (present >= 0) ++folder_hits;
+            else folder_forget_all();
+        }
+        if (present < 0) {
+            ++folder_misses;
+            present = resolve_below(host, 2048, best->host, rest, &ok, NULL, 0);
+            /* The leaf exists, so its parent is a folder worth remembering. */
+            char *slash = present > 0 && !folder_cache_off ? strrchr(host, '/') : NULL;
+            if (slash) { *slash = 0; folder_store(parent, host); *slash = '/'; }
+        }
+        user_lookup_done(start, void_perf_now_ns());
+        if (present < 0) { free(host); return NULL; }
+        if (parent_exists) *parent_exists = ok;
+        if (leaf) *leaf = present;
+        return host;
+    }
     int present = resolve_below(host, 2048, best->host, rest, &ok, NULL, cache_only);
     if (present < 0) { free(host); return NULL; }
     if (parent_exists) *parent_exists = ok;
@@ -529,12 +726,111 @@ uint32_t void_errno_to_win32(int e)
     }
 }
 
+/* -------------------------------------------------- parked read handles */
+/* Every open() and close() of a profile or save file is a round trip to the
+ * shared-storage daemon (FUSE: 0.55-0.9 ms per open on the test phone), and
+ * the save lists open every save three to seven times and the profile's
+ * user_a2.cfg once per save: 200 saves made about 800 opens for the load
+ * list, 1100 for the save list and 1500 for a new save. A read-only handle
+ * of a user-data file that the game closes parks its descriptor here; the
+ * next read-only open of the same host path takes it back, at offset 0,
+ * when stat still shows the same file unchanged (device, inode, size,
+ * modification and change times). Writing, creating, deleting or renaming
+ * through this host drops the path's descriptors first; one unused for
+ * PARKED_NS is closed by the next park. files_nocache turns this off too. */
+#define PARKED_SLOTS 256u
+#define PARKED_NS (60ull * 1000000000ull)
+typedef struct { char *path; int fd; struct stat st; uint64_t when; } parked_handle;
+static parked_handle parked[PARKED_SLOTS];
+static unsigned parked_count;
+static pthread_mutex_t parked_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static int parked_same(const struct stat *a, const struct stat *b)
+{
+    return a->st_dev == b->st_dev && a->st_ino == b->st_ino && a->st_size == b->st_size &&
+           a->st_mtim.tv_sec == b->st_mtim.tv_sec && a->st_mtim.tv_nsec == b->st_mtim.tv_nsec &&
+           a->st_ctim.tv_sec == b->st_ctim.tv_sec && a->st_ctim.tv_nsec == b->st_ctim.tv_nsec;
+}
+
+/* Caller holds parked_lock; the descriptor is closed after unlocking. */
+static void parked_remove_locked(unsigned i, int *closing, unsigned *n)
+{
+    closing[(*n)++] = parked[i].fd;
+    free(parked[i].path);
+    parked[i] = parked[--parked_count];
+}
+
+/* A parked descriptor of `path` (exact host path) for a read-only open, or -1. */
+static int parked_take(const char *path)
+{
+    if (folder_cache_off) return -1;
+    int fd = -1;
+    struct stat then = {0};
+    pthread_mutex_lock(&parked_lock);
+    for (unsigned i = 0; i < parked_count; ++i) {
+        if (strcmp(parked[i].path, path)) continue;
+        fd = parked[i].fd;
+        then = parked[i].st;
+        free(parked[i].path);
+        parked[i] = parked[--parked_count];
+        break;
+    }
+    pthread_mutex_unlock(&parked_lock);
+    if (fd < 0) return -1;
+    struct stat now;
+    if (stat(path, &now) || !S_ISREG(now.st_mode) || !parked_same(&now, &then) || lseek(fd, 0, SEEK_SET)) {
+        close(fd);
+        ++parked_stale;
+        return -1;
+    }
+    ++parked_reused;
+    return fd;
+}
+
+/* The game closed a read-only handle of user-data file `path`: 1 when its
+ * descriptor is parked (then owned here), 0 when the caller closes it. */
+static int parked_put(const char *path, int fd)
+{
+    struct stat st;
+    if (folder_cache_off || !path || fstat(fd, &st) || !S_ISREG(st.st_mode)) return 0;
+    char *copy = strdup(path);
+    if (!copy) return 0;
+    uint64_t now = void_perf_now_ns();
+    int closing[PARKED_SLOTS];
+    unsigned n = 0;
+    pthread_mutex_lock(&parked_lock);
+    for (unsigned i = parked_count; i-- > 0;)
+        if (now - parked[i].when > PARKED_NS) parked_remove_locked(i, closing, &n);
+    if (parked_count == PARKED_SLOTS) {
+        unsigned oldest = 0;
+        for (unsigned i = 1; i < parked_count; ++i) if (parked[i].when < parked[oldest].when) oldest = i;
+        parked_remove_locked(oldest, closing, &n);
+    }
+    parked[parked_count++] = (parked_handle){ copy, fd, st, now };
+    pthread_mutex_unlock(&parked_lock);
+    for (unsigned i = 0; i < n; ++i) close(closing[i]);
+    return 1;
+}
+
+/* `path` (NULL: every path) is written, created, deleted or renamed through this host. */
+static void parked_drop(const char *path)
+{
+    int closing[PARKED_SLOTS];
+    unsigned n = 0;
+    pthread_mutex_lock(&parked_lock);
+    for (unsigned i = parked_count; i-- > 0;)
+        if (!path || !strcmp(parked[i].path, path)) parked_remove_locked(i, closing, &n);
+    pthread_mutex_unlock(&parked_lock);
+    for (unsigned i = 0; i < n; ++i) close(closing[i]);
+}
+
 /* ----------------------------------------------------------- file objects */
 typedef struct {
     int fd;
     uint32_t granted_access;
     int std_stream;       /* 0 none, 1 stdin, 2 stdout, 3 stderr */
     int is_dir;
+    int parkable;         /* read-only user-data file: parked on close */
     char *host_path;
     int delete_on_close;
     char line[512];       /* buffered guest console output */
@@ -558,7 +854,10 @@ static void listing_forget_parent(const char *path, int subtree);
 static void file_destroy(void_object *o)
 {
     file_t *f = (file_t *)o->data;
-    if (f->fd >= 0 && !f->std_stream) { file_restore_kept_times(f); close(f->fd); }
+    if (f->fd >= 0 && !f->std_stream) {
+        file_restore_kept_times(f);
+        if (!(f->parkable && parked_put(f->host_path, f->fd))) close(f->fd);
+    }
     if (f->delete_on_close && f->host_path) unlink(f->host_path);
     /* A written file's size and times changed under its cached listing. */
     if (f->host_path && (f->delete_on_close || (f->granted_access & 0x50000006u)))
@@ -639,7 +938,7 @@ static uint32_t create_file(const char *path, uint32_t access, uint32_t disposit
     int plain_read = !write && disposition == OPEN_EXISTING_;
     char *host = to_host_ex(path, plain_read ? RESOLVE_OVERLAY : 0, &parent_ok, &leaf, NULL);
     if (!host) { *error = ERROR_PATH_NOT_FOUND_; return WIN_INVALID_HANDLE; }
-    if (write || (oflags & (O_CREAT | O_TRUNC))) archive_changed(host);
+    if (write || (oflags & (O_CREAT | O_TRUNC))) { archive_changed(host); parked_drop(host); }
     /* A listed directory answers the loose-file probes without a lookup. */
     char parent[2048];
     snprintf(parent, sizeof parent, "%s", host);
@@ -654,8 +953,12 @@ static uint32_t create_file(const char *path, uint32_t access, uint32_t disposit
     }
     if ((oflags & O_CREAT) && !write) oflags = (oflags & ~O_ACCMODE) | O_RDWR;
     /* Open first: OPEN_ALWAYS/CREATE_ALWAYS still report an existing file. */
-    int existed = 0, created = 0, fd = -1;
-    if (oflags & O_CREAT) {
+    int existed = 0, created = 0, fd = -1, reused = 0;
+    int user_read = plain_read && !listed && !(flags & FILE_FLAG_DELETE_ON_CLOSE_);
+    if (user_read) reused = (fd = parked_take(host)) >= 0;
+    if (reused) {
+        /* A parked descriptor of the same, unchanged file (parked read handles). */
+    } else if (oflags & O_CREAT) {
         if (!(oflags & O_EXCL)) {
             fd = open(host, oflags & ~(O_CREAT | O_TRUNC), 0664);
             if (fd >= 0) {
@@ -685,7 +988,7 @@ static uint32_t create_file(const char *path, uint32_t access, uint32_t disposit
         return WIN_INVALID_HANDLE;
     }
     struct stat st;
-    int is_dir = !fstat(fd, &st) && S_ISDIR(st.st_mode);
+    int is_dir = !reused && !fstat(fd, &st) && S_ISDIR(st.st_mode);
     if (is_dir && !(flags & FILE_FLAG_BACKUP_SEMANTICS_)) {
         close(fd);
         free(host);
@@ -697,6 +1000,7 @@ static uint32_t create_file(const char *path, uint32_t access, uint32_t disposit
     file_t *f = file_get(h);
     f->granted_access = access;
     f->is_dir = is_dir;
+    f->parkable = user_read && !is_dir;
     if (flags & FILE_FLAG_DELETE_ON_CLOSE_) f->delete_on_close = 1;
     VLOG("[void] CreateFile(%s) -> %s handle %08X", path, host, h);
     free(host);
@@ -726,9 +1030,13 @@ static uint32_t create_file_guest(char *path)
         }
     }
     void_blocking_begin();
+    uint64_t file_system = void_perf_now_ns();
     uint32_t h = create_file(path, access, disposition, flags, &error);
+    file_system = void_perf_now_ns() - file_system;
     void_blocking_end();
-    void_perf_add(VOID_PERF_FILE_OPEN, void_perf_now_ns() - start, 0);
+    uint64_t total = void_perf_now_ns() - start;
+    void_perf_add(VOID_PERF_FILE_OPEN, total, 0);
+    ++open_calls; open_total_ns += total; open_fs_ns += file_system;
     free(path);
     void_set_last_error(error);
     return h;
@@ -1026,6 +1334,7 @@ WINAPI_EXPORT(K32, GetFileInformationByHandle, 2)
 static uint32_t delete_file(const char *path)
 {
     char *host = to_host(path, NULL, NULL);
+    if (host) parked_drop(host);
     int ok = host && !unlink(host);
     if (!ok) void_set_last_error(host ? void_errno_to_win32(errno) : ERROR_PATH_NOT_FOUND_);
     if (host) listing_forget_parent(host, 0);
@@ -1040,9 +1349,11 @@ WINAPI_EXPORT(K32, DeleteFileW, 1) { char *p = void_wstr_utf8(ARG(0)); uint32_t 
 static uint32_t remove_directory(const char *path)
 {
     char *host = path ? to_host(path, NULL, NULL) : NULL;
+    parked_drop(NULL);
     int ok = host && !rmdir(host);
     if (!ok) void_set_last_error(host ? void_errno_to_win32(errno) : ERROR_PATH_NOT_FOUND_);
     if (host) listing_forget_parent(host, 1);
+    folder_forget_all();
     VLOG("[void] RemoveDirectory(%s) = %d", path ? path : "(null)", ok);
     free(host);
     return ok;
@@ -1086,6 +1397,7 @@ static uint32_t copy_file(const char *from, const char *to, int fail_if_exists)
     char *b = to_host(to, &dest_parent, NULL);
     struct stat source, dest;
     if (!a || !b) { error = ERROR_PATH_NOT_FOUND_; goto done; }
+    parked_drop(b);
     do { in = open(a, O_RDONLY | O_NONBLOCK | O_CLOEXEC); } while (in < 0 && errno == EINTR);
     if (in < 0) {
         error = errno == ENOENT && !source_parent ? ERROR_PATH_NOT_FOUND_ : void_errno_to_win32(errno);
@@ -1184,11 +1496,13 @@ static uint32_t move_file(const char *from, const char *to)
     struct stat st;
     int ok = 0;
     if (a && b) {
+        parked_drop(NULL);
         if (!stat(b, &st)) void_set_last_error(ERROR_ALREADY_EXISTS_);
         else if (rename(a, b)) void_set_last_error(void_errno_to_win32(errno));
         else ok = 1;
         listing_forget_parent(a, 1);
         listing_forget_parent(b, 1);
+        folder_forget_all();
     }
     free(a); free(b);
     return ok;
@@ -1218,6 +1532,7 @@ static uint32_t create_directory(const char *path)
         if (!mkdir(host, 0775)) ok = 1;
         else void_set_last_error(errno == EEXIST ? ERROR_ALREADY_EXISTS_ : void_errno_to_win32(errno));
         listing_forget_parent(host, 0);
+        folder_forget_all();
     } else {
         void_set_last_error(ERROR_PATH_NOT_FOUND_);
     }
@@ -1594,9 +1909,24 @@ typedef struct {
     uint64_t identity, cached_offset;
     uint32_t cached_size;
     uint8_t *cached;
+    int user_data;        /* a profile or save file (outside the installation and overlay) */
 } mapping_t;
 static uint64_t mapping_identity;
 #define ARCHIVE_READ_AHEAD 65536u
+/* Read-only views of a user-data file larger than this map the file instead
+ * of reading the whole view: the save lists map each whole save (2-10 MB) to
+ * read its ~300 KB header, 200 saves made 1.1 GB of reads for the save list
+ * and 1.9 GB for a new save. Windows cannot truncate a file while a view or
+ * mapping of it is open, so the game never shrinks a file under such a view. */
+#define USER_VIEW_MAPPED (1u << 20)
+
+/* 1: map the view `offset`, `size` of `m` lazily instead of reading it now. */
+static int user_view_mapped(const mapping_t *m, uint64_t offset, uint64_t size)
+{
+    struct stat st;
+    return m->user_data && !folder_cache_off && size > USER_VIEW_MAPPED &&
+           !fstat(m->fd, &st) && S_ISREG(st.st_mode) && offset + size <= (uint64_t)st.st_size;
+}
 
 static void mapping_destroy(void_object *o)
 {
@@ -1609,7 +1939,7 @@ WINAPI_EXPORT(K32, CreateFileMappingA, 6)
 {
     uint32_t file = ARG(0), protect = ARG(2);
     uint64_t size = ((uint64_t)ARG(3) << 32) | ARG(4);
-    int fd, archive = 0;
+    int fd, archive = 0, user_data = 0;
     if (file == WIN_INVALID_HANDLE) {
         char path[1100];
         snprintf(path, sizeof path, "%s/Temp/.mapping-XXXXXX", data_root);
@@ -1621,6 +1951,7 @@ WINAPI_EXPORT(K32, CreateFileMappingA, 6)
         file_t *f = file_get(file);
         if (!f) { void_set_last_error(ERROR_INVALID_HANDLE_); return 0; }
         archive = archive_path(f->host_path);
+        user_data = f->host_path && !cacheable(f->host_path);
         if (archive && (protect & 0xFFu) != 0x02u) archive_changed(f->host_path);
         fd = dup(f->fd);
         struct stat st;
@@ -1636,6 +1967,7 @@ WINAPI_EXPORT(K32, CreateFileMappingA, 6)
     m->size = size;
     m->protect = protect;
     m->archive = archive;
+    m->user_data = user_data;
     m->identity = ++mapping_identity;
     o->destroy = mapping_destroy;
     void_set_last_error(0);
@@ -1670,7 +2002,7 @@ WINAPI_EXPORT(K32, MapViewOfFile, 5)
     /* A read-only window of a read-only mapping (the .pak archives) is read
      * in one call: on shared storage each page fault of a file mapping is a
      * separate FUSE round trip taken with the guest machine held. */
-    if (!writable && (m->protect & 0xFFu) == 0x02u && size <= (16u << 20)) {
+    if (!writable && (m->protect & 0xFFu) == 0x02u && size <= (16u << 20) && !user_view_mapped(m, offset, size)) {
         int cached = m->archive && size <= ARCHIVE_READ_AHEAD &&
             !__atomic_load_n(&archive_cache_disabled, __ATOMIC_ACQUIRE);
         if (cached && m->cached && offset >= m->cached_offset &&

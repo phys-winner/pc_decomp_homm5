@@ -695,6 +695,12 @@ static uint32_t do_startup(uint32_t version, uint32_t data)
     return 0;
 }
 
+/* ai_undo_native.c keeps the original AI path once a network game may run. The
+ * game starts WinSock at every launch, so the sign is its first socket: a LAN
+ * game opens them, a single-player game was seen to open none (2026-11-15). */
+static _Atomic(int) net_sockets;
+int void_network_started(void) { return __c11_atomic_load(&net_sockets, __ATOMIC_RELAXED) != 0; }
+
 static uint32_t do_socket(uint32_t af, uint32_t type, uint32_t protocol)
 {
     if (af != AF_INET) return fail(WSA_EAFNOSUPPORT);
@@ -702,7 +708,12 @@ static uint32_t do_socket(uint32_t af, uint32_t type, uint32_t protocol)
     int fd = socket(AF_INET, (type == 1 ? SOCK_STREAM : SOCK_DGRAM) | SOCK_CLOEXEC, (int)protocol);
     if (fd < 0) return fail_errno();
     uint32_t s = socket_new(fd, (int)type);
-    if (s != UINT32_MAX) { socket_error = 0; VLOG("[network] socket(%s) = %X", type == 1 ? "tcp" : "udp", s); }
+    if (s != UINT32_MAX) {
+        socket_error = 0;
+        VLOG("[network] socket(%s) = %X", type == 1 ? "tcp" : "udp", s);
+        if (!__c11_atomic_fetch_add(&net_sockets, 1, __ATOMIC_RELAXED))
+            void_log("[network] first socket (%s): AI estimates keep the original path in this process", type == 1 ? "tcp" : "udp");
+    }
     return s;
 }
 

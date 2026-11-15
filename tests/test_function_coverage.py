@@ -104,7 +104,7 @@ class CoverageTests(unittest.TestCase):
         for edition in ("toe", "vanilla", "hof"):
             with self.subTest(edition=edition):
                 records = routes.algorithm_entries(edition)
-                self.assertEqual(len(records), {"toe": 274, "vanilla": 18, "hof": 19}[edition])
+                self.assertEqual(len(records), {"toe": 288, "vanilla": 32, "hof": 33}[edition])
                 self.assertEqual(len({r["address"] for r in records}), len(records) - (edition == "toe"))
                 source = self.generated / "game" / (edition + "_catalog.c")
                 source.write_text("".join(lifted(address) for address in dict.fromkeys(r["address"] for r in records)))

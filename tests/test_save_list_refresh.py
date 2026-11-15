@@ -146,7 +146,8 @@ class SaveListRefreshTest(unittest.TestCase):
 #define GPTR(p) ((void *)ADDR(p))
 uint64_t g_fp_store_mask;
 static uint32_t viewport_scratch;
-static unsigned layouts,children,resets;
+static unsigned layouts,children,resets,console_closes;
+static void void_touch_console_close(void){++console_closes;}   /* touch_engine.c: no console here */
 static int void_vm_readable(uint32_t p,uint32_t n){return p>=0x100&&(uint64_t)p+n<=sizeof memory;}
 static int void_vm_writable(uint32_t p,uint32_t n){return void_vm_readable(p,n);}
 static uint32_t void_galloc(uint32_t n){assert(n==16);return 0x32000;}
@@ -181,7 +182,7 @@ int main(void){
   assert(MEM32(0x40160)==0x50000&&MEM32(0x40164)==0x50060&&MEM32(0x40168)==0x50080);
   for(unsigned j=0;j<96;++j)assert(MEM8(0x50000+j)==j+1);
  }
- assert(layouts==8&&children==8&&!resets);
+ assert(layouts==8&&children==8&&!resets&&console_closes==8);
  puts("PASS legacy scale50/75/100/125/150/175/200/fit100: populated records retained; original resource-reset negative control clears them");
 }
 '''

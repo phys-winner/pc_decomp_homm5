@@ -18,6 +18,28 @@ enum { IN_POS = 1, IN_POST = 2, IN_NORMAL = 4, IN_DIFFUSE = 8, IN_SPECULAR = 16 
 enum { SAMPLER_2D, SAMPLER_CUBE, SAMPLER_3D };
 enum { TCI_PASSTHRU, TCI_NORMAL, TCI_POSITION, TCI_REFLECTION, TCI_SPHEREMAP };
 
+/* ---------------------------------------------------------------- fog
+ * Direct3D 9 fog as Wine implements it (state_fog_fragpart, state_fogstartend,
+ * wined3d_ffp_get_vs_settings/_fs_settings; tested there against Windows).
+ * The pixel stage blends rgb toward FOGCOLOR by f = formula(c), clamped; the
+ * fog coordinate c comes from the vertex stage: a vertex shader's oFog, or for
+ * fixed-function vertices the specular alpha, the eye depth or range, or the
+ * depth. The varying is MojoShader's name for oFog (usage 11, RASTOUT 1). */
+enum { FOG_OFF, FOG_LINEAR, FOG_EXP, FOG_EXP2 };                 /* = d3d9_shader.c */
+enum { FFOG_NONE, FFOG_SPECULAR, FFOG_DEPTH, FFOG_RANGE, FFOG_ORTHO, FFOG_TRANSFORMED, FFOG_SHADER_DEPTH };
+#define FOG_OUTPUT (11u << 8 | 1u)
+#define FOG_AVAILABLE (1u << 10)
+
+int d3d_gl_fog_enabled(void);
+const float *d3d_gl_ui_blur(void);          /* d3d9_gl.c: vpUiBlur of UI filter 4 */
+
+static void fog_factor(char *out, size_t cap, uint32_t formula, const char *c)
+{
+    if (formula == FOG_EXP) snprintf(out, cap, "exp(-vpFogParams.z * %s)", c);
+    else if (formula == FOG_EXP2) snprintf(out, cap, "exp(-(vpFogParams.z * %s) * (vpFogParams.z * %s))", c, c);
+    else snprintf(out, cap, "(vpFogParams.x - %s) * vpFogParams.y", c);
+}
+
 /* Vertex half: everything its generated shader depends on. */
 typedef struct {
     uint32_t inputs, bgra;            /* IN_*; bit 0 diffuse, bit 1 specular stored as D3DCOLOR */
@@ -26,6 +48,7 @@ typedef struct {
     uint32_t lighting, lights, diffuse_from_vertex;
     uint32_t outputs[16];             /* varyings written: usage << 8 | index */
     uint32_t output_count;
+    uint32_t fog_coord;               /* FFOG_*: what FOG_OUTPUT holds */
 } ff_vkey;
 
 /* Pixel half. */
@@ -35,7 +58,8 @@ typedef struct {
     uint32_t project[8];              /* component the coordinate is divided by (1..4), 0 for none */
     uint32_t stage_count;
     uint32_t specular;
-    uint32_t available;               /* varyings provided: bit 0 diffuse, 1 specular, 2 + n texcoord n */
+    uint32_t available;               /* varyings provided: bit 0 diffuse, 1 specular, 2 + n texcoord n, 10 fog */
+    uint32_t fog;                     /* FOG_* formula */
 } ff_fkey;
 
 typedef struct ff_vs { ff_vkey key; GLuint gl; uint32_t id; struct ff_vs *next; } ff_vs;
@@ -44,7 +68,7 @@ typedef struct ff_prog { uint32_t vid, fid; GLuint gl; struct ff_prog *next; } f
 typedef struct ff_locs {
     GLuint program;
     GLint wvp, world_view, vp, half, material, ambient, light_dir, light_diffuse, tex_matrix;
-    GLint tfactor, alpha_func, alpha_ref, ui_filter;
+    GLint tfactor, alpha_func, alpha_ref, ui_filter, ui_blur, fog_color, fog_params;
     struct ff_locs *next;
 } ff_locs;
 
@@ -137,6 +161,61 @@ static uint32_t scan_varyings(const char *src, const char *qualifier, uint32_t *
     return count;
 }
 
+/* ----------------------------------------------------- fog state */
+static float fog_float(uint32_t u) { float f; memcpy(&f, &u, 4); return f; }
+
+static int fog_transformed(d3d_device *d)
+{
+    d3d_decl *decl = (d3d_decl *)d->st.decl;
+    for (int i = 0; decl && i < decl->count; ++i)
+        if (decl->elements[i].usage == 9 && decl->elements[i].usage_index == 0 && decl->elements[i].type < 17) return 1;
+    return 0;
+}
+
+/* The fog of the current draw: returns the pixel formula (FOG_*), sets the
+ * vertex coordinate source (FFOG_*: for a vertex shader FFOG_NONE means its own
+ * oFog, FFOG_SHADER_DEPTH its clip-space z) and vpFogParams (end, scale,
+ * density, 0) and vpFogColor. vs_major: 0 without a vertex shader;
+ * ps_major: 0 without a pixel shader. */
+int d3d_fog_state(d3d_device *d, int vs_major, int ps_major, uint32_t *coord, float params[4], float color[4])
+{
+    const uint32_t *rs = d->st.rs;
+    *coord = FFOG_NONE;
+    if (!d3d_gl_fog_enabled() || !rs[28] || ps_major >= 3 || vs_major >= 3) return FOG_OFF;   /* D3DRS_FOGENABLE */
+    uint32_t table = rs[35], vertex = rs[140];                  /* FOGTABLEMODE, FOGVERTEXMODE */
+    int transformed = !vs_major && fog_transformed(d);
+    int formula, ffp = 1;
+    if (table == 0) {
+        if (vs_major || vertex == 0 || transformed) {
+            formula = FOG_LINEAR;                                /* start 1, end 0: f = c */
+            ffp = 0;
+            *coord = vs_major ? FFOG_NONE : FFOG_SPECULAR;
+        } else {
+            /* D3DFOGMODE: 1 EXP, 2 EXP2, 3 LINEAR */
+            formula = vertex == 1 ? FOG_EXP : vertex == 2 ? FOG_EXP2 : FOG_LINEAR;
+            *coord = rs[48] ? FFOG_RANGE : FFOG_DEPTH;           /* RANGEFOGENABLE */
+        }
+    } else {
+        formula = table == 1 ? FOG_EXP : table == 2 ? FOG_EXP2 : FOG_LINEAR;
+        const float *p = d->st.transforms[3];                    /* D3DTS_PROJECTION: _14 _24 _34 _44 */
+        int ortho = p[3] == 0.0f && p[7] == 0.0f && p[11] == 0.0f && p[15] == 1.0f;
+        *coord = vs_major ? FFOG_SHADER_DEPTH : transformed ? FFOG_TRANSFORMED : ortho ? FFOG_ORTHO : FFOG_DEPTH;
+    }
+    float start = 1.0f, end = 0.0f;
+    if (ffp) {
+        start = fog_float(rs[36]); end = fog_float(rs[37]);      /* FOGSTART, FOGEND */
+    }
+    params[0] = ffp && start == end ? 0.0f : end;
+    /* Equal start and end fog everything (Wine: start -inf, end 0). */
+    params[1] = ffp && start == end ? 0.0f : 1.0f / (end - start);
+    params[2] = fog_float(rs[38]);                               /* FOGDENSITY */
+    params[3] = 0.0f;
+    uint32_t c = rs[34];                                         /* FOGCOLOR, alpha unused */
+    color[0] = ((c >> 16) & 255) / 255.0f; color[1] = ((c >> 8) & 255) / 255.0f; color[2] = (c & 255) / 255.0f;
+    color[3] = 1.0f;
+    return formula;
+}
+
 /* ------------------------------------------------------- vertex half */
 static int vertex_inputs(d3d_device *d, ff_vkey *k)
 {
@@ -162,11 +241,12 @@ static int vertex_inputs(d3d_device *d, ff_vkey *k)
     return 1;
 }
 
-static int vertex_key(d3d_device *d, ff_vkey *k, const uint32_t *outputs, uint32_t output_count)
+static int vertex_key(d3d_device *d, ff_vkey *k, const uint32_t *outputs, uint32_t output_count, uint32_t fog_coord)
 {
     memset(k, 0, sizeof *k);
     if (!vertex_inputs(d, k)) return 0;
     int post = (k->inputs & IN_POST) != 0;
+    k->fog_coord = fog_coord;
     k->lighting = d->st.rs[137] && !post;                          /* D3DRS_LIGHTING */
     if (k->lighting) {
         for (int i = 0; i < 8; ++i) if (d->st.light_enable[i]) ++k->lights;
@@ -185,6 +265,13 @@ static int vertex_key(d3d_device *d, ff_vkey *k, const uint32_t *outputs, uint32
         k->tc_flags[n] = (post || count < 2) ? 0 : (flags & 0x1FF);
         if (k->tc_mode[n] != TCI_PASSTHRU && !(k->inputs & IN_NORMAL) && k->tc_mode[n] != TCI_POSITION)
             k->tc_mode[n] = TCI_PASSTHRU;
+    }
+    if (fog_coord) {
+        int listed = 0;
+        for (uint32_t i = 0; i < k->output_count; ++i) listed |= k->outputs[i] == FOG_OUTPUT;
+        if (!listed && k->output_count < 16) k->outputs[k->output_count++] = FOG_OUTPUT;
+        /* Eye-space sources need untransformed vertices; transformed ones keep their z. */
+        if (post && fog_coord != FFOG_SPECULAR) k->fog_coord = FFOG_TRANSFORMED;
     }
     return 1;
 }
@@ -220,11 +307,20 @@ static GLuint vertex_shader(const ff_vkey *k)
     } else {
         /* D3D row vectors: the matrices are uploaded row-major untransposed, so M * v here is v * M there. */
         APPEND(src, n, "\tgl_Position = ff_wvp * vec4(ff_a_pos.xyz, 1.0);\n");
-        if (camera || k->lighting) {
+        int eye_fog = k->fog_coord == FFOG_DEPTH || k->fog_coord == FFOG_RANGE;
+        if (camera || k->lighting || eye_fog) {
             APPEND(src, n, "\tvec4 ec_pos = ff_world_view * vec4(ff_a_pos.xyz, 1.0);\n");
             if (k->inputs & IN_NORMAL)
                 APPEND(src, n, "\tvec3 ec_normal = normalize((ff_world_view * vec4(ff_a_normal, 0.0)).xyz);\n");
         }
+    }
+    /* The fog coordinate, from D3D clip space (before the GL fixups below). */
+    switch (k->fog_coord) {
+    case FFOG_DEPTH: APPEND(src, n, "\tfloat ff_fog = abs(ec_pos.z);\n"); break;
+    case FFOG_RANGE: APPEND(src, n, "\tfloat ff_fog = length(ec_pos.xyz);\n"); break;
+    case FFOG_ORTHO: APPEND(src, n, "\tfloat ff_fog = gl_Position.z;\n"); break;
+    case FFOG_TRANSFORMED: APPEND(src, n, "\tfloat ff_fog = ff_a_pos.z;\n"); break;
+    default: break;
     }
     /* D3D -> GL: flip into D3D-ordered targets, depth range, half pixel. */
     APPEND(src, n,
@@ -248,6 +344,12 @@ static GLuint vertex_shader(const ff_vkey *k)
         uint32_t usage = k->outputs[i] >> 8, index = k->outputs[i] & 0xFF;
         if (usage == 10 && index < 2) {
             APPEND(src, n, "\tio_10_%u = %s;\n", index, index ? "specular" : "diffuse");
+            continue;
+        }
+        if (k->outputs[i] == FOG_OUTPUT && k->fog_coord) {
+            /* Specular alpha as given (Wine: the attribute, lit or not; 0 when absent). */
+            if (k->fog_coord == FFOG_SPECULAR) APPEND(src, n, "\tio_11_1 = vec4(%s.a);\n", specular_in);
+            else APPEND(src, n, "\tio_11_1 = vec4(ff_fog);\n");
             continue;
         }
         if (usage != 5 || index >= 8) {
@@ -359,10 +461,11 @@ static void op_expr(char *out, size_t cap, uint32_t op, const char *a1, const ch
 }
 
 /* available: the varyings the vertex half provides (ff_fkey.available bits). */
-static void pixel_key(d3d_device *d, ff_fkey *k, uint32_t available, int vertex_shader_set)
+static void pixel_key(d3d_device *d, ff_fkey *k, uint32_t available, int vertex_shader_set, uint32_t fog)
 {
     memset(k, 0, sizeof *k);
     k->available = available;
+    k->fog = fog;
     k->specular = d->st.rs[29] != 0;                               /* D3DRS_SPECULARENABLE */
     for (uint32_t s = 0; s < 8; ++s) {
         const uint32_t *t = d->st.tss[s];
@@ -390,6 +493,10 @@ static GLuint pixel_shader(const ff_fkey *k)
         "layout(location = 0) out highp vec4 ff_color;\n");
     if (k->available & 1) APPEND(src, n, "in highp vec4 io_10_0;\n");
     if (k->available & 2) APPEND(src, n, "in highp vec4 io_10_1;\n");
+    if (k->fog) {
+        APPEND(src, n, "uniform vec4 vpFogColor;\nuniform vec4 vpFogParams;\n");
+        if (k->available & FOG_AVAILABLE) APPEND(src, n, "in highp vec4 io_11_1;\n");
+    }
     for (uint32_t s = 0; s < k->stage_count; ++s) {
         static const char *const kinds[3] = { "sampler2D", "samplerCube", "sampler3D" };
         if (k->available & (4u << s)) APPEND(src, n, "in highp vec4 io_5_%u;\n", s);
@@ -419,6 +526,12 @@ static GLuint pixel_shader(const ff_fkey *k)
         APPEND(src, n, "\t{ vec4 c = %s; vec4 a = %s; current = clamp(vec4(c.rgb, a.a), 0.0, 1.0); }\n", color, alpha);
     }
     if (k->specular) APPEND(src, n, "\tcurrent.rgb = clamp(current.rgb + v_specular.rgb, 0.0, 1.0);\n");
+    if (k->fog) {
+        /* An unwritten coordinate reads 0: fully fogged, as D3D9 (Wine) does. */
+        char factor[160];
+        fog_factor(factor, sizeof factor, k->fog, (k->available & FOG_AVAILABLE) ? "io_11_1.x" : "0.0");
+        APPEND(src, n, "\tcurrent.rgb = mix(vpFogColor.rgb, current.rgb, clamp(%s, 0.0, 1.0));\n", factor);
+    }
     APPEND(src, n,
         "\tfloat a = floor(clamp(current.a, 0.0, 1.0) * 255.0 + 0.5);\n\tbool pass = true;\n"
         "\tif (vpAlphaFunc == 1) pass = false; else if (vpAlphaFunc == 2) pass = a < vpAlphaRef;\n"
@@ -469,6 +582,9 @@ static ff_locs *locations(GLuint program)
     l->alpha_func = glGetUniformLocation(program, "vpAlphaFunc");
     l->alpha_ref = glGetUniformLocation(program, "vpAlphaRef");
     l->ui_filter = glGetUniformLocation(program, "vpUiFilter");
+    l->ui_blur = glGetUniformLocation(program, "vpUiBlur");
+    l->fog_color = glGetUniformLocation(program, "vpFogColor");
+    l->fog_params = glGetUniformLocation(program, "vpFogParams");
     for (int s = 0; s < 8; ++s) {
         char name[8];
         snprintf(name, sizeof name, "ff_s%d", s);
@@ -518,9 +634,21 @@ static void vertex_uniforms(d3d_device *d, const ff_locs *l)
     }
 }
 
-static void pixel_uniforms(d3d_device *d, const ff_locs *l, int alpha_test)
+static void pixel_uniforms(d3d_device *d, const ff_locs *l, int alpha_test, int vertex_shader)
 {
-    if (l->ui_filter >= 0) glUniform1i(l->ui_filter, d3d_gl_ui_drawing() ? d3d_gl_ui_filter() : -1);
+    if (l->ui_filter >= 0) {
+        int filter = d3d_gl_ui_drawing() ? d3d_gl_ui_filter() : -1;
+        glUniform1i(l->ui_filter, filter);
+        if (filter == 4 && l->ui_blur >= 0) glUniform4fv(l->ui_blur, 1, d3d_gl_ui_blur());
+    }
+    if (l->fog_color >= 0 || l->fog_params >= 0) {
+        /* Only programs of a fogged pixel half declare them. */
+        uint32_t coord;
+        float params[4], color[4];
+        d3d_fog_state(d, vertex_shader, 0, &coord, params, color);
+        if (l->fog_color >= 0) glUniform4fv(l->fog_color, 1, color);
+        if (l->fog_params >= 0) glUniform4fv(l->fog_params, 1, params);
+    }
     uint32_t tf = d->st.rs[60];                                    /* D3DRS_TEXTUREFACTOR */
     if (l->tfactor >= 0) glUniform4f(l->tfactor, ((tf >> 16) & 255) / 255.0f, ((tf >> 8) & 255) / 255.0f,
         (tf & 255) / 255.0f, (tf >> 24) / 255.0f);
@@ -550,13 +678,17 @@ void d3d_shader_forget_current(void);
 int d3d_ff_bind(d3d_device *d, int *attr_count, int *usage, int *index, uint32_t *stage_mask)
 {
     ff_fkey fk;
-    pixel_key(d, &fk, 0, 0);
-    uint32_t outputs[10], count = 0, available = 3;
+    uint32_t fog_coord;
+    float fog_params[4], fog_color[4];
+    uint32_t fog = (uint32_t)d3d_fog_state(d, 0, 0, &fog_coord, fog_params, fog_color);
+    pixel_key(d, &fk, 0, 0, fog);
+    uint32_t outputs[11], count = 0, available = 3;
     outputs[count++] = 10u << 8; outputs[count++] = 10u << 8 | 1u;
     for (uint32_t s = 0; s < fk.stage_count; ++s) { outputs[count++] = 5u << 8 | s; available |= 4u << s; }
+    if (fog) available |= FOG_AVAILABLE;
     ff_vkey vk;
-    if (!vertex_key(d, &vk, outputs, count)) return 0;
-    pixel_key(d, &fk, available, 0);
+    if (!vertex_key(d, &vk, outputs, count, fog ? fog_coord : FFOG_NONE)) return 0;
+    pixel_key(d, &fk, available, 0, fog);
     ff_vs *v = vertex_half(&vk);
     ff_fs *f = v ? pixel_half(&fk) : NULL;
     if (!f) return 0;
@@ -585,30 +717,34 @@ int d3d_ff_bind(d3d_device *d, int *attr_count, int *usage, int *index, uint32_t
     glUseProgram(p->gl);
     const ff_locs *l = locations(p->gl);
     vertex_uniforms(d, l);
-    pixel_uniforms(d, l, 1);
+    pixel_uniforms(d, l, 1, 0);
     d3d_ff_attributes(attr_count, usage, index);
     *stage_mask = (1u << fk.stage_count) - 1u;
     return 1;
 }
 
 /* A vertex half for the pixel shader whose GLSL is `ps_source`: it writes
- * every io_ varying the pixel shader reads. Returns the shader object and an
- * id naming it (0 when the state cannot be drawn). */
-GLuint d3d_ff_vertex_stage(d3d_device *d, const char *ps_source, uint32_t *id)
+ * every io_ varying the pixel shader reads, and the fog coordinate from
+ * `fog_coord` (FFOG_*) when the pixel shader is drawn with fog. Returns the
+ * shader object and an id naming it (0 when the state cannot be drawn). */
+GLuint d3d_ff_vertex_stage(d3d_device *d, const char *ps_source, uint32_t fog_coord, uint32_t *id)
 {
     uint32_t outputs[16];
-    uint32_t count = scan_varyings(ps_source, "in", outputs, 16);
+    uint32_t count = scan_varyings(ps_source, "in", outputs, 15);
     ff_vkey vk;
     *id = 0;
-    if (!vertex_key(d, &vk, outputs, count)) return 0;
+    if (!vertex_key(d, &vk, outputs, count, fog_coord)) return 0;
     ff_vs *v = vertex_half(&vk);
     if (!v) return 0;
     *id = v->id;
     return v->gl;
 }
 
-/* A pixel half fed by the vertex shader whose GLSL is `vs_source`. */
-GLuint d3d_ff_pixel_stage(d3d_device *d, const char *vs_source, uint32_t *id, uint32_t *stage_mask)
+/* A pixel half fed by the vertex shader whose GLSL is `vs_source`, with fog
+ * `fog` (FOG_*); `fog_depth`: the vertex shader is drawn writing its depth as
+ * the fog coordinate (table fog). */
+GLuint d3d_ff_pixel_stage(d3d_device *d, const char *vs_source, uint32_t fog, int fog_depth, uint32_t *id,
+    uint32_t *stage_mask)
 {
     uint32_t outputs[32];
     uint32_t count = scan_varyings(vs_source, "out", outputs, 32), available = 0;
@@ -616,9 +752,12 @@ GLuint d3d_ff_pixel_stage(d3d_device *d, const char *vs_source, uint32_t *id, ui
         uint32_t usage = outputs[i] >> 8, index = outputs[i] & 0xFF;
         if (usage == 10 && index < 2) available |= 1u << index;
         else if (usage == 5 && index < 8) available |= 4u << index;
+        else if (outputs[i] == FOG_OUTPUT) available |= FOG_AVAILABLE;
     }
+    if (fog_depth) available |= FOG_AVAILABLE;
+    if (!fog) available &= ~FOG_AVAILABLE;
     ff_fkey fk;
-    pixel_key(d, &fk, available, 1);
+    pixel_key(d, &fk, available, 1, fog);
     ff_fs *f = pixel_half(&fk);
     *id = 0;
     if (!f) return 0;
@@ -632,5 +771,5 @@ void d3d_ff_uniforms(d3d_device *d, GLuint program, int vertex, int pixel)
 {
     const ff_locs *l = locations(program);
     if (vertex) vertex_uniforms(d, l);
-    if (pixel) pixel_uniforms(d, l, 0);
+    if (pixel) pixel_uniforms(d, l, 0, !vertex);
 }

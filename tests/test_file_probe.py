@@ -76,9 +76,9 @@ enum { ERROR_PATH_NOT_FOUND_=3,ERROR_FILE_NOT_FOUND_=2,ERROR_INVALID_PARAMETER_=
 enum { O_RDONLY=0,O_WRONLY=1,O_RDWR=2,O_ACCMODE=3,O_CREAT=64,O_EXCL=128,
        O_TRUNC=512,O_DIRECTORY=65536,O_CLOEXEC=524288 };
 static char game_root[]="C:/game",overlay_root[]="C:/overlay";
-static int seen_flags,archive_cache_disabled,expected_disabled;
+static int seen_flags,archive_cache_disabled,expected_disabled,open_calls;
 static int open(const char *path,int flags,...) {
-    assert(path && archive_cache_disabled==expected_disabled);seen_flags=flags;errno=ENOENT;return -1;
+    assert(path && archive_cache_disabled==expected_disabled);++open_calls;seen_flags=flags;errno=ENOENT;return -1;
 }
 struct stat { int st_mode; };
 #define S_ISDIR(mode) ((mode)==1)
@@ -90,8 +90,13 @@ static char *to_host_ex(const char *path,int flags,int *parent,int *leaf,char *n
     (void)flags;(void)norm;*parent=*leaf=1;return strdup(path);
 }
 static void listing_forget(const char *parent) {(void)parent;}
-typedef struct {uint32_t granted_access;int is_dir,delete_on_close;} file_t;
+typedef struct {uint32_t granted_access;int is_dir,parkable,delete_on_close;} file_t;
 static file_t file;
+/* Parked read handles: a read-only user-data open asks first; writers drop the path. */
+static int take_calls,drop_calls,parked_fd=-1;
+static char dropped[256];
+static int parked_take(const char *path) {assert(path);++take_calls;int fd=parked_fd;parked_fd=-1;return fd;}
+static void parked_drop(const char *path) {++drop_calls;snprintf(dropped,sizeof dropped,"%s",path?path:"");}
 static uint32_t file_handle(int fd,const char *path,int stream) {(void)fd;(void)path;(void)stream;return 1;}
 static file_t *file_get(uint32_t handle) {(void)handle;return &file;}
 /* PRODUCTION */
@@ -107,7 +112,20 @@ int main(void) {
     archive_cache_disabled=expected_disabled=0;
     assert(create_file("C:/profiles/save.pak",GENERIC_READ_,TRUNCATE_EXISTING_,0,&error)==WIN_INVALID_HANDLE);
     assert(!archive_cache_disabled && (seen_flags&O_TRUNC));
-    puts("PASS archive invalidation: readonly truncation disables before open, ordinary reads and profile paths do not");
+    /* Read-only opens of user data try a parked descriptor; the installation and writers do not. */
+    archive_cache_disabled=expected_disabled=0;take_calls=drop_calls=0;
+    assert(create_file("C:/profiles/save.sav",GENERIC_READ_,OPEN_EXISTING_,0,&error)==WIN_INVALID_HANDLE);
+    assert(take_calls==1 && !drop_calls);
+    assert(create_file("C:/game/data.pak",GENERIC_READ_,OPEN_EXISTING_,0,&error)==WIN_INVALID_HANDLE && take_calls==1);
+    assert(create_file("C:/profiles/save.sav",GENERIC_READ_,OPEN_EXISTING_,FILE_FLAG_DELETE_ON_CLOSE_,&error)==WIN_INVALID_HANDLE);
+    assert(take_calls==1);
+    assert(create_file("C:/profiles/save.sav",GENERIC_WRITE_,CREATE_ALWAYS_,0,&error)==WIN_INVALID_HANDLE);
+    assert(take_calls==1 && drop_calls==1 && !strcmp(dropped,"C:/profiles/save.sav"));
+    /* A parked descriptor is the handle: no open, and it parks again on close. */
+    int opens=open_calls;parked_fd=7;file.parkable=0;
+    assert(create_file("C:/profiles/save.sav",GENERIC_READ_,OPEN_EXISTING_,0,&error)==1 && !error);
+    assert(open_calls==opens && take_calls==2 && file.parkable && !file.is_dir && file.granted_access==GENERIC_READ_);
+    puts("PASS archive invalidation: readonly truncation disables before open, ordinary reads and profile paths do not; parked user-data reads: asked first, reused without open, dropped by writers");
     return 0;
 }
 '''
@@ -142,6 +160,9 @@ static int mount_count=2;
         listings = text[text.index("/* ---------------------------------------------------- directory listings */"):
                         text.index("void void_files_set_overlay(const char *dir)")]
         fixture += listings
+        fixture += "#define void_log(...) ((void)0)\n"
+        fixture += text[text.index("/* ---------------------------------------------------- user-data folders */"):
+                        text.index("/* Append component `name` to host path")]
         for name in ("static int resolve_component(", "static int resolve_below(", "static char *to_host_ex("):
             fixture += body(text, name)
         fixture += text[text.index("#define GENERIC_READ_"):text.index("/* Host side of CreateFile:")]

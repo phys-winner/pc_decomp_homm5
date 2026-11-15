@@ -114,7 +114,29 @@ public class PayloadCheck {
   }
   c.assets.index=expected.replace(name,"other.so");assert !NativeLibrary.available(c,"homm5");invalid(c);
   c.assets.index=null;File plain=new File(c.info.nativeLibraryDir,name);plain.getParentFile().mkdirs();assert plain.createNewFile();assert NativeLibrary.available(c,"homm5");
-  System.out.println("PASS real Java payload install: retry, SHA rejection, atomic old-copy preservation, update, read-only load/cache repair/failure, malformed index and availability");
+  // An engine row may name libraries installed beside it (libhomm5_common.so); such a library needs nothing itself.
+  String common="libhomm5_common.so";File shared=new File(c.files,"native/"+common);
+  String row=name+" "+payload.length+" "+hash(payload)+" 4096 24",dep=common+" "+payload.length+" "+hash(payload)+" 4096 24";
+  c.assets.index=row+" "+common+"\n"+dep+"\n";assert NativeLibrary.available(c,"homm5");
+  int u=unpacks,l=loads;NativeLibrary.load(c,"homm5");
+  assert unpacks==u+1&&loads==l+1&&shared.isFile()&&!shared.canWrite()&&new File(shared+".sha256").isFile():"dependency installed beside the engine";
+  NativeLibrary.load(c,"homm5");assert unpacks==u+1&&loads==l+2:"cached dependency reused";
+  for(String bad:new String[]{row+" "+common+"\n",row+" "+common+"\n"+dep+" "+name+"\n",row+" "+name+"\n"+dep+"\n",
+                              row+" libbad\n"+dep+"\n",row+" "+common+",\n"+dep+"\n"}){
+   c.assets.index=bad;assert !NativeLibrary.available(c,"homm5");invalid(c);
+  }
+  // A set installed together in its own folder (DxvkRuntime): packed, installAll, installed.
+  String la="liba.so",lb="libb.so";File set=new File(c.files,"set");
+  c.assets.index=la+" "+payload.length+" "+hash(payload)+" 4096 24\n"+lb+" "+payload.length+" "+hash(payload)+" 4096 24\n";
+  assert NativeLibrary.packed(c,la)&&!NativeLibrary.packed(c,"libc.so")&&!NativeLibrary.installed(c,set,la,lb);
+  u=unpacks;assert NativeLibrary.installAll(c,set,la,lb).equals(set)&&unpacks==u+2&&NativeLibrary.installed(c,set,la,lb);
+  NativeLibrary.installAll(c,set,la,lb);assert unpacks==u+2:"a complete set is not unpacked again";
+  assert !new File(set,lb).canWrite()&&new File(set,lb).setWritable(true);Files.write(new File(set,lb).toPath(),new byte[1]);
+  assert NativeLibrary.installed(c,set,la)&&!NativeLibrary.installed(c,set,la,lb):"a changed copy is not installed";
+  NativeLibrary.installAll(c,set,la,lb);assert unpacks==u+3&&NativeLibrary.installed(c,set,la,lb):"only the changed library is unpacked again";
+  try{NativeLibrary.installAll(c,set,la,"libc.so");throw new AssertionError("installed a library the index lacks");}catch(IOException missing){}
+  c.assets.index=null;assert !NativeLibrary.packed(c,la)&&!NativeLibrary.installed(c,set,la);
+  System.out.println("PASS real Java payload install: retry, SHA rejection, atomic old-copy preservation, update, read-only load/cache repair/failure, malformed index, availability and dependencies; sets installed together (packed, installAll, installed)");
  }
 }'''
             paths = []
