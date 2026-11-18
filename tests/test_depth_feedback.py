@@ -19,6 +19,7 @@ def fixture():
             .replace("/* ACTUAL_ATTACHMENTS */", source[start:stop])
             .replace("/* ACTUAL_DEPTH_POINT */", function(source, "static GLenum depth_attachment("))
             .replace("/* ACTUAL_FORGET */", function(source, "void d3d_gl_forget_texture("))
+            .replace("/* ACTUAL_DEPTH_RESOLVE */", function(source, "static void msaa_resolve_depth("))
             .replace("/* ACTUAL_TARGETS */", "static void ui_prepare_depth(d3d_device *d) { (void)d; }\n"
                      "static d3d_surface *ui_surface(d3d_device *d,d3d_surface *s) { (void)d;return s; }\n"
                      "static int xt_targets(d3d_device *d,fb_attachment *c,fb_attachment *z,GLenum *p) "

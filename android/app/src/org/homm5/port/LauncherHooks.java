@@ -21,6 +21,7 @@ import org.homm5.port.launcher.PortHooks;
  *  launcher's process and in the game's (Launch.attach), so it never touches the game's activity
  *  or native library. */
 public final class LauncherHooks implements PortHooks {
+    static final String EXTRA_HANDOVER = "homm5.launcherHandover";
     @Override public void verifyInstallation(Context context, String distribution, String part, File folder) throws java.io.IOException {
         if (!"game".equals(part) || !Games.valid(distribution)) return;
         if ("toe".equals(distribution)) Assets.verifyOriginals(context, folder, distribution, true);
@@ -32,8 +33,10 @@ public final class LauncherHooks implements PortHooks {
 
     @Override public void prepare(Context context, String distribution, Intent intent) {
         // Android 8.0 uses the window's own fade; later versions dim without a task transition.
-        if (Games.valid(distribution) && android.os.Build.VERSION.SDK_INT >= 27)
-            intent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
+        if (Games.valid(distribution)) {
+            intent.putExtra(EXTRA_HANDOVER, true);
+            if (android.os.Build.VERSION.SDK_INT >= 27) intent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
+        }
     }
 
     @Override public String installationProblem(Context context, String distribution, String part, File folder) {
@@ -76,6 +79,7 @@ public final class LauncherHooks implements PortHooks {
 
     @Override public void migrate(Context context) {
         keepCurrentTask(context);
+        GameShortcuts.install(context);
         SharedPreferences old = context.getSharedPreferences(OLD_PREFERENCES, Context.MODE_PRIVATE);
         if (!old.getBoolean(MIGRATED, false)) {
             Map<String, ?> values = old.getAll();

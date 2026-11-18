@@ -22,6 +22,7 @@
 
 void sub_00A9CDC0_lifted(void);
 void sub_00CC5F50_lifted(void);
+void void_shadow_texture_loaded(void);
 
 static struct {
     const d3d_native_format *native;
@@ -45,7 +46,10 @@ static int dxt_code(uint32_t fourcc)
 void sub_00A9CDC0(void)
 {
     uint32_t desc = g_ecx;
-    if (void_vm_readable(desc, 124) && (MEM32(desc + 76) & 4u) && MEM32(desc + 32) == FOURCC('H', '5', 'T', 'C')) {
+    int readable = void_vm_readable(desc, 124);
+    /* This path processes a DDS payload after the stream becomes ready, including on DXVK. */
+    if (readable && MEM32(desc) == 124) void_shadow_texture_loaded();
+    if (readable && (MEM32(desc + 76) & 4u) && MEM32(desc + 32) == FOURCC('H', '5', 'T', 'C')) {
         const d3d_native_format *native = d3d_native_find(MEM32(desc + 80));
         uint32_t original = MEM32(desc + 40);
         int code = dxt_code(original);

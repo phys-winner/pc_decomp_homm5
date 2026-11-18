@@ -319,6 +319,8 @@ static uint32_t void_call_guest(uint32_t va,int n,const uint32_t *args,int pops)
 #define VLOG(...) ((void)0)
 static pthread_mutex_t scale_lock;
 static int scale_percent=100;
+static struct {int width,height,edge[4];} safe_pending,safe_current;
+static uint32_t safe_root;
 static uint32_t viewport_scratch;
 static struct {uint32_t root;} viewport;
 static struct {uint32_t screen;int requested,percent;} fit;

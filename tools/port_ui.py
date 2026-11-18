@@ -41,9 +41,9 @@ OPTIONS = (
      "50%", "200%", (0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0), 2),
     ("port_fps_limit", "port_fps_limit", "port_ui_scale",
      "Частота кадров",
-     "Предел частоты кадров: меньшее значение снижает нагрузку на процессор и расход батареи. "
-     "60 кадров/с — обычный режим; «Частота экрана» снимает дополнительное ограничение.",
-     "30", "Экран", (30.0, 45.0, 60.0, 0.0), 2),
+     "Частота экрана, её половина или треть. Меньшее значение снижает нагрузку и расход батареи. "
+     "Совпадающие значения объединены; для выбранного предела запрашивается наименьшая подходящая частота экрана.",
+     "20", "Экран", (20.0, 30.0, 45.0, 60.0), 3),
     ("port_camera_sensitivity", "port_camera_sensitivity", "adv_camera_mode",
      "Чувствительность камеры",
      "Скорость поворота, приближения и наклона камеры жестами двумя пальцами.",
@@ -71,8 +71,8 @@ OPTIONS = (
      "Выкл.", "Вкл.", (0.0, 1.0), 0),
     ("port_console", "port_console", "port_lan_vpn",
      "Консоль игры",
-     "Открытие и закрытие консоли клавишей ~ или удержанием кнопки-шестерёнки. "
-     "Удержание книги приключений открывает меню читов и предлагает включить их для текущей карты. "
+     "Клавиша ~ открывает и закрывает консоль. Удержание шестерёнки на карте открывает читы с кнопкой «Консоль»; "
+     "в городе и бою — сразу консоль. Удержание книги приключений также открывает читы для текущей карты. "
      "Короткое касание тремя пальцами возвращает камеру.",
      "Выкл.", "Вкл.", (0.0, 1.0), 0),
     ("port_split_hints", "port_split_hints", "port_console",
@@ -86,6 +86,12 @@ OPTIONS = (
      "Первый воин отделяется через 1 секунду, следующие — каждые 0,5 секунды. "
      "При отключении зон деление вторым пальцем остаётся доступным.",
      "Выкл.", "Вкл.", (0.0, 1.0), 1),
+    ("port_army_actions", "port_army_actions", "port_split_zones",
+     "Кнопки разделения армии",
+     "Касание или левый клик по отряду показывает над ним три кнопки: отделить одного, половину, "
+     "поровну по свободным ячейкам. Команды проверяет сама игра; чужая армия, открытое окно и "
+     "занятые несовместимыми существами ячейки не изменяются. По умолчанию выключено; удобно с мышью.",
+     "Выкл.", "Вкл.", (0.0, 1.0), 0),
     ("port_fast_ai", "port_fast_ai", "port_split_zones",
      "Быстрый ход ИИ",
      "Компьютерные игроки ходят быстрее на больших картах: оценивая цели, ИИ больше не сохраняет "
@@ -131,7 +137,7 @@ OPTIONS = (
      "Существа и герои на карте приключений рисуются полными моделями вместо упрощённых LOD-моделей "
      "с ужатыми текстурами, которые игра 2006–2007 годов использовала для экономии памяти. "
      "Действует после перезапуска игры.",
-     "Выкл.", "Вкл.", (0.0, 1.0), 1),
+     "Выкл.", "Вкл.", (0.0, 1.0), 0),
     ("port_fog", "port_fog", "port_lod_fix",
      "Туман",
      "Туман Direct3D 9, который задают карты и движок: дымка вдали на карте приключений и в бою. "
@@ -149,13 +155,13 @@ OPTIONS = (
 # everything a player may change during a battle sits on page one of its category.
 GRAPHICS_PICTURE = ("port_render_scale", "port_fps_limit", "port_world_filter", "port_sharpness", "port_ui_filter")
 GRAPHICS_EFFECTS = ("port_lod_fix", "port_fog", "port_battle_blur")
-INTERFACE = ("port_ui_scale", "port_lan_vpn", "port_console")
+INTERFACE = ("port_ui_scale", "port_lan_vpn", "port_console", "port_army_actions")
 
 # Native numeric comboboxes store an item index; fractional scales need scrollers.
 # The frame rate uses the original resolution widget's string-value path.
 KINDS = {"port_fps_limit": "rates",
          "port_touch_cursor": "check", "port_lan_vpn": "check", "port_console": "check", "port_combat_fit": "check",
-         "port_split_hints": "check", "port_split_zones": "check",
+         "port_split_hints": "check", "port_split_zones": "check", "port_army_actions": "check",
          "port_combat_confirm": "check", "port_attack_hints": "check", "port_combat_route": "check",
          "port_lod_fix": "check", "port_fog": "check", "port_battle_blur": "check", "port_fast_ai": "check",
          "port_world_filter": "combo", "port_ui_filter": "combo"}
@@ -575,6 +581,23 @@ def inactive_chat_background(game_dir, edition="toe"):
     return {name: ET.tostring(window, encoding="utf-8", xml_declaration=True)}
 
 
+def recruitment_input(game_dir, edition="toe"):
+    """The numeric dial must not reject a digit because its rendered text reaches the right edge.
+
+    CWindowEditLine's insert validates the full text width (minus a further 10 units), while
+    SetText used by the dial bypasses that check. Auto-sized dials thus displayed 12/100 but
+    accepted only 9/99 from a keyboard. Scrolling preserves the native numeric/availability
+    checks and works with both IME and hardware keys, at every UI scale, in all three schemas.
+    """
+    name = "UI/Common/JogDial/5ButtEdit/Edit.(WindowEditLine).xdb"
+    node = ET.fromstring(source_resource(game_dir, name, edition)[0])
+    if node.findtext("Name") != "jd_editbox" or node.findtext("TextEntryType") != "ETET_NUMERIC":
+        raise ValueError(edition + ": unrecognized native recruitment edit field")
+    node.find("TextScroll").text = "true"
+    node.find("MaxLength").text = "10"  # An army count is a signed 32-bit decimal, not unbounded text.
+    return {name: ET.tostring(node, encoding="utf-8", xml_declaration=True)}
+
+
 def cutscene_horplus(game_dir, edition="toe"):
     """Expose the existing wide 3D viewport without scaling actors or fonts."""
     members = {}
@@ -862,6 +885,7 @@ def build_port_ui_override(root=ROOT, game_dir=None, edition="toe"):
     members.update(cutscene_horplus(game_dir, edition))
     members.update(inactive_chat_background(game_dir, edition))
     members.update(scenario_selection(game_dir, edition))
+    members.update(recruitment_input(game_dir, edition))
     output = root / ("build/data-overrides" + ("-" + edition if edition != "toe" else "")) / PAK_NAME
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_suffix(".pak.tmp")

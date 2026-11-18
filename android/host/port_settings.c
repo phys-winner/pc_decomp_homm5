@@ -5,7 +5,7 @@
  *   port_ui_scale            0.5 .. 2     UI virtual-coordinate scale
  *   port_render_scale        0.25 .. 1    backbuffer size against the display
  *   port_camera_sensitivity  0.25 .. 4    touch camera rotation, zoom and tilt
- *   port_fps_limit           0 or 30..240 maximum frame rate; 0 follows the display
+ *   port_fps_limit           legacy numeric setting; port_fps_choice owns the active cap
  *   port_cursor_offset_x/y   -0.2 .. 0.2  fraction of the shorter screen side
  *   port_touch_cursor        0 or 1      draw the cursor during finger contact
  *   port_lan_vpn             0 or 1      LAN discovery to listed VPN peers, network.c
@@ -13,7 +13,7 @@
  *   port_combat_confirm      0 or 1      confirm battlefield gestures (default 0)
  *   port_attack_hints        0 or 1      show alternate attack hints (default 0)
  *   port_combat_route        0 or 1      show movement paths and attack directions (default 1)
- *   port_lod_fix             0 or 1      full-detail creature/hero models on the adventure map (default 1)
+ *   port_lod_fix             0 or 1      full-detail creature/hero models on the adventure map (default 0)
  *   port_fog                 0 or 1      the engine's D3D9 fog on OpenGL ES (default 1)
  *   port_battle_blur         0 or 1      smooth battle-entry blur instead of the blocky original (default 0)
  *
@@ -48,27 +48,27 @@ static void void_android_settings_changed(int which, float value) { (void)which;
 enum { PORT_UI, PORT_RENDER, PORT_CAMERA, PORT_FPS, PORT_CURSOR_X, PORT_CURSOR_Y, PORT_TOUCH_CURSOR, PORT_LAN_VPN,
        PORT_CONSOLE, PORT_WORLD_FILTER, PORT_UI_FILTER, PORT_SHARPNESS, PORT_COMBAT_FIT,
        PORT_SPLIT_HINTS, PORT_SPLIT_ZONES, PORT_COMBAT_CONFIRM, PORT_ATTACK_HINTS, PORT_COMBAT_ROUTE,
-       PORT_LOD_FIX, PORT_FOG, PORT_BATTLE_BLUR, PORT_FAST_AI,
+       PORT_LOD_FIX, PORT_FOG, PORT_BATTLE_BLUR, PORT_FAST_AI, PORT_ARMY_ACTIONS,
        PORT_COUNT };
 static const char *const port_names[PORT_COUNT] = {
     "port_ui_scale", "port_render_scale", "port_camera_sensitivity", "port_fps_limit",
     "port_cursor_offset_x", "port_cursor_offset_y", "port_touch_cursor", "port_lan_vpn",
     "port_console", "port_world_filter", "port_ui_filter", "port_sharpness", "port_combat_fit",
     "port_split_hints", "port_split_zones", "port_combat_confirm", "port_attack_hints", "port_combat_route",
-    "port_lod_fix", "port_fog", "port_battle_blur", "port_fast_ai",
+    "port_lod_fix", "port_fog", "port_battle_blur", "port_fast_ai", "port_army_actions",
 };
 static float port_defaults[PORT_COUNT] = { 1.0f, 1.0f, 1.0f, 60.0f, 0.0f, 0.0f, 0.0f, 0.0f,
                                          0.0f, 2.0f, 1.0f, 0.25f, 1.0f
                                          , 1.0f, 1.0f, 0.0f, 0.0f, 1.0f
-                                         , 1.0f, 1.0f, 0.0f, 1.0f
+                                         , 0.0f, 1.0f, 0.0f, 1.0f, 0.0f
                                        };
 enum { PORT_TEXT_FPS_ITEMS, PORT_TEXT_FPS_CHOICE, PORT_TEXT_COUNT };
 static const char *const port_text_names[PORT_TEXT_COUNT] = { "port_fps_items", "port_fps_choice" };
 static const uint32_t port_text_levels[PORT_TEXT_COUNT] = { 0, 2 };
 /* Plain numbers: a profile stores the choice unquoted (setvar port_fps_choice = 60). */
-static char port_text_defaults[PORT_TEXT_COUNT][256] = { "30;60", "60" };
+static char port_text_defaults[PORT_TEXT_COUNT][256] = { "20;30;60", "60" };
 static uint32_t port_text_storage;        /* PORT_TEXT_COUNT guest strings {begin, end, capacity} */
-static float port_applied[PORT_COUNT] = { -1.0f, -1.0f, -1.0f, -1.0f };
+static float port_applied[PORT_COUNT] = { -1.0f, -1.0f, -1.0f, -1.0f, [PORT_ARMY_ACTIONS] = -1.0f };
 static uint32_t port_storage;             /* PORT_COUNT guest floats */
 static int port_state;                    /* 0 not yet, 1 registering, 2 registered */
 static pthread_mutex_t port_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -191,6 +191,13 @@ int void_port_split_zones(void) { return port_value(PORT_SPLIT_ZONES, 0.0f, 1.0f
 int void_port_combat_confirm(void) { return port_value(PORT_COMBAT_CONFIRM, 0.0f, 1.0f) >= 0.5f; }
 int void_port_attack_hints(void) { return port_value(PORT_ATTACK_HINTS, 0.0f, 1.0f) >= 0.5f; }
 int void_port_combat_route(void) { return port_value(PORT_COMBAT_ROUTE, 0.0f, 1.0f) >= 0.5f; }
+int void_port_army_actions(void) { return port_value(PORT_ARMY_ACTIONS, 0.0f, 1.0f) >= 0.5f; }
+
+/* Guest UI thread, after accepting the physical-mouse suggestion. The game saves the profile. */
+void void_port_enable_army_actions(void)
+{
+    if (port_state == 2 && port_storage) MEMF(port_storage + PORT_ARMY_ACTIONS * 4) = 1;
+}
 int void_port_lod_fix(void) { return port_value(PORT_LOD_FIX, 0.0f, 1.0f) >= 0.5f; }
 int void_port_fog(void) { return port_value(PORT_FOG, 0.0f, 1.0f) >= 0.5f; }
 int void_port_battle_blur(void) { return port_value(PORT_BATTLE_BLUR, 0.0f, 1.0f) >= 0.5f; }
@@ -210,24 +217,31 @@ static int port_text_number(int which)
     return value;
 }
 
-/* Java, before the game starts: the display's refresh rates make the items,
- * half-rate 30 first; 60 (or the nearest lower rate) is the default. */
+/* Java, before the game starts: each display rate and its /2 and /3 cadences.
+ * Names are numeric for the original string combobox/profile. Java chooses the
+ * lowest compatible display mode for the selected cap (30 -> 60/2, not 90/3).
+ * Do not lroundf NaN/Inf supplied by a broken display service. */
 void void_port_set_refresh_rates(const float *rates, int count)
 {
-    int list[16], n = 0;
-    list[n++] = 30;
+    int list[64], n = 0;
+    const float fallback = 60;
+    int valid = 0;
+    for (int i = 0; rates && i < count; ++i)
+        if (isfinite(rates[i]) && rates[i] >= 30 && rates[i] <= 240) { valid = 1; break; }
+    if (!valid) { rates = &fallback; count = 1; }
     for (int i = 0; i < count; ++i) {
-        int rate = (int)lroundf(rates[i]);
-        if (rate < 45 || rate > 240) continue;
-        int at = 0;
-        while (at < n && list[at] < rate) ++at;
-        if (at < n && list[at] == rate) continue;
-        if (n == 16) break;
-        memmove(list + at + 1, list + at, sizeof *list * (size_t)(n - at));
-        list[at] = rate;
-        ++n;
+        if (!isfinite(rates[i]) || rates[i] < 30 || rates[i] > 240) continue;
+        for (int divisor = 1; divisor <= 3; ++divisor) {
+            int rate = (int)lroundf(rates[i] / (float)divisor);
+            if (rate < 10 || rate > 240) continue;
+            int at = 0;
+            while (at < n && list[at] < rate) ++at;
+            if ((at < n && list[at] == rate) || n == 64) continue;
+            memmove(list + at + 1, list + at, sizeof *list * (size_t)(n - at));
+            list[at] = rate;
+            ++n;
+        }
     }
-    if (n == 1) list[n++] = 60;
     char items[256] = "";
     int chosen = list[0];
     for (int i = 0; i < n; ++i) {
@@ -244,7 +258,7 @@ void void_port_set_refresh_rates(const float *rates, int count)
 float void_port_fps_limit(void)
 {
     int value = port_text_number(PORT_TEXT_FPS_CHOICE);
-    return value >= 30 && value <= 240 ? (float)value : 60.0f;
+    return value >= 10 && value <= 240 ? (float)value : 60.0f;
 }
 
 /* Guest window thread, every frame: options and profiles change the storage. */
@@ -262,9 +276,19 @@ void void_port_settings_pump(void)
         void_touch_set_render_scale(render);
         void_android_settings_changed(PORT_RENDER, render);
     }
+    float army_actions = (float)void_port_army_actions();
+    if (army_actions != port_applied[PORT_ARMY_ACTIONS]) {
+        port_applied[PORT_ARMY_ACTIONS] = army_actions;
+        void_android_settings_changed(4, army_actions);
+    }
     float camera = void_port_camera_sensitivity();
     if (camera != port_applied[PORT_CAMERA]) {
         port_applied[PORT_CAMERA] = camera;
         void_android_settings_changed(PORT_CAMERA, camera);
+    }
+    float fps = void_port_fps_limit();
+    if (fps != port_applied[PORT_FPS]) {
+        port_applied[PORT_FPS] = fps;
+        void_android_settings_changed(PORT_FPS, fps);
     }
 }

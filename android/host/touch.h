@@ -17,9 +17,9 @@ enum {
     TOUCH_SECOND_BEGIN, TOUCH_SECOND_TAP, TOUCH_SECOND_HOLD,
     TOUCH_THREE_FINGER_TAP, TOUCH_TILT, TOUCH_POINTER, TOUCH_PAD_CAMERA, TOUCH_POINTER_CLICK,
     TOUCH_SECOND_END, TOUCH_FIRST_END, TOUCH_TWO_FINGER_TAP, TOUCH_CONSOLE_TOGGLE, TOUCH_CHEAT_ACTION,
-    TOUCH_COMBAT_CONFIRM
+    TOUCH_COMBAT_CONFIRM, TOUCH_ARMY_ACTION
 };
-#define TOUCH_KIND_LAST TOUCH_COMBAT_CONFIRM
+#define TOUCH_KIND_LAST TOUCH_ARMY_ACTION
 enum { COMBAT_ROUTE_MAX_POINTS = 256, COMBAT_ROUTE_MAX_TARGETS = 32,
        COMBAT_ROUTE_WORLD_POINTS = COMBAT_ROUTE_MAX_POINTS + 16 + 1 + COMBAT_ROUTE_MAX_TARGETS,
        COMBAT_ROUTE_FLOATS = 20 + 3 * COMBAT_ROUTE_WORLD_POINTS };
@@ -41,6 +41,8 @@ int void_touch_active_mode(void);
 
 /* Android records 0.5..2.0; the guest window thread applies native UI relayout. */
 void void_touch_set_scale(float scale);
+/* Physical game view and cutout bounds; applied to hero UI only, after letterbox conversion. */
+void void_touch_safe_area(int width, int height, int left, int top, int right, int bottom);
 void void_touch_scale_pump(void);
 int void_touch_ui_pan(uint32_t screen, float dx, float dy);
 void void_touch_set_render_scale(float scale);
@@ -86,6 +88,8 @@ int void_port_split_zones(void);
 int void_port_combat_confirm(void);
 int void_port_attack_hints(void);
 int void_port_combat_route(void);
+int void_port_army_actions(void);
+void void_port_enable_army_actions(void);
 int void_port_filter(int ui);
 float void_port_sharpness(void);
 /* "Доп. графика" → "Эффекты" (all editions): full-detail adventure models (default on),

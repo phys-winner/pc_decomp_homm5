@@ -40,6 +40,11 @@ public class PortSettingsCheck {
         void setUiScale(float value) {uiScale=value;updates++;}
     }
     private CombatOverlay combatOverlay=new CombatOverlay();
+    static class ArmyActions { boolean enabled; void setEnabled(boolean value) {enabled=value;} }
+    private ArmyActions armyActions=new ArmyActions();
+    private float frameRate=60;
+    private int refreshRequests;
+    private void requestHighRefresh() {++refreshRequests;}
     private final ArrayDeque<Runnable> uiTasks=new ArrayDeque<>();
     void runOnUiThread(Runnable task) {uiTasks.add(task);}
     void flushUi() {while(!uiTasks.isEmpty()) uiTasks.remove().run();}
@@ -79,6 +84,10 @@ public class PortSettingsCheck {
         /* A value stored with another type (an old build) falls back to the default. */
         check.preferences.values.put("render_scale",70);
         check.startSeeds();assert nativeUi==1.25f&&nativeRender==1&&nativeCamera==2f;
+        onPortSetting(3,45);onPortSetting(4,1);check.flushUi();
+        assert check.preferences.values.get("fps_limit").equals(45f)&&check.frameRate==45&&check.refreshRequests==1&&check.armyActions.enabled;
+        onPortSetting(3,9);onPortSetting(3,241);check.flushUi();
+        assert check.frameRate==45&&check.refreshRequests==1;
         /* Only the current Activity persists. */
         PortSettingsCheck next=new PortSettingsCheck();currentActivity=new WeakReference<>(next);
         onPortSetting(2,.5f);
@@ -191,15 +200,18 @@ static void choose(const char *text) {   /* the string copier's assignment of an
 }
 int main(void) {
     static const char *const names[PORT_COUNT] = {"port_ui_scale", "port_render_scale", "port_camera_sensitivity", "port_fps_limit", "port_cursor_offset_x", "port_cursor_offset_y", "port_touch_cursor", "port_lan_vpn", "port_console", "port_world_filter", "port_ui_filter", "port_sharpness", "port_combat_fit" /* SPLIT_NAMES */};
-    /* Frame-rate items: half rate, then the display's rates (rounded, deduplicated, 45..240). */
+    /* Frame-rate items: each valid rate, half and third, sorted and deduplicated. */
     static const float modes[] = {120.0f, 59.94f, 90.0f, 60.0f, 24.0f, 300.0f, 119.88f};
     void_port_set_refresh_rates(modes, 7);
-    assert(!strcmp(port_text_defaults[0], "30;60;90;120") && !strcmp(port_text_defaults[1], "60"));
+    assert(!strcmp(port_text_defaults[0], "20;30;40;45;60;90;120") && !strcmp(port_text_defaults[1], "60"));
     static const float only90[] = {90.0f};
     void_port_set_refresh_rates(only90, 1);
-    assert(!strcmp(port_text_defaults[0], "30;90") && !strcmp(port_text_defaults[1], "30"));
+    assert(!strcmp(port_text_defaults[0], "30;45;90") && !strcmp(port_text_defaults[1], "45"));
     void_port_set_refresh_rates(NULL, 0);
-    assert(!strcmp(port_text_defaults[0], "30;60") && !strcmp(port_text_defaults[1], "60"));
+    assert(!strcmp(port_text_defaults[0], "20;30;60") && !strcmp(port_text_defaults[1], "60"));
+    static const float invalid[]={NAN,INFINITY,-60,300};
+    void_port_set_refresh_rates(invalid,4);
+    assert(!strcmp(port_text_defaults[0], "20;30;60"));
     void_port_set_refresh_rates(modes, 7);
     for (int i = 0; i < 3; ++i) assert(port_defaults[i] == 1.0f);
     assert(port_defaults[3] == 60.0f && void_port_fps_limit() == 60.0f);
@@ -210,6 +222,7 @@ int main(void) {
     assert(port_defaults[0] == 1.25f && port_defaults[1] == 0.6f && port_defaults[2] == 2.0f);
     /* Before the game registers its variables: the seeded default, and no pump. */
     assert(void_port_camera_sensitivity() == 2.0f && void_port_combat_fit());
+    assert(void_port_lod_fix() == EXPECTED_LOD_DEFAULT);
     void_port_settings_pump(); assert(!ui_sets && !render_sets && !notifications);
     /* The first engine registration also registers the port's four profile floats. */
     engine_name = void_galloc(64); int blocks = live_blocks;
@@ -240,7 +253,7 @@ int main(void) {
     /* SPLIT_CHECKS */
     const registration *items=&registered[1+PORT_COUNT],*choice=&registered[2+PORT_COUNT];
     assert(!strcmp(items->name, "port_fps_items") && items->level == 0 && items->copier == 0x00499700u);
-    assert(!strcmp(items->text, "30;60;90;120") && items->storage == port_text_storage);
+    assert(!strcmp(items->text, "20;30;40;45;60;90;120") && items->storage == port_text_storage);
     assert(!strcmp(choice->name, "port_fps_choice") && choice->level == 2 && choice->copier == 0x00499700u);
     assert(!strcmp(choice->text, "60") && choice->storage == port_text_storage + 12);
     /* Each storage is an empty engine string with an 8-byte buffer, as the engine's initializers make them. */
@@ -254,20 +267,21 @@ int main(void) {
     assert(registrations == PORT_COUNT+4 && !strcmp(registered[PORT_COUNT+3].name, "net_port") && g_eax == 0x1000u+PORT_COUNT+4);
     /* The frame pump applies and reports each change once, clamped to its range. */
     void_port_settings_pump();
-    assert(ui_sets == 1 && ui_applied == 1.25f && render_sets == 1 && render_applied == 0.6f && notifications == 3);
+    assert(ui_sets == 1 && ui_applied == 1.25f && render_sets == 1 && render_applied == 0.6f && notifications == 5);
     assert(notified_which[0] == 0 && notified_value[0] == 1.25f && notified_which[1] == 1 && notified_value[1] == 0.6f);
-    assert(notified(2, 2.0f) && void_port_camera_sensitivity() == 2.0f);
-    void_port_settings_pump(); assert(ui_sets == 1 && render_sets == 1 && notifications == 3);
+    assert(notified_which[2]==4 && notified_value[2]==0 && notified_which[3]==2 && notified_value[3]==2);
+    assert(notified(3, 60.0f) && void_port_camera_sensitivity() == 2.0f);
+    void_port_settings_pump(); assert(ui_sets == 1 && render_sets == 1 && notifications == 5);
     MEMF(port_storage) = 1.5f; void_port_settings_pump();
-    assert(ui_sets == 2 && ui_applied == 1.5f && render_sets == 1 && notifications == 4 && notified(0, 1.5f));
+    assert(ui_sets == 2 && ui_applied == 1.5f && render_sets == 1 && notifications == 6 && notified(0, 1.5f));
     MEMF(port_storage + 4) = 5; void_port_settings_pump();
-    assert(render_sets == 2 && render_applied == 1.0f && notifications == 5 && notified(1, 1.0f));
-    MEMF(port_storage + 4) = 2; void_port_settings_pump(); assert(render_sets == 2 && notifications == 5);
+    assert(render_sets == 2 && render_applied == 1.0f && notifications == 7 && notified(1, 1.0f));
+    MEMF(port_storage + 4) = 2; void_port_settings_pump(); assert(render_sets == 2 && notifications == 7);
     MEMF(port_storage + 8) = 0.1f; void_port_settings_pump();
-    assert(ui_sets == 2 && render_sets == 2 && notifications == 6 && notified(2, 0.25f) && void_port_camera_sensitivity() == 0.25f);
+    assert(ui_sets == 2 && render_sets == 2 && notifications == 8 && notified(2, 0.25f) && void_port_camera_sensitivity() == 0.25f);
     MEMF(port_storage + 8) = 9; assert(void_port_camera_sensitivity() == 4.0f);
     MEMF(port_storage + 8) = NAN; assert(void_port_camera_sensitivity() == 2.0f);
-    void_port_settings_pump(); assert(notifications == 7 && notified(2, 2.0f));
+    void_port_settings_pump(); assert(notifications == 9 && notified(2, 2.0f));
     MEMF(port_storage) = 0.1f; void_port_settings_pump(); assert(ui_applied == 0.5f && notified(0, 0.5f));
     MEMF(port_storage + 4) = 0.1f; void_port_settings_pump(); assert(render_applied == 0.25f && notified(1, 0.25f));
     /* Every value the options pages offer reaches the game unclamped. */
@@ -287,7 +301,12 @@ int main(void) {
     choose("30"); assert(void_port_fps_limit() == 30.0f);
     choose("x60"); assert(void_port_fps_limit() == 60.0f);
     choose("1000"); assert(void_port_fps_limit() == 60.0f);
-    choose("12"); assert(void_port_fps_limit() == 60.0f);
+    choose("12"); assert(void_port_fps_limit() == 12.0f);
+    choose("20");void_port_settings_pump();assert(notified(3,20.0f));
+    int before_notifications=notifications;void_port_settings_pump();assert(notifications==before_notifications);
+    choose("241");void_port_settings_pump();assert(notified(3,60.0f));
+    assert(!void_port_army_actions());void_port_enable_army_actions();void_port_settings_pump();
+    assert(void_port_army_actions()&&notified(4,1));
     MEM32(port_text_storage + 16) = MEM32(port_text_storage + 12) - 1; assert(void_port_fps_limit() == 60.0f);
     MEMF(port_storage + 28) = 1; assert(void_port_lan_vpn());
     MEMF(port_storage + 28) = 0; assert(!void_port_lan_vpn());
@@ -326,7 +345,7 @@ class PortSettingsTest(unittest.TestCase):
         for category in categories[:2]:
             self.assertFalse(any(o.findtext("ID", "").startswith("port_") for o in category.findall(".//Options/Item")))
         self.assertEqual([[o.findtext("ID") for o in page.findall("Options/Item")] for page in categories[2].findall("Pages/Item")],
-                         [["port_ui_scale", "port_lan_vpn", "port_console"],
+                         [["port_ui_scale", "port_lan_vpn", "port_console", "port_army_actions"],
                           ["port_camera_sensitivity", "port_cursor_offset_x", "port_cursor_offset_y", "port_touch_cursor",
                            "port_split_hints", "port_split_zones", "port_fast_ai", "port_combat_confirm", "port_attack_hints",
                            "port_combat_route"]])
@@ -334,7 +353,7 @@ class PortSettingsTest(unittest.TestCase):
                          [["port_render_scale", "port_fps_limit", "port_world_filter", "port_sharpness", "port_ui_filter"],
                           ["port_lod_fix", "port_fog", "port_battle_blur"]])
         self.assertEqual([page.findtext("ID") for page in categories[3].findall("Pages/Item")], ["port_video", "port_effects"])
-        for name, default in (("port_lod_fix", "1"), ("port_fog", "1"), ("port_battle_blur", "0")):
+        for name, default in (("port_lod_fix", "0"), ("port_fog", "1"), ("port_battle_blur", "0")):
             item = categories[3].find(f".//Options/Item[ID='{name}']")
             self.assertEqual((item.findtext("Type"), item.findtext("GlobalVar1"), item.findtext("DefaultValue1")),
                              ("OPTION_CHECK_BOX", name, default))
@@ -490,7 +509,7 @@ public class GameActivity {
         CombatOverlay(Object activity,boolean russian,IntConsumer action) {assert activity!=null&&action!=null;}
         void setUiScale(float value) {scale=value;++updates;}
     }
-    int opened,nativeCalls;float nativeUi,nativeRender,nativeCamera;
+    int opened,nativeCalls;float nativeUi,nativeRender,nativeCamera,frameRate;
     SharedPreferences getSharedPreferences(String name,int mode) {assert mode==MODE_PRIVATE;++opened;return new SharedPreferences(name);}
     String cheatText(String en,String ru) {return en;}
     static void nativeCombatConfirm(int generation) {throw new AssertionError("startup must not confirm an order");}
@@ -551,9 +570,9 @@ public class GameActivity {
         source = path.read_text(encoding="utf-8")
         for name in ("host.h", "touch.h"):
             source = source.replace(f'#include "{name}"\n', "")
-        options = {option[1]: option for option in port_ui.OPTIONS}
+        options = {option[1]: option for option in port_ui.options(edition)}
         names = ("port_ui_scale", "port_render_scale", "port_camera_sensitivity", "port_fps_limit", "port_cursor_offset_x", "port_cursor_offset_y", "port_touch_cursor")
-        self.assertEqual(set(options), set(names) | {"port_lan_vpn", "port_console", "port_world_filter", "port_ui_filter", "port_sharpness", "port_combat_fit", "port_split_hints", "port_split_zones", "port_combat_confirm", "port_attack_hints", "port_combat_route", "port_lod_fix", "port_fog", "port_battle_blur", "port_fast_ai"})
+        self.assertEqual(set(options), set(names) | {"port_lan_vpn", "port_console", "port_world_filter", "port_ui_filter", "port_sharpness", "port_split_hints", "port_split_zones", "port_combat_confirm", "port_attack_hints", "port_combat_route", "port_lod_fix", "port_fog", "port_battle_blur", "port_fast_ai", "port_army_actions"})
         rows, counts = [], []
         for name in names:
             values = options[name][7]
@@ -561,8 +580,10 @@ public class GameActivity {
             rows.append("{" + ",".join(f"{value!r}f" for value in values) + "}")
             counts.append(str(len(values)))
         harness = NATIVE_HARNESS.replace("/* OPTION_VALUES */", ",".join(rows)).replace("/* OPTION_COUNTS */", ",".join(counts))
-        harness = harness.replace("/* SPLIT_NAMES */", ', "port_split_hints", "port_split_zones", "port_combat_confirm", "port_attack_hints", "port_combat_route", "port_lod_fix", "port_fog", "port_battle_blur", "port_fast_ai"')
-        harness = harness.replace("/* SPLIT_DEFAULTS */", ', "1", "1", "0", "0", "1", "1", "1", "0", "1"')
+        harness = harness.replace("/* SPLIT_NAMES */", ', "port_split_hints", "port_split_zones", "port_combat_confirm", "port_attack_hints", "port_combat_route", "port_lod_fix", "port_fog", "port_battle_blur", "port_fast_ai", "port_army_actions"')
+        lod_default = 0
+        harness = harness.replace("EXPECTED_LOD_DEFAULT", str(lod_default))
+        harness = harness.replace("/* SPLIT_DEFAULTS */", ', "1", "1", "0", "0", "1", "0", "1", "0", "1", "0"')
         checks = ''
         for name in ("hints", "zones"):
             index = "PORT_SPLIT_" + name.upper()
@@ -575,7 +596,7 @@ public class GameActivity {
         for value, enabled in ((0, False), (-1, False), ("NAN", True), ("0.49f", False), ("0.5f", True), (2, True)):
             checks += f'MEMF(port_storage+4*PORT_COMBAT_ROUTE)={value};assert({"" if enabled else "!"}void_port_combat_route());\n'
         checks += 'MEMF(port_storage+4*PORT_COMBAT_ROUTE)=1;\n'
-        for name in ("combat_confirm", "attack_hints"):
+        for name in ("combat_confirm", "attack_hints", "army_actions"):
             index = "PORT_" + name.upper()
             default = 0
             self.assertEqual(options["port_" + name][7:9], ((0.0, 1.0), default))
@@ -583,7 +604,7 @@ public class GameActivity {
             for value, enabled in ((0, False), (1, True), (-1, False), ("NAN", bool(default)), ("0.49f", False), ("0.5f", True)):
                 checks += f'MEMF(port_storage+4*{index})={value};assert({"" if enabled else "!"}void_port_{name}());\n'
             checks += f'MEMF(port_storage+4*{index})=0;\n'
-        for name, default in (("lod_fix", 1), ("fog", 1), ("battle_blur", 0), ("fast_ai", 1)):
+        for name, default in (("lod_fix", lod_default), ("fog", 1), ("battle_blur", 0), ("fast_ai", 1)):
             index = "PORT_" + name.upper()
             self.assertEqual(options["port_" + name][7:9], ((0.0, 1.0), default))
             checks += f'assert({"" if default else "!"}void_port_{name}());\n'
@@ -599,11 +620,11 @@ public class GameActivity {
 
     def test_frame_limit_option_labels(self):
         option = next(row for row in port_ui.OPTIONS if row[0] == "port_fps_limit")
-        self.assertEqual(option[7], (30.0, 45.0, 60.0, 0.0))
+        self.assertEqual(option[7], (20.0, 30.0, 45.0, 60.0))
         text = port_ui.texts()
         prefix = "UI/Consts/GameOptions/Port_port_fps_limit/"
-        self.assertEqual(text[prefix + "Item02.txt"].decode("utf-16"), "60 кадров/с")
-        self.assertEqual(text[prefix + "Item03.txt"].decode("utf-16"), "Частота экрана")
+        self.assertEqual(text[prefix + "Item00.txt"].decode("utf-16"), "20 кадров/с")
+        self.assertEqual(text[prefix + "Item03.txt"].decode("utf-16"), "60 кадров/с")
         self.assertIn(b"<GlobalVar1>port_fps_limit</GlobalVar1>", port_ui.option_xml(option))
 
     def test_loading_logo_layout(self):

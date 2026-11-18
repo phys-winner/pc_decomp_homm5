@@ -183,6 +183,16 @@ class Deployment(unittest.TestCase):
                         patch.object(deploy, "validate_overlay", return_value={"edition": edition}) as overlay, \
                         patch.object(deploy.subprocess, "run") as run, \
                         patch.object(deploy.subprocess, "check_output", side_effect=self.device_checksum(run)) as checksum:
+                    if edition == "hof":
+                        base = game / "bin/H5_Game.exe"
+                        contents = base.read_bytes()
+                        base.unlink()
+                        with self.assertRaisesRegex(ValueError, "base-game bin/H5_Game.exe"):
+                            deploy.main()
+                        run.assert_not_called()
+                        checksum.assert_not_called()
+                        native.reset_mock()
+                        base.write_bytes(contents)
                     deploy.main()
                 spec = deploy.edition_spec(edition, root)
                 suffix = spec["assets_suffix"]
@@ -201,6 +211,11 @@ class Deployment(unittest.TestCase):
                 receipt = json.loads((root / ("build/deploy-receipt" + suffix + ".json")).read_text())
                 self.assertEqual(receipt["overlay_patches"], {"edition": edition})
                 self.assertEqual(receipt["edition"], edition)
+                if edition == "hof":
+                    base = game / "bin/H5_Game.exe"
+                    destination = receipt["game"] + "/bin/H5_Game.exe"
+                    self.assertIn(["push", str(base), destination], commands)
+                    self.assertEqual(receipt["verified_sha256"][destination], hashlib.sha256(base.read_bytes()).hexdigest())
                 self.assertEqual(receipt["userdata"], deploy.DEVICE_ROOT + "/" + spec["userdata"])
                 self.assertEqual(receipt["images"], deploy.DEVICE_ROOT + "/lifted" + suffix)
                 image_pushes = [command for command in commands if command[0] == "push" and command[-1].startswith(receipt["images"] + "/")]
@@ -248,6 +263,9 @@ class Deployment(unittest.TestCase):
                     game = root / "original"
                     for bank in (spec["bin"], *spec["data"]):
                         (game / bank).mkdir(parents=True)
+                    if edition == "hof":
+                        (game / "bin").mkdir()
+                        (game / "bin/H5_Game.exe").write_bytes(b"licensed original base executable")
                     (root / "port.json").write_text(json.dumps({"editions": {edition: {"game_directory": "original"}}}))
                     (root / spec["modules"]).write_text("[]")
                     (root / "config/video").mkdir()

@@ -20,8 +20,8 @@
  * circle of the projected points is not enough: the slab's top corners are offset along the
  * light by ~13 units, and that circle changed its size by up to 19% within a turn.
  * The engine's refit flag is replaced by this decision: the static texture is drawn again
- * only when the square moves or resizes, or when the engine forces a refit (counter
- * 0x00F2D3A8, its caller's flag). Rows, bounds and the engine's
+ * when the square moves or resizes, when the engine forces a refit (counter
+ * 0x00F2D3A8, its caller's flag), or when the engine loads deferred textures. Rows, bounds and the engine's
  * hysteresis state are written where the engine writes them, so the caster and receiver
  * constants (0x009B8F60: c24..c27) and the cloud mapping follow unchanged.
  * <data>/shadow-fit-original containing 1 keeps the engine's own fit. */
@@ -44,6 +44,13 @@ static struct {
 
 static shadow_square square;
 static void_native_mode_cache engine_mode = VOID_NATIVE_MODE_CACHE_INIT;
+
+static int shadow_textures_changed;   /* DDS and fit hooks both hold the guest machine lock */
+
+void void_shadow_texture_loaded(void)
+{
+    shadow_textures_changed = 1;
+}
 
 /* ECX is the engine's fit (0x010D8810); the arguments are still on the stack: the
  * light direction at +8, the caller's refit request at SHADOW_FIT_REQUEST. */
@@ -109,7 +116,11 @@ void void_shadow_fit_end(void)
     put_float(fit + 0x64, out.u0 + out.side);
     put_float(fit + 0x68, out.v0);
     put_float(fit + 0x6C, out.v0 + out.side);
-    MEM8(fit + 0x80) = (uint8_t)(out.changed != 0);
+    int redraw = out.changed != 0;
+    /* The first pass can see opaque placeholders while the foliage DDS data is pending. */
+    redraw |= shadow_textures_changed;
+    shadow_textures_changed = 0;
+    MEM8(fit + 0x80) = (uint8_t)redraw;
     /* Menus and combat force a refit every frame and their cameras keep moving: log each new
      * side, and moves of the square at most once a second. */
     static double logged_side;

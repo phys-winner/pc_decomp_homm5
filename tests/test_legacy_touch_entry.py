@@ -34,7 +34,8 @@ static unsigned army_batch,touch_frame;
 static struct {int pending;} pointer_text;
 static struct {int valid;} combat_home;
 static uint32_t selected=0x1000,expected_controller;
-static int selected_kind,claims;
+static int selected_kind,claims,action_clears;
+static void army_actions_clear(void) {++action_clears;}
 static uint32_t current_screen(void) {return selected;}
 static int screen_kind(uint32_t s) {assert(s==selected);return selected_kind;}
 static uint32_t read32(uint32_t a) {assert(a+4<=sizeof memory);return MEM32(a);}
@@ -64,7 +65,7 @@ int main(void) {
   MEM32(selected+0x144)=0x2800;MEM32(0x2800)=0x2800;
   MEM32(selected+0x148)=0x3000;MEM32(0x3000)=DND_VTABLE;
   expected_controller=selected_kind==SCREEN_ADVENTURE?0x4000:selected_kind==SCREEN_COMBAT?0x5000:0;
-  claims=0;entry(&e);
+  claims=action_clears=0;entry(&e);assert(action_clears==1);
   assert(gesture.root==0x2000&&gesture.controller==expected_controller);
   assert(claims==1&&gesture.dnd==0x3000&&gesture.dnd_claim&&gesture.ui);
   assert(same_screen()&&ui_idle()&&dnd_identity(0x3000));

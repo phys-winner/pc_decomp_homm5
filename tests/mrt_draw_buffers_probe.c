@@ -7,7 +7,8 @@ enum {GL_NONE=0,GL_TRUE=1,GL_TEXTURE_2D=0xDE1,GL_TEXTURE_3D=0x806F,GL_FRAMEBUFFE
  GL_READ_FRAMEBUFFER=0x8CA8,GL_DRAW_FRAMEBUFFER=0x8CA9,GL_COLOR_ATTACHMENT0=0x8CE0,
  GL_DEPTH_ATTACHMENT=0x8D00,GL_DEPTH_STENCIL_ATTACHMENT=0x821A,GL_FRAMEBUFFER_COMPLETE=0x8CD5,
  GL_SCISSOR_TEST=0xC11,GL_COLOR_BUFFER_BIT=0x4000,GL_DEPTH_BUFFER_BIT=0x100,GL_STENCIL_BUFFER_BIT=0x400,
- GL_COLOR_WRITEMASK=0xC23,GL_READ_BUFFER=0xC02,GL_DRAW_BUFFER0=0x8825,GL_LINEAR=0x2601,GL_NEAREST=0x2600};
+ GL_COLOR_WRITEMASK=0xC23,GL_READ_BUFFER=0xC02,GL_DRAW_BUFFER0=0x8825,GL_LINEAR=0x2601,GL_NEAREST=0x2600,
+ GL_RENDERBUFFER=0x8D41};
 #define FB_UNKNOWN 0xFFFFFFFFu
 typedef struct {int internal,depth,stencil;} d3d_format;
 typedef struct {const d3d_format *fmt;uint32_t width,height,format;GLuint gl;} d3d_surface;
@@ -33,6 +34,7 @@ __declspec(dllexport) unsigned probe_case(unsigned color0,unsigned color1,unsign
  dev.fbo_dirty=1;g_d3d_device=&dev;
  if(fbo)glDeleteFramebuffers(1,&fbo);if(read_fbo)glDeleteFramebuffers(1,&read_fbo);if(draw_fbo)glDeleteFramebuffers(1,&draw_fbo);
  fbo=read_fbo=draw_fbo=0;
+ msaa_depth_release();
  for(unsigned i=0;i<4;++i)fb_color[i]=(fb_attachment){FB_UNKNOWN,0,0,0,0};
  fb_depth=(fb_attachment){FB_UNKNOWN,0,0,0,0};fb_depth_point=FB_UNKNOWN;fb_buf_count=-1;
  memset(fb_bufs,0,sizeof fb_bufs);fb_depth_w=fb_depth_h=0;

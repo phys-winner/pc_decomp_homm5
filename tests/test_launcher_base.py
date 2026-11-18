@@ -162,9 +162,10 @@ class LauncherSpecTest(unittest.TestCase):
                 self.assertEqual(part.get("folderGroup", ""), "" if d["id"] == "toe" else "gold")
                 self.assertFalse(part.get("fixed", False))               # the game is told its folder (nativeStart)
                 self.assertFalse(part.get("mount", False))               # the host has no stored-ZIP layer
-                # The old unpacking's folders (Unpacker.NEEDED), for every edition alike.
+                # Keep importable folders and the player's original per-edition startup artwork.
+                splash = ["splasha2.bmp"] if d["id"] == "toe" else ["splash.bmp", "splasha1.bmp"]
                 self.assertEqual(part["needed"], ["bin/", "bina1/", "data/", "dataa1/", "datals/", "music/", "video/", "profiles/",
-                                                  "maps/", "usercampaigns/", "usermods/", "hwcursors/", "duelpresets/"])
+                                                  "maps/", "usercampaigns/", "usermods/", "hwcursors/", "duelpresets/", *splash])
         self.assertEqual(len({d["parts"][0]["folder"] for d in data["distributions"]}), 2)
         self.assertEqual([m["id"] for m in data["renderers"]["modes"]], ["gles", "turnip", "dxvk"])
         self.assertEqual(data["renderers"]["default"], "gles")                  # DXVK modes only by the player's choice
@@ -304,6 +305,8 @@ public class HeroesImportCheck {
             assert Install.discover(all, new File(games, "Partial")).isEmpty() : "an unknown version is no edition's ready game";
             File mixed = new File(games, "Mixed");
             assert Install.present(d("hof").parts.get(0), mixed) : "case is ignored, as on Windows";
+            assert !Install.present(d("hof").parts.get(0), new File(games,"HoFWithoutBase"))
+                : "HoF's resource banks and bina1 executable do not replace the original bin executable";
             System.out.println("PASS discovery");
         } else if (mode.equals("cleanup")) {
             File game = new File(args[1]);
@@ -343,7 +346,7 @@ class LauncherImportTest(unittest.TestCase):
     @staticmethod
     def install(root, edition, upper=False):
         for path in {"toe": ["bin/H5_Game.exe", "data/data.pak", "data/a2p1-data.pak"],
-                     "hof": ["bina1/H5_Game.exe", "data/data.pak", "dataa1/a1-data.pak", "dataa1/a1p1-data.pak"],
+                     "hof": ["bina1/H5_Game.exe", "bin/H5_Game.exe", "data/data.pak", "dataa1/a1-data.pak", "dataa1/a1p1-data.pak"],
                      "vanilla": ["bin/H5_Game.exe", "data/data.pak", "data/p3c-data.pak", "DataLS/p6-data.pak"]}[edition]:
             target = Path(root) / (path.upper() if upper else path)
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -410,6 +413,8 @@ class LauncherImportTest(unittest.TestCase):
                 (games / "Partial" / path).parent.mkdir(parents=True, exist_ok=True)
                 (games / "Partial" / path).write_bytes(b"x")
             self.install(games / "Mixed", "hof", upper=True)
+            self.install(games / "HoFWithoutBase", "hof")
+            (games / "HoFWithoutBase/bin/H5_Game.exe").unlink()
             output = java(self.classes, "org.homm5.port.launcher.HeroesImportCheck", "discover", games, work)
             self.assertIn("PASS discovery", output)
 

@@ -1387,14 +1387,16 @@ static uint32_t set_file_attributes(const char *path, uint32_t attributes)
 WINAPI_EXPORT(K32, SetFileAttributesA, 2) { char *p = void_astr_utf8(ARG(0)); uint32_t r = set_file_attributes(p, ARG(1)); free(p); return r; }
 WINAPI_EXPORT(K32, SetFileAttributesW, 2) { char *p = void_wstr_utf8(ARG(0)); uint32_t r = set_file_attributes(p, ARG(1)); free(p); return r; }
 
-/* CopyFile uses the same virtual drive/mount resolution as CreateFile. Never
- * pass a guest path directly to POSIX, even when it resembles a host path. */
+/* Read the same virtual source as CreateFile, including packaged defaults.
+ * The destination remains writable installation/userdata, never the overlay.
+ * Never pass a guest path directly to POSIX, even when it resembles a host path. */
 static uint32_t copy_file(const char *from, const char *to, int fail_if_exists)
 {
     int source_parent = 0, dest_parent = 0, in = -1, out = -1;
     uint32_t error = 0;
-    char *a = to_host(from, &source_parent, NULL);
-    char *b = to_host(to, &dest_parent, NULL);
+    char source_path[1024], dest_path[1024];
+    char *a = to_host_ex(from, RESOLVE_OVERLAY, &source_parent, NULL, source_path);
+    char *b = to_host(to, &dest_parent, dest_path);
     struct stat source, dest;
     if (!a || !b) { error = ERROR_PATH_NOT_FOUND_; goto done; }
     parked_drop(b);
@@ -1405,6 +1407,12 @@ static uint32_t copy_file(const char *from, const char *to, int fail_if_exists)
     }
     if (fstat(in, &source)) { error = void_errno_to_win32(errno); goto done; }
     if (!S_ISREG(source.st_mode)) { error = ERROR_ACCESS_DENIED_; goto done; }
+    /* Overlay reads and installation writes can have different host inodes
+     * for one normalized guest path. Self-copy must still be nonaltering. */
+    if (!strcasecmp(source_path, dest_path)) {
+        error = fail_if_exists ? 80u : 32u; /* FILE_EXISTS / SHARING_VIOLATION */
+        goto done;
+    }
     /* O_EXCL makes fail-if-exists atomic. Without it, defer truncation until
      * identity and read-only checks have accepted the opened destination. */
     do { out = open(b, O_WRONLY | O_CREAT | O_CLOEXEC | (fail_if_exists ? O_EXCL : 0), 0664); }

@@ -111,9 +111,14 @@ static void void_input_screen_size(int *w,int *h) { *w=1280; *h=800; }
 #define JNICALL
 typedef void JNIEnv;
 typedef void *jobject;
+typedef void *jclass;
+typedef unsigned char jboolean;
 typedef int jint;
 typedef float jfloat;
+static unsigned hardware_keys;
+static void void_input_key(uint32_t vk,int down) { assert(vk && (down==0 || down==1)); ++hardware_keys; }
 #include "touch_jni.h"
+#include "hardware_key_jni.h"
 static void input(int kind,float x,float y,float dx,float dy,float scale) {
     Java_org_homm5_port_GameActivity_nativeTouch(NULL,NULL,kind,x,y,dx,dy,scale,0);
 }
@@ -238,17 +243,46 @@ int main(void) {
     event(TOUCH_POINTER_CLICK);event(TOUCH_POINTER);drain();
     assert(received_count==3&&received[0].kind==TOUCH_POINTER&&received[1].kind==TOUCH_PAD_CAMERA&&received[2].kind==TOUCH_POINTER_CLICK);
     reset();event(TOUCH_POINTER);drain();assert(received_count==1&&received[0].kind==TOUCH_POINTER);
-    reset();event(TOUCH_ABORT);drain();event(TOUCH_CHEAT_ACTION);drain();
-    assert(received_count==2&&received[0].kind==TOUCH_ABORT&&received[1].kind==TOUCH_CHEAT_ACTION);
-    reset();event(TOUCH_CHEAT_ACTION);event(TOUCH_ABORT);event(TOUCH_ABORT);drain();
-    assert(received_count==2&&received[0].kind==TOUCH_ABORT&&received[1].kind==TOUCH_CHEAT_ACTION);
+    const int commands[]={TOUCH_CHEAT_ACTION,TOUCH_CONSOLE_TOGGLE,TOUCH_ARMY_ACTION};
+    for(unsigned c=0;c<sizeof commands/sizeof commands[0];++c) {
+        /* Explicit commands are not fragments of a cancelled pointer gesture. */
+        reset();event(TOUCH_ABORT);drain();event(commands[c]);drain();
+        assert(received_count==2&&received[0].kind==TOUCH_ABORT&&received[1].kind==commands[c]);
+        reset();event(commands[c]);event(TOUCH_ABORT);event(TOUCH_ABORT);drain();
+        assert(received_count==2&&received[0].kind==TOUCH_ABORT&&received[1].kind==commands[c]);
+        reset();event(commands[c]);event(TOUCH_POINTER);drain();
+        assert(received_count==2&&received[0].kind==TOUCH_POINTER&&received[1].kind==commands[c]);
+        reset();event(commands[c]);void_touch_enqueue(NULL);drain();
+        assert(received_count==1&&received[0].kind==TOUCH_ABORT); /* Invalid input is fail-closed. */
+    }
     reset();touch_head=254;
-    void_touch_event first={.kind=TOUCH_CHEAT_ACTION,.x=2,.scale=1},second={.kind=TOUCH_CHEAT_ACTION,.x=3,.scale=1};
+    void_touch_event first={.kind=TOUCH_CONSOLE_TOGGLE,.x=2,.scale=1},second={.kind=TOUCH_ARMY_ACTION,.x=3,.scale=1};
     void_touch_enqueue(&first);event(TOUCH_PAN);void_touch_enqueue(&second);event(TOUCH_ABORT);drain();
     assert(received_count==3&&received[0].kind==TOUCH_ABORT&&received[1].x==2&&received[2].x==3);
-    reset();event(TOUCH_CHEAT_ACTION);void_touch_enqueue(NULL);drain();
-    assert(received_count==1&&received[0].kind==TOUCH_ABORT);
-    puts("PASS touch transport: FIFO, window owner, full GPR/FPU/XMM/EH/backedges, recursive callbacks, concurrent producer, overflow abort, JNI aspect fit and bars; physical-mode reentry keeps camera/click events; dialog action survives input release");
+    assert(received[1].kind==TOUCH_CONSOLE_TOGGLE&&received[2].kind==TOUCH_ARMY_ACTION);
+    /* Real hardware-key JNI -> real queue: no fresh surface TOUCH_BEGIN is required. */
+    reset();
+    Java_org_homm5_port_GameActivity_nativeHardwareKey(NULL,NULL,0xC0,1);
+    Java_org_homm5_port_GameActivity_nativeHardwareKey(NULL,NULL,0xC0,0);
+    event(TOUCH_ABORT);drain();
+    assert(received_count==2&&received[0].kind==TOUCH_ABORT&&received[1].kind==TOUCH_CONSOLE_TOGGLE&&!hardware_keys);
+    reset();
+    Java_org_homm5_port_GameActivity_nativeHardwareKey(NULL,NULL,0xC0,1);drain();
+    assert(received_count==1&&received[0].kind==TOUCH_CONSOLE_TOGGLE&&!hardware_keys);
+    reset();
+    Java_org_homm5_port_GameActivity_nativeArmyAction(NULL,NULL,0,3);event(TOUCH_ABORT);drain();
+    assert(received_count==2&&received[1].kind==TOUCH_ARMY_ACTION&&received[1].x==0&&received[1].y==3);
+    reset();
+    Java_org_homm5_port_GameActivity_nativeArmyAction(NULL,NULL,123,1);drain();
+    assert(received_count==1&&received[0].kind==TOUCH_ARMY_ACTION&&received[0].x==123&&received[0].y==1);
+    reset();
+    Java_org_homm5_port_GameActivity_nativeArmyAction(NULL,NULL,-1,1);
+    Java_org_homm5_port_GameActivity_nativeArmyAction(NULL,NULL,0,1);
+    Java_org_homm5_port_GameActivity_nativeArmyAction(NULL,NULL,0x1000000,1);
+    Java_org_homm5_port_GameActivity_nativeArmyAction(NULL,NULL,123,4);
+    Java_org_homm5_port_GameActivity_nativeHardwareKey(NULL,NULL,0x100,1);
+    Java_org_homm5_port_GameActivity_nativeHardwareKey(NULL,NULL,7,1);drain();assert(!received_count&&!hardware_keys);
+    puts("PASS touch transport: FIFO, window owner, full GPR/FPU/XMM/EH/backedges, recursive callbacks, concurrent producer, overflow abort, JNI aspect fit and bars; real keyboard/army JNI commands survive dialog focus release without fresh surface contacts; invalid input aborts commands");
     return 0;
 }
 /* ACTUAL_INITIALIZE */
@@ -272,6 +306,10 @@ class TouchTransportTests(unittest.TestCase):
             "touch_queue.h": queue,
             "touch_jni.h": function(android, "static int map_touch_point(") +
                           function(android, "JNIEXPORT void JNICALL Java_org_homm5_port_GameActivity_nativeTouch("),
+            "hardware_key_jni.h": function((ROOT / "android/host/input.c").read_text(encoding="utf8"), "uint32_t void_vk_to_dik(") +
+                                  function(android, "static void physical_input_mode(") +
+                                  function(android, "JNIEXPORT void JNICALL Java_org_homm5_port_GameActivity_nativeHardwareKey(") +
+                                  function(android, "JNIEXPORT void JNICALL Java_org_homm5_port_GameActivity_nativeArmyAction("),
         }
         compile_probe("touch_transport", fixture, headers)
         import sys

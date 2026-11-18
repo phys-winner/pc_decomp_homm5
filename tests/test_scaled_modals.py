@@ -22,8 +22,9 @@ class ScaledModalsTest(unittest.TestCase):
                     "static float scale_native_position(", "static int scale_near(", "static float scale_clamp(",
                     "static float scale_anchor_shift(", "static int scale_rect(", "static int scale_is_root(",
                     "static float scale_size(", "static int scale_covers(", "static int scale_named(",
-                    "static int scale_element(", "static void scale_place(", "static void scale_anchor(", "static int scale_fits(")
-                code = types + "\n" + "\n".join(function(text, s) for s in signatures)
+                    "static int scale_element(", "static void scale_place(", "static int scale_safe_owner(",
+                    "static void scale_place_safe(", "static void scale_anchor(", "static int scale_fits(")
+                code = "static uint32_t safe_root; static float safe_active[4];\n" + types + "\n" + "\n".join(function(text, s) for s in signatures)
                 addresses = {} if edition == "toe" else port_patches.load_contract(edition)["addresses"]
                 layout = addresses.get("00487990", "00487990")
                 flags = ["/DROOT_LAYOUT=0x" + layout,

@@ -409,6 +409,13 @@ JNIEXPORT void JNICALL Java_org_homm5_port_GameActivity_nativeUiScale(JNIEnv *en
     void_touch_set_scale(scale);
 }
 
+JNIEXPORT void JNICALL Java_org_homm5_port_GameActivity_nativeSafeArea(JNIEnv *env, jclass type,
+    jint width, jint height, jint left, jint top, jint right, jint bottom)
+{
+    (void)env; (void)type;
+    void_touch_safe_area(width, height, left, top, right, bottom);
+}
+
 JNIEXPORT void JNICALL Java_org_homm5_port_GameActivity_nativeRenderScale(JNIEnv *env, jobject self, jfloat scale)
 {
     (void)env; (void)self;
@@ -477,6 +484,33 @@ JNIEXPORT void JNICALL Java_org_homm5_port_GameActivity_nativeCombatConfirm(JNIE
     if (generation < 1 || generation > 0xFFFFFF) return;
     const void_touch_event event = {.kind = TOUCH_COMBAT_CONFIRM, .dx = (float)generation, .scale = 1};
     void_touch_enqueue(&event);
+}
+
+JNIEXPORT void JNICALL Java_org_homm5_port_GameActivity_nativeArmyAction(JNIEnv *env, jclass type,
+    jint generation, jint action)
+{
+    (void)env;(void)type;
+    if (generation<0 || generation>0xFFFFFF || action<0 || action>3 || (!generation && action!=3)) return;
+    const void_touch_event event={.kind=TOUCH_ARMY_ACTION,.x=(float)generation,.y=(float)action,.scale=1};
+    void_touch_enqueue(&event);
+}
+
+void void_android_army_actions(uint32_t generation,float x,float y)
+{
+    if (!jvm || !activity) return;
+    JNIEnv *env=NULL;
+    int attached=(*jvm)->GetEnv(jvm,(void **)&env,JNI_VERSION_1_6)==JNI_EDETACHED;
+    if (attached && (*jvm)->AttachCurrentThread(jvm,&env,NULL)!=JNI_OK) return;
+    if (!env) return;
+    int width,height;void_input_screen_size(&width,&height);
+    jmethodID callback=(*env)->GetStaticMethodID(env,(jclass)activity,"onArmyActions","(IFFII)V");
+    if (callback) (*env)->CallStaticVoidMethod(env,(jclass)activity,callback,
+        (jint)generation,(jfloat)x,(jfloat)y,(jint)width,(jint)height);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        void_log("[touch] army actions callback failed");
+    }
+    if (attached) (*jvm)->DetachCurrentThread(jvm);
 }
 
 void void_android_combat_overlay(uint32_t generation, uint32_t hint_epoch, int hint,

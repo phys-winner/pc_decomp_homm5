@@ -9,7 +9,13 @@ FIXTURE = r'''
 public class RefreshRateCheck extends RefreshRateCheckBase {
     private SurfaceView surface;
     private Surface refreshSurface;
-    private Object touch = new Object();
+    private float frameRate=60, refreshVote;
+    /* Already-ready view here; startup policy/Android dispatch have separate controls. */
+    static class Touch { int requests; boolean requestFocus() { requests++;return true; } }
+    private Touch touch = new Touch();
+    private boolean startupFocusPending;
+    boolean isFinishing() { return false; }
+    boolean isDestroyed() { return false; }
     private final Window window = new Window();
     /* GameActivity's Wi-Fi multicast lock for the LAN game (held while resumed). */
     static class MulticastLock { boolean held; boolean isHeld() { return held; } void acquire() { held = true; } }
@@ -53,15 +59,20 @@ public class RefreshRateCheck extends RefreshRateCheckBase {
         Mode[] getSupportedModes() { return modes; }
     }
     static class Surface {
-        static final int FRAME_RATE_COMPATIBILITY_DEFAULT=0;
+        static final int FRAME_RATE_COMPATIBILITY_FIXED_SOURCE=1, CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS=0;
         boolean valid=true, failNext;
         int calls;
+        float voted;
         boolean isValid() { return valid; }
         void setFrameRate(float rate,int compatibility) {
             assert Build.VERSION.SDK_INT>=30 : "unguarded API30 call";
-            assert rate==120f && compatibility==FRAME_RATE_COMPATIBILITY_DEFAULT;
-            calls++;
+            assert rate>=10 && rate<=240 && compatibility==FRAME_RATE_COMPATIBILITY_FIXED_SOURCE;
+            voted=rate;calls++;
             if (failNext) { failNext=false;throw new IllegalArgumentException("transient fixture rejection"); }
+        }
+        void setFrameRate(float rate,int compatibility,int strategy) {
+            assert Build.VERSION.SDK_INT>=31 && strategy==CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS;
+            setFrameRate(rate,compatibility);
         }
     }
     static class SurfaceHolder {
@@ -78,46 +89,55 @@ public class RefreshRateCheck extends RefreshRateCheckBase {
     /* ACTUAL_METHODS */
     static Display.Mode m(int id,float rate) { return new Display.Mode(id,2944,1840,rate); }
     static Display.Mode sized(int id,int width,int height,float rate) { return new Display.Mode(id,width,height,rate); }
-    static void selected(int expected,Display.Mode current,Display.Mode... modes) {
-        int actual=chooseRefreshMode(current,modes);
-        assert actual==expected : "selected "+actual+", expected "+expected;
+    static void selected(int expected,float fps,Display.Mode current,Display.Mode... modes) {
+        int actual=chooseRefreshMode(current,modes,fps);
+        assert actual==expected : fps+" FPS: selected "+actual+", expected "+expected;
     }
     static void selector() {
         Display.Mode sixty=m(1,60), ninety=m(2,90), fast=m(3,120), faster=m(4,144);
-        selected(0,sixty,sixty,ninety);
-        selected(3,sixty,sixty,ninety,fast,faster);
-        selected(3,ninety,faster,fast,ninety);
-        selected(3,fast,sixty,fast,faster);
-        selected(4,sixty,sixty,ninety,faster);
-        selected(4,sixty,m(5,165),faster,m(6,240));
-        selected(3,sixty,m(8,119.5f),m(3,120),m(9,120.5f),faster);
-        selected(8,sixty,faster,m(8,119.5f));
-        selected(9,sixty,faster,m(9,120.5f));
-        selected(3,sixty,m(9,120.4f),m(3,119.75f),faster);
-        selected(7,m(7,120),m(8,120),m(7,120));
-        selected(7,m(7,144),m(8,144),m(7,144));
-        selected(7,m(7,119.75f),m(8,120.25f),m(7,119.75f));
-        selected(3,sixty,sized(9,1920,1200,120),fast,sized(10,1840,2944,120));
-        selected(0,sixty,sized(9,1920,1200,120),sized(10,1840,2944,120));
-        selected(0,null,fast);
-        selected(0,sixty,(Display.Mode[])null);
-        selected(0,sixty,new Display.Mode[0]);
-        selected(0,sized(1,0,1840,60),fast);
-        selected(0,sized(1,2944,-1,60),fast);
-        selected(0,sixty,null,m(0,120),m(-1,120),m(3,Float.NaN),m(4,Float.POSITIVE_INFINITY),
+        for(float fps:new float[]{20,30,60}) {
+            selected(1,fps,fast,sixty,ninety,fast,faster);
+            selected(1,fps,ninety,faster,fast,ninety,sixty);
+        }
+        selected(2,45,sixty,sixty,ninety,fast,faster);
+        selected(2,90,sixty,sixty,ninety,fast,faster);
+        selected(3,40,sixty,sixty,ninety,fast,faster);
+        selected(3,120,sixty,sixty,ninety,fast,faster);
+        selected(4,48,sixty,sixty,ninety,fast,faster);
+        selected(4,72,sixty,sixty,ninety,fast,faster);
+        selected(4,144,sixty,sixty,ninety,fast,faster);
+        selected(2,30,sixty,ninety,fast); // lowest even cadence wins
+        selected(2,60,sixty,ninety,faster); // no even mode: lowest sufficient fallback
+        selected(6,120,sixty,m(5,165),faster,m(6,240)); // 240/2 over uneven 144
+        selected(3,60,sixty,m(3,119.88f),faster);
+        selected(1,20,sixty,m(1,59.94f),ninety,fast);
+        selected(7,60,m(7,120),m(8,120),m(7,120));
+        selected(3,120,sixty,sized(9,1920,1200,120),fast,sized(10,1840,2944,120));
+        selected(0,60,sixty,sized(9,1920,1200,120),sized(10,1840,2944,120));
+        selected(0,60,null,fast);
+        selected(0,60,sixty,(Display.Mode[])null);
+        selected(0,60,sixty,new Display.Mode[0]);
+        selected(0,60,sized(1,0,1840,60),fast);
+        selected(0,60,sized(1,2944,-1,60),fast);
+        selected(0,60,sixty,null,m(0,120),m(-1,120),m(3,Float.NaN),m(4,Float.POSITIVE_INFINITY),
             m(5,Float.NEGATIVE_INFINITY),m(6,0),m(7,-120),sized(8,0,1840,120));
-        selected(3,sixty,null,m(0,120),m(5,Float.NaN),fast);
-        selected(0,sixty,m(7,119.49f));
+        selected(3,60,sixty,null,m(0,120),m(5,Float.NaN),fast);
+        selected(0,60,sixty,m(7,30));
+        for(float fps:new float[]{0,9,241,Float.NaN,Float.POSITIVE_INFINITY}) selected(0,fps,sixty,sixty,fast);
     }
     void lifecycle() {
         onResume(); onWindowFocusChanged(true);
-        assert window.writes==0 && pauses==1;
+        assert window.writes==0 && pauses==1 && touch.requests==0;
+        startupFocusPending=true;onWindowFocusChanged(true);
+        assert touch.requests==1 && !startupFocusPending;
+        onWindowFocusChanged(true);
+        assert touch.requests==1 : "ordinary refresh callback repeated startup focus";
         Surface first=new Surface();
         Display.Mode sixty=m(1,60), fast=m(3,120);
         surface=new SurfaceView(new Display(sixty,sixty,fast),first);
         surfaceCreated(surface.holder);
         assert nativeSurfaces==1 && lastNativeSurface==first;
-        assert window.attrs.preferredDisplayModeId==3 && window.writes==1 && first.calls==1;
+        assert window.attrs.preferredDisplayModeId==1 && window.writes==1 && first.calls==1 && first.voted==60;
         surfaceChanged(surface.holder,1,1280,800);
         onResume(); onWindowFocusChanged(true); requestHighRefresh();
         assert window.writes==1 && first.calls==1 : "repeated lifecycle request";
@@ -138,6 +158,14 @@ public class RefreshRateCheck extends RefreshRateCheckBase {
         surfaceChanged(surface.holder,1,2560,1600);
         onResume(); onWindowFocusChanged(true);
         assert second.calls==1 && window.writes==2;
+        frameRate=30;requestHighRefresh();requestHighRefresh();
+        assert second.calls==2 && second.voted==30 && window.writes==2;
+        Build.VERSION.SDK_INT=31;
+        frameRate=120;requestHighRefresh();requestHighRefresh();
+        assert second.calls==3 && second.voted==120 && window.attrs.preferredDisplayModeId==3 && window.writes==3;
+        frameRate=20;requestHighRefresh();
+        assert second.calls==4 && second.voted==20 && window.attrs.preferredDisplayModeId==1 && window.writes==4;
+        Build.VERSION.SDK_INT=30;
     }
     static void readiness() {
         RefreshRateCheck noDisplay=new RefreshRateCheck();
@@ -160,7 +188,9 @@ public class RefreshRateCheck extends RefreshRateCheckBase {
         Surface hint=new Surface();
         noMode.surface=new SurfaceView(new Display(m(1,60),m(1,60),m(2,90)),hint);
         noMode.requestHighRefresh(); noMode.requestHighRefresh();
-        assert noMode.window.writes==0 && noMode.window.attrs.preferredDisplayModeId==0 && hint.calls==1;
+        assert noMode.window.writes==1 && noMode.window.attrs.preferredDisplayModeId==1 && hint.calls==1;
+        noMode.frameRate=120;noMode.requestHighRefresh();
+        assert noMode.window.writes==2 && noMode.window.attrs.preferredDisplayModeId==0 && hint.calls==2;
 
         RefreshRateCheck legacy=new RefreshRateCheck();
         Surface legacySurface=new Surface();
@@ -182,7 +212,7 @@ public class RefreshRateCheck extends RefreshRateCheckBase {
     }
     public static void main(String[] args) {
         selector(); new RefreshRateCheck().lifecycle(); readiness();
-        System.out.println("PASS actual refresh selector and lifecycle: same-resolution 120/144, nominal tolerance, invalid modes, API guard, new surface, retry, idempotence");
+        System.out.println("PASS actual refresh selector and lifecycle: FPS /2 /3 power-efficient cadence, same resolution, nominal tolerance, invalid modes/caps, API30/31 guards, cap change revote, new surface, retry, idempotence");
     }
 }
 class RefreshRateCheckBase {
@@ -190,7 +220,9 @@ class RefreshRateCheckBase {
     public void surfaceChanged(RefreshRateCheck.SurfaceHolder holder,int format,int width,int height) {}
     public void surfaceDestroyed(RefreshRateCheck.SurfaceHolder holder) {}
     protected void onResume() {}
-    public void onWindowFocusChanged(boolean focus) {}
+    private boolean focused=true;
+    boolean hasWindowFocus() { return focused; }
+    public void onWindowFocusChanged(boolean focus) { focused=focus; }
 }
 '''
 
@@ -207,6 +239,7 @@ class RefreshRateTest(unittest.TestCase):
             "    @Override protected void onResume(",
             "    private void showDxvkSurface(",
             "    @Override public void onWindowFocusChanged(",
+            "    private void restoreStartupFocus(",
         ))
         methods = methods.replace("android.view.Surface", "Surface")
         out = ROOT / "build/java-refresh-check"

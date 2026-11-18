@@ -11,6 +11,8 @@ HARNESS = r'''
 #include <string.h>
 #include <time.h>
 #define strdup _strdup
+#define strcasecmp _stricmp
+#define RESOLVE_OVERLAY 1
 typedef intptr_t ssize_t;
 static uint8_t memory[0x10000];
 #define GPTR(x) (memory + (x))
@@ -41,25 +43,42 @@ static int void_vm_readable(uint32_t at, uint32_t size) { return at >= 0x100 && 
 struct stat { uint32_t st_mode; uint64_t st_dev, st_ino; struct timespec st_atim, st_mtim; };
 typedef struct { char path[512]; uint8_t bytes[65536]; size_t size; struct stat st; int exists; } node;
 typedef struct { node *file; size_t offset; int flags; } descriptor;
-static node nodes[16];
+static node nodes[32];
 static descriptor fds[32];
 static int read_intr, write_intr, read_failure, write_failure, zero_write, close_failure;
 static unsigned opens, reads, writes;
 static node *lookup(const char *path) {
-    for (unsigned i=0; i<16; ++i) if (nodes[i].exists && !_stricmp(nodes[i].path,path)) return &nodes[i];
+    for (unsigned i=0; i<32; ++i) if (nodes[i].exists && !_stricmp(nodes[i].path,path)) return &nodes[i];
     return NULL;
 }
 static node *make(const char *path) {
-    for (unsigned i=0;i<16;++i) if (!nodes[i].exists) {
+    for (unsigned i=0;i<32;++i) if (!nodes[i].exists) {
         node *n=&nodes[i]; memset(n,0,sizeof *n); n->exists=1; strcpy(n->path,path);
         n->st=(struct stat){0100644,9,i+100,{123,456},{789,321}}; return n;
     }
     abort();
 }
-static char *to_host(const char *path, int *parent, char *normalized) {
-    (void)normalized; if (parent) *parent=path && !strstr(path,"missing_parent/");
+/* Modeled mount boundary: an overlay file shadows reads, never writes.
+ * alias-template models a relative/absolute alias of one normalized guest path. */
+static char *to_host_ex(const char *path, int flags, int *parent, int *leaf, char *normalized) {
+    assert(flags==0 || flags==RESOLVE_OVERLAY);
+    if (parent) *parent=path && !strstr(path,"missing_parent/");
     if (!path || !*path) return NULL;
-    char *out=malloc(strlen(path)+9); assert(out); sprintf(out,"/mapped/%s",path); return out;
+    if (!strcmp(path,"alias-template")) path="template";
+    if (normalized) snprintf(normalized,1024,"%s",path);
+    char over[512];snprintf(over,sizeof over,"/mapped/.overlay/%s",path);
+    node *replacement=lookup(over);
+    if ((flags&RESOLVE_OVERLAY) && replacement && S_ISREG(replacement->st.st_mode)) {
+        if (parent) *parent=1;
+        if (leaf) *leaf=1;
+        return strdup(over);
+    }
+    char *out=malloc(strlen(path)+9);assert(out);sprintf(out,"/mapped/%s",path);
+    if (leaf) *leaf=lookup(out)!=NULL;
+    return out;
+}
+static char *to_host(const char *path, int *parent, char *normalized) {
+    return to_host_ex(path,0,parent,NULL,normalized);
 }
 static uint32_t void_errno_to_win32(int error) {
     switch(error) { case ENOENT:return 2; case EEXIST:return 80; case ENOSPC:return 112; default:return 5; }
@@ -169,7 +188,37 @@ int main(void) {
     zero_write=1;assert(copy_a("source","io-copy",0)==0&&last_error==29);zero_write=0;
     close_failure=1;assert(copy_a("source","io-copy",0)==0&&last_error==5);close_failure=0;
     assert(src->size==40037&&src->bytes[0]==11);no_leaks();
-    puts("PASS actual CopyFileA/W: byte-exact short/EINTR I/O, overwrite/truncation, fail-if-exists, same inode/hard link, read-only, missing file/parent, directories, empty file, CP1251/UTF16, guest bounds, timestamps, terminal I/O/close failures and nonaltering rejects; destination listing invalidated after every host copy attempt");
+    /* First-run defaults can exist only in the APK overlay, in all editions. */
+    const char *suffixes[]={"","_a1","_a2"};
+    for (unsigned i=0;i<3;++i) {
+        char from[128],to[128],over[256],mapped[256];
+        snprintf(from,sizeof from,"default_profile/user%s.cfg",suffixes[i]);
+        snprintf(to,sizeof to,"fresh-user%s.cfg",suffixes[i]);
+        snprintf(over,sizeof over,"/mapped/.overlay/%s",from);
+        node *profile=make(over);profile->size=6;memcpy(profile->bytes,"ported",6);
+        assert(copy_a(from,to,1)==1);
+        snprintf(mapped,sizeof mapped,"/mapped/%s",to);
+        node *created=lookup(mapped);assert(created&&created->size==6&&!memcmp(created->bytes,"ported",6));
+        /* One virtual file is still the same file when only its overlay exists. */
+        assert(copy_a(from,from,0)==0&&last_error==32);
+        assert(copy_a(from,from,1)==0&&last_error==80);
+        snprintf(mapped,sizeof mapped,"/mapped/%s",from);assert(!lookup(mapped));
+        assert(profile->size==6&&!memcmp(profile->bytes,"ported",6));
+    }
+    node *native=make("/mapped/template"),*port=make("/mapped/.overlay/template");
+    native->size=8;memcpy(native->bytes,"original",8);port->size=6;memcpy(port->bytes,"ported",6);
+    assert(copy_a("template","fresh-template",1)==1);
+    assert(lookup("/mapped/fresh-template")->size==6&&!memcmp(lookup("/mapped/fresh-template")->bytes,"ported",6));
+    assert(copy_a("template","TEMPLATE",0)==0&&last_error==32);
+    assert(copy_a("alias-template","template",0)==0&&last_error==32);
+    assert(native->size==8&&!memcmp(native->bytes,"original",8)&&port->size==6&&!memcmp(port->bytes,"ported",6));
+    node *immutable=make("/mapped/.overlay/dest");immutable->size=6;memcpy(immutable->bytes,"locked",6);
+    assert(copy_a("template","dest",0)==1);assert(dst->size==6&&!memcmp(dst->bytes,"ported",6));
+    assert(immutable->size==6&&!memcmp(immutable->bytes,"locked",6));
+    node *overlay_dir=make("/mapped/.overlay/source");overlay_dir->st.st_mode=0040755;
+    assert(copy_a("source","directory-fallback",1)==1&&lookup("/mapped/directory-fallback")->size==src->size);
+    no_leaks();
+    puts("PASS actual CopyFileA/W: byte-exact short/EINTR I/O, overwrite/truncation, fail-if-exists, same inode/hard link, read-only, missing file/parent, directories, empty file, CP1251/UTF16, guest bounds, timestamps, terminal I/O/close failures; all-edition overlay-only defaults, read precedence, non-overlay destinations, normalized self-copy safety and directory fallback; destination listing invalidated after every host copy attempt");
     return 0;
 }
 '''
@@ -181,6 +230,28 @@ class CopyFileTest(unittest.TestCase):
         copy = text[text.index("static uint32_t copy_file("):text.index("static uint32_t move_file(")]
         strings = (ROOT / "android/host/strings.c").read_text(encoding="utf-8").replace('#include "host.h"', "")
         compile_probe("copy_file", HARNESS, {"copy.h": copy, "strings.h": strings})
+
+    def test_resolution_and_self_copy_mutations_fail_at_runtime(self):
+        text = (ROOT / "android/host/files.c").read_text(encoding="utf-8")
+        copy = text[text.index("static uint32_t copy_file("):text.index("static uint32_t move_file(")]
+        strings = (ROOT / "android/host/strings.c").read_text(encoding="utf-8").replace('#include "host.h"', "")
+        guard = '''    if (!strcasecmp(source_path, dest_path)) {
+        error = fail_if_exists ? 80u : 32u; /* FILE_EXISTS / SHARING_VIOLATION */
+        goto done;
+    }
+'''
+        mutations = {
+            "source_without_overlay": ("to_host_ex(from, RESOLVE_OVERLAY,", "to_host_ex(from, 0,"),
+            "destination_in_overlay": ("to_host(to, &dest_parent, dest_path)",
+                                       "to_host_ex(to, RESOLVE_OVERLAY, &dest_parent, NULL, dest_path)"),
+            "no_virtual_identity_guard": (guard, ""),
+        }
+        for name, (old, replacement) in mutations.items():
+            with self.subTest(mutation=name):
+                self.assertEqual(copy.count(old), 1)
+                with self.assertRaisesRegex(AssertionError, "Assertion failed"):
+                    compile_probe("copy_file_" + name, HARNESS,
+                                  {"copy.h": copy.replace(old, replacement), "strings.h": strings})
 
 
 if __name__ == "__main__":

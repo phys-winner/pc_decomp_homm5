@@ -767,6 +767,32 @@ void void_touch_console_close(void)
     console_close(current_screen());
 }
 
+#ifndef HOMM5_LEGACY_UI
+/* Read-only, opt-in diagnosis of a refused original console action. Do not change its password
+   check or enable cheats as a side effect. The original 3.1 getter is fastcall(name, default). */
+static int console_debug_password(void)
+{
+    static uint32_t storage;
+    static const char name[] = "dev_console_password", expected[] = "schwinge-des-todes";
+    if (!storage) storage = void_galloc(80);
+    if (!storage || !void_vm_writable(storage, 80)) return -1;
+    memset((void *)ADDR(storage), 0, 16);
+    memcpy((void *)ADDR(storage + 28), name, sizeof name);
+    MEM32(storage + 16) = storage + 28;
+    MEM32(storage + 20) = storage + 28 + sizeof name - 1;
+    MEM32(storage + 24) = storage + 28 + sizeof name;
+    g_edx = storage;
+    uint32_t value = void_call_guest_this(0x00C11860u, storage + 16, 0, NULL);
+    if (!void_vm_readable(value, 12)) return -1;
+    uint32_t begin = read32(value + 4), end = read32(value + 8);
+    if (end - begin != 2 * (sizeof expected - 1)) return 0;
+    if (!void_vm_readable(begin, end - begin)) return -1;
+    for (unsigned i = 0; i < sizeof expected - 1; ++i)
+        if (MEM8(begin + 2 * i) != (unsigned char)expected[i] || MEM8(begin + 2 * i + 1)) return 0;
+    return 1;
+}
+#endif
+
 static void console_toggle(void)
 {
     console_open_request.screen = 0;
@@ -774,12 +800,17 @@ static void console_toggle(void)
     uint32_t screen = current_screen(), unused = 0;
     if (!screen || console_close(screen)) return;
     /* The original action also owns console visibility and keyboard focus. */
-    void_call_guest_this(0x00669F50u, screen, 1, &unused);
+    uint32_t accepted = void_call_guest_this(0x00669F50u, screen, 1, &unused);
     screen = current_screen();
     uint32_t provider = read32(screen + 0xA0), window = virtual_base(provider, 8);
     const uint32_t cast[] = {window, 0, 0x00F2DAF4u, 0x00F2DA88u, 0};
     uint32_t root = window ? void_call_guest(0x00D119FCu, 5, cast, 0) : 0;
     uint32_t focused = console_focused(root);
+    void_log("[console] request screen=%08X accepted=%u root=%08X focused=%08X",
+             screen, accepted & 0xFFu, root, focused);
+#ifndef HOMM5_LEGACY_UI
+    if (void_verbose) void_log("[console] original password ready=%d", console_debug_password());
+#endif
     if (!console_entry_visible(focused)) {
         /* The original console's first construction and focus can finish on a later frame. */
         console_open_request.screen = screen; console_open_request.root = provider;
@@ -1229,6 +1260,16 @@ static void town_activate(float x, float y)
 /* Endpoint discovery stays in the UI; the original controller owns validation/orders. */
 typedef struct { uint32_t window,army,owner,row,command,world,policy; unsigned index,stride; } troop_cell;
 
+static uint32_t town_army_row(uint32_t screen,unsigned row)
+{
+    return read32(screen + (row ? 0x2B4 : 0x2A8));
+}
+
+static uint32_t town_army_portrait(uint32_t screen,unsigned row)
+{
+    return read32(screen + (row ? 0x2A4 : 0x2A0));
+}
+
 /* Two-army screens built on NUI::CTransformCreatureScreenBase (common move/split handler 0x00649E70):
  * caravan meeting, raising the dead, creatures joining a full army, adventure garrison and creature
  * exchange. Sacrifice, transformation, training, upgrade and slave market keep native moves. Field
@@ -1350,7 +1391,7 @@ static int troop_cell_window(uint32_t window, troop_cell *cell)
     }
     if (read32(screen)!=0x00E2A64Cu || !town_army_ready()) return 0;
     for (unsigned row=0;row<2;++row) {
-        uint32_t cells=read32(screen+(row?0x2B4:0x2A8));
+        uint32_t cells=town_army_row(screen,row);
         if (!cells || !void_vm_readable(cells,28)) continue;
         for (unsigned index=0;index<7;++index) {
             if (read32(cells+4*index)!=window) continue;
@@ -1377,11 +1418,20 @@ static uint32_t troop_row_window(const troop_cell *cell,unsigned index)
 static int troop_cell_at(float x,float y,troop_cell *cell)
 {
     uint32_t helper=gesture.dnd;
-    if (!dnd_identity(helper) || !ui_idle()) return 0;
+    if (!dnd_identity(helper) || !ui_idle()) {
+        VLOG("[army] cell unready screen=%08X table=%08X helper=%08X idle=%d",
+             gesture.screen, read32(gesture.screen), helper, ui_idle());
+        return 0;
+    }
     /* A held stack's empty target cell is found as its drop finds it; a modal still refuses. */
     uint32_t window=dnd_target_at(helper,x,y);
-    if (!window || !dnd_identity(helper) || !dnd_owns(ui_pick(gesture.screen,x,y),window)) return 0;
-    return troop_cell_window(window,cell);
+    if (!window || !dnd_identity(helper) || !dnd_owns(ui_pick(gesture.screen,x,y),window)) {
+        VLOG("[army] cell target unavailable screen=%08X window=%08X", gesture.screen, window);
+        return 0;
+    }
+    int found=troop_cell_window(window,cell);
+    VLOG("[army] cell screen=%08X table=%08X window=%08X found=%d", gesture.screen,read32(gesture.screen),window,found);
+    return found;
 }
 
 static int troop_stack(const troop_cell *cell,uint32_t *stack)
@@ -1431,8 +1481,8 @@ static int troop_portrait_at(float x,float y,troop_cell *cell)
     if (!hero && (gesture.kind!=SCREEN_TOWN || !town_army_ready())) return 0;
     uint32_t hit=ui_pick(gesture.screen,x,y);
     for (unsigned row=0;row<2;++row) {
-        uint32_t portrait=read32(screen+(hero?(row?0x600:0x4E8):(row?0x2A4:0x2A0)));
-        uint32_t cells=read32(screen+(hero?(row?0x654:0x53C):(row?0x2B4:0x2A8)));
+        uint32_t portrait=hero?read32(screen+(row?0x600:0x4E8)):town_army_portrait(screen,row);
+        uint32_t cells=hero?read32(screen+(row?0x654:0x53C)):town_army_row(screen,row);
         uint32_t window=hero?virtual_base(read32(cells),8):read32(cells);
         if (portrait && window_contains(hit,portrait) && troop_cell_window(window,cell)) return 1;
     }
@@ -1448,11 +1498,11 @@ static int troop_count(const troop_cell *cell,uint32_t *count,uint32_t *type)
 }
 
 /* Orders are asynchronous, including local play. One batch waits for each native result. */
-enum { ARMY_TRANSFER=1, ARMY_COLLECT, ARMY_BALANCE };
+enum { ARMY_TRANSFER=1, ARMY_COLLECT, ARMY_BALANCE, ARMY_MOVE, ARMY_SPLIT };
 static struct {
     int mode,waiting;
     troop_cell source,target,from,to;
-    uint32_t type,quota[7],before_from,before_to,after_from,after_to,waiting_type;
+    uint32_t type,quota[7],before_from,before_to,after_from,after_to,waiting_type,retain_window,quantity;
     unsigned next,limit;
     uint64_t deadline;
 } army_batch;
@@ -1479,6 +1529,8 @@ static int troop_order(troop_cell *source,troop_cell *target,uint32_t destinatio
     int sent=0;
     if (same_screen() && object_method(controller,0x18) && (object_query(controller,0xC)&0xFFu)) {
         uint32_t minimum=object_query(controller,0x18),target_minimum=object_query(controller,0x1C),total=source_count+target_count;
+        /* A whole-army portrait command reserves the actor stack, not whichever stack is last. */
+        if (source->window==army_batch.retain_window && minimum<1) minimum=1;
         if (all && minimum<=total) destination=total-minimum;
         uint32_t validate=object_method(controller,0x10),commit=object_method(controller,0x14);
         uint32_t fresh_source,fresh_target,fresh_type;
@@ -1536,11 +1588,13 @@ static void army_pump(void)
     }
     while (army_batch.next<army_batch.limit) {
         unsigned index=army_batch.next++;uint32_t count,type;
+        if (army_batch.retain_window)
+            index=(army_batch.source.index+1+index)%7; /* Other stacks first, then the reserved actor. */
         if (!troop_cell_window(troop_row_window(&source,index),&source) || !troop_count(&source,&count,&type)) goto stop;
         if (!count) continue;
         if (army_batch.mode==ARMY_COLLECT) {
             if (source.window==target.window || type!=army_batch.type) continue;
-        } else {
+        } else if (army_batch.mode!=ARMY_MOVE && army_batch.mode!=ARMY_SPLIT) {
             troop_cell empty={0};int found=0;
             for (unsigned i=0;i<7;++i) {
                 uint32_t other_count,other_type;
@@ -1550,17 +1604,18 @@ static void army_pump(void)
             }
             if (!found) { if (!empty.window) continue;target=empty; }
         }
-        if (troop_order(&source,&target,0,1)) return;
+        if (troop_order(&source,&target,army_batch.quantity,army_batch.mode!=ARMY_SPLIT)) return;
         if (!same_screen()) goto stop;
     }
 stop:
     memset(&army_batch,0,sizeof army_batch);
 }
 
-static void army_start(int mode,const troop_cell *source,const troop_cell *target,int one)
+static void army_start_quantity(int mode,const troop_cell *source,const troop_cell *target,int one,uint32_t quantity)
 {
     memset(&army_batch,0,sizeof army_batch);
     army_batch.mode=mode;army_batch.source=*source;army_batch.target=*target;army_batch.limit=7;
+    army_batch.quantity=quantity;
     uint32_t held=dnd_identity(gesture.dnd)?read32(gesture.dnd+0x1C):0;
     dnd_cancel();gesture.cancelled=gesture.committed=1;
     /* Cancel retains the pickup source; clear it before army redraw, or the next pickup reveals its stale icon. */
@@ -1569,6 +1624,19 @@ static void army_start(int mode,const troop_cell *source,const troop_cell *targe
         void_call_guest_this(0x00812880u,held,0,NULL);
     uint32_t count;
     if (!troop_count(source,&count,&army_batch.type)) { army_batch.mode=0;return; }
+    if (mode==ARMY_TRANSFER && !one) {
+        /* A portrait-to-portrait drag may originate from an empty first slot. Reserve the first
+           actual stack then; a stack-to-portrait drag always reserves precisely its source. */
+        if (!count) for (unsigned i=0;i<7;++i) {
+            troop_cell cell;uint32_t type;
+            if (!troop_cell_window(troop_row_window(source,i),&cell) || !troop_count(&cell,&count,&type)) {
+                army_batch.mode=0;return;
+            }
+            if (count) { army_batch.source=cell;break; }
+        }
+        if (!count) { army_batch.mode=0;return; }
+        army_batch.retain_window=army_batch.source.window;
+    }
     if (mode==ARMY_BALANCE) {
         if (count<=1) { army_batch.mode=0;return; }
         uint64_t total=0;unsigned slots=0;
@@ -1591,6 +1659,11 @@ static void army_start(int mode,const troop_cell *source,const troop_cell *targe
     army_pump();
 }
 
+static void army_start(int mode,const troop_cell *source,const troop_cell *target,int one)
+{
+    army_start_quantity(mode,source,target,one,0);
+}
+
 static int troop_drop(float x,float y)
 {
     troop_cell source,target;uint32_t stack;
@@ -1601,8 +1674,18 @@ static int troop_drop(float x,float y)
     if (!gesture.dnd_pressed || !dnd_identity(gesture.dnd) || !dnd_held(gesture.dnd) ||
         !troop_cell_window(read32(read32(gesture.dnd+0x1C)+0xC),&source) || !troop_stack(&source,&stack) || !stack) return 0;
     if (troop_portrait_at(x,y,&target)) {
-        if (source.row!=target.row) army_start(ARMY_TRANSFER,&source,&target,1);
+        if (source.row!=target.row) army_start(ARMY_TRANSFER,&source,&target,0);
         else army_start(gesture.held?ARMY_BALANCE:ARMY_COLLECT,&source,&source,0);
+        return 1;
+    }
+    /* The native drop refuses to move a hero's last stack wholesale. Its split controller can
+       instead send total-minus-minimum to this exact cell, retaining one creature for the hero.
+       Incompatible stacks still take the original swap/refusal path; never overwrite them. */
+    uint32_t count,type,other,other_type;
+    if (troop_cell_at(x,y,&target) && source.row!=target.row &&
+        troop_count(&source,&count,&type) && count>1 && troop_count(&target,&other,&other_type) &&
+        (!other || type==other_type)) {
+        army_start(ARMY_MOVE,&source,&target,1);
         return 1;
     }
     return 0;
@@ -2291,6 +2374,141 @@ static int choice_end(float x, float y)
     return 1;
 }
 
+/* A selected stack owns a short-lived Android action bar. Buttons never write army storage:
+   they use the same native split/order/acknowledgement path as finger gestures. */
+static struct {
+    uint32_t generation,type;
+    troop_cell cell;
+    touch_gesture context;
+} army_selection;
+#ifdef VOID_ANDROID_APP
+void void_android_army_actions(uint32_t generation,float x,float y);
+#else
+static void void_android_army_actions(uint32_t generation,float x,float y)
+{ (void)generation;(void)x;(void)y; }
+#endif
+
+static void army_actions_clear(void)
+{
+    if (!army_selection.cell.window) return;
+    army_selection.cell.window=0;
+    void_android_army_actions(0,0,0);
+}
+
+static int army_actions_select(troop_cell *cell,float x,float y)
+{
+    uint32_t count,type;
+    if (!void_port_army_actions() || army_batch.mode || !troop_current(cell) ||
+        !troop_count(cell,&count,&type) || count<2) return 0;
+    /* Cell identity is IWindow, but placement/position belong to CWindow. Real creature buttons
+       have a virtual-base adjustor here (not the direct getter used by CWindow). Never assume
+       a fixed subobject delta or call IWindow slot +8 as a placement getter: it is an event method. */
+    uint32_t cast[]={cell->window,0,0x00F2DAF4u,0x00F2DA88u,0};
+    uint32_t window=void_call_guest(0x00D119FCu,5,cast,0);
+    if (!window || !same_screen() || !void_vm_readable(window+0x64,8)) return 0;
+    uint32_t placement=window_placement(window),point=choice_point(window);
+    if (!placement || !point) return 0;
+    float cx=MEMF(point),cy=MEMF(window+0x68);
+    if (gesture.kind==SCREEN_TOWN) {
+        /* Keep the bar above both rows, so a tap on the other row can select its own stack. */
+        unsigned other=town_army_row(gesture.screen,0)==cell->row;
+        cast[0]=town_army_portrait(gesture.screen,other);
+        uint32_t neighbor=cast[0]?void_call_guest(0x00D119FCu,5,cast,0):0;
+        if (!same_screen()) return 0;
+        uint32_t neighbor_placement=window_placement(neighbor);
+        if (neighbor_placement && MEM8(neighbor_placement+0x70) && void_vm_readable(neighbor+0x68,4))
+            cy=fminf(cy,MEMF(neighbor+0x68));
+    }
+    point=logical_point(x,y);if (!point) return 0;
+    float lx=MEMF(point),ly=MEMF(point+4);
+    /* A wider baseline avoids cancellation in float UI coordinates at high render scales. */
+    point=logical_point(x+64,y+64);if (!point) return 0;
+    float sx=(MEMF(point)-lx)/64,sy=(MEMF(point+4)-ly)/64;
+    if (!isfinite(sx) || !isfinite(sy) || sx<=0 || sy<=0) return 0;
+    /* Actual backbuffer -> UI scale includes UI scale and letterboxing, not just display density. */
+    cx=x+(cx-lx)/sx;cy=y+(cy-ly)/sy;
+    if (!isfinite(cx) || !isfinite(cy)) return 0;
+    dnd_cancel();
+    if (!same_screen()) return 0;
+    army_selection.generation=army_selection.generation%0xFFFFFFu+1;
+    army_selection.cell=*cell;army_selection.type=type;army_selection.context=gesture;
+    void_android_army_actions(army_selection.generation,cx,cy);
+    return 1;
+}
+
+static int army_actions_valid(void)
+{
+    troop_cell cell=army_selection.cell;
+    if (!cell.window || !void_port_army_actions() || army_batch.mode) return 0;
+    /* troop_current uses the gesture's screen identity. Preserve the active gesture completely. */
+    touch_gesture previous=gesture;
+    gesture=army_selection.context;
+    uint32_t count,type;
+    int valid=same_screen() && troop_current(&cell) && troop_count(&cell,&count,&type) && count>1 && type==army_selection.type;
+    gesture=previous;
+    return valid;
+}
+
+static void army_actions_command(uint32_t generation,unsigned action)
+{
+    if (action==3 && !generation) { void_port_enable_army_actions();return; }
+    if (generation!=army_selection.generation || action>2 || !army_actions_valid()) return;
+    troop_cell source=army_selection.cell,target;
+    uint32_t count,type;
+    if (!troop_count(&source,&count,&type)) return;
+    gesture=army_selection.context;
+    gesture.active=gesture.pressed=gesture.held=0;
+    gesture.committed=gesture.cancelled=1;
+    army_actions_clear();
+    if (action==2) { army_start(ARMY_BALANCE,&source,&source,0);return; }
+    for (unsigned i=1;i<7;++i) {
+        uint32_t other,other_type;
+        if (!troop_cell_window(troop_row_window(&source,(source.index+i)%7),&target) ||
+            !troop_count(&target,&other,&other_type)) return;
+        if (!other) {
+            army_start_quantity(ARMY_SPLIT,&source,&target,1,action ? count/2 : 1);
+            return;
+        }
+    }
+}
+
+static int army_actions_cell_at(float x,float y,troop_cell *cell)
+{
+    if (gesture.kind==SCREEN_TOWN && ui_idle()) {
+        /* A portrait can own the tap even when the drag helper skips its row. */
+        uint32_t window=ui_pick(gesture.screen,x,y);
+        for (unsigned depth=0;window&&depth<32&&same_screen();++depth) {
+            if (troop_cell_window(window,cell)) return 1;
+            uint32_t parent = object_query(window, 0xD8);
+            if (parent==window) break;
+            window=parent;
+        }
+    }
+    return troop_cell_at(x,y,cell);
+}
+
+static void army_actions_pointer(float x,float y)
+{
+    if (!void_port_army_actions() || army_batch.mode || gesture.active) return;
+    touch_gesture previous=gesture;
+    memset(&gesture,0,sizeof gesture);
+    gesture.screen=current_screen();gesture.kind=screen_kind(gesture.screen);
+    /* All native army windows are menu/town screens. Do not borrow an adventure/combat ABI. */
+    if (gesture.kind==SCREEN_MENU || gesture.kind==SCREEN_TOWN) {
+#ifdef HOMM5_LEGACY_UI
+        /* Both 1.6 and 2.1, as pinned by their root/DnD layout contracts. */
+        gesture.root=read32(gesture.screen+0x98);
+        gesture.dnd=read32(gesture.screen+0x148);
+#else
+        gesture.root=read32(gesture.screen+0xA0);
+        gesture.dnd=read32(gesture.screen+0x150);
+#endif
+        troop_cell cell;
+        if (army_actions_cell_at(x,y,&cell)) army_actions_select(&cell,x,y);
+    }
+    gesture=previous;
+}
+
 static void ui_event(const void_touch_event *event)
 {
     gesture.x = event->x; gesture.y = event->y;
@@ -2303,6 +2521,21 @@ static void ui_event(const void_touch_event *event)
     case TOUCH_DOUBLE_TAP: {
         if (gesture.committed || gesture.held || gesture.panning) break;
         if (choice.icon) { gesture.committed = 1; break; }
+        if (void_port_army_actions() && (event->kind==TOUCH_TAP || gesture.kind==SCREEN_TOWN)) {
+            troop_cell action_cell;
+            int found=army_actions_cell_at(event->x,event->y,&action_cell);
+            int selected=found && army_actions_select(&action_cell,event->x,event->y);
+            VLOG("[army] tap selection=%d screen=%08X point=%.1f,%.1f",selected,gesture.screen,event->x,event->y);
+            /* A tap on an occupied town slot is selection even if it cannot offer a split. */
+            if (!selected && found && gesture.kind==SCREEN_TOWN) {
+                uint32_t count,type;
+                if (troop_current(&action_cell) && troop_count(&action_cell,&count,&type) && count && same_screen()) {
+                    dnd_cancel();
+                    selected=1;
+                }
+            }
+            if (selected) { ui_release(1);gesture.committed=1;break; }
+        }
         if (gesture.kind == SCREEN_COMBAT && event->kind != TOUCH_DOUBLE_TAP && atb_tap(event->x, event->y)) {
             gesture.committed = 1; break;
         }
@@ -2603,16 +2836,25 @@ void void_touch_ui_pump(void)
     touch_hint_pump();
 #endif
     if (pointer_text.pending && touch_frame > pointer_text.frame) {
-        pointer_text.pending = 0;
         uint32_t screen = current_screen();
-        if (!touch_mode && screen == pointer_text.screen)
-            text_choose(screen, read32(screen + 0xA0), pointer_text.x, pointer_text.y);
+        if (touch_mode || screen!=pointer_text.screen) pointer_text.pending=0;
+        else {
+            if (pointer_text.pending==1) {
+                text_choose(screen, read32(screen + 0xA0), pointer_text.x, pointer_text.y);
+                pointer_text.pending=void_port_army_actions()?2:0;
+            }
+            if (pointer_text.pending==2 && !(void_input_key_state(1)&0x8000)) {
+                pointer_text.pending=0;
+                army_actions_pointer(pointer_text.x,pointer_text.y);
+            }
+        }
     }
 #ifdef VOID_ANDROID_APP
     port_menu_pump();
 #endif
     startup_pump();
     army_pump();
+    if (army_selection.cell.window && !army_actions_valid()) army_actions_clear();
     dnd_owner_pump(0);
     troop_preview_pump();
     split_zone_pump();
@@ -3562,6 +3804,7 @@ void void_touch_engine_init(void)
     memset(&drag_owner, 0, sizeof drag_owner);
     memset(&combat_home, 0, sizeof combat_home);
     memset(&army_batch, 0, sizeof army_batch);
+    memset(&army_selection,0,sizeof army_selection);
     memset(&atb, 0, sizeof atb);
     memset(&choice, 0, sizeof choice);
     memset(&minimap_tap, 0, sizeof minimap_tap);
@@ -3608,6 +3851,11 @@ void void_touch_engine_event(const void_touch_event *event)
     if (!event || !isfinite(event->x) || !isfinite(event->y) ||
         !isfinite(event->dx) || !isfinite(event->dy) || !isfinite(event->scale) ||
         !isfinite(event->rotation)) return;
+    if (event->kind == TOUCH_ARMY_ACTION) {
+        if (event->x>=0 && event->x<=0xFFFFFF && event->y>=0 && event->y<=3)
+            army_actions_command((uint32_t)event->x,(unsigned)event->y);
+        return;
+    }
     if (event->kind == TOUCH_COMBAT_CONFIRM) { combat_confirm((uint32_t)event->dx); return; }
     if (event->kind == TOUCH_CHEAT_ACTION) { cheats_action(event); return; }
     void_touch_event shifted = *event;
@@ -3636,6 +3884,7 @@ void void_touch_engine_event(const void_touch_event *event)
         return;
     }
     if (event->kind == TOUCH_POINTER_CLICK) {
+        army_actions_clear();
         pointer_text.screen = current_screen();
         pointer_text.x = event->x; pointer_text.y = event->y;
         pointer_text.frame = touch_frame; pointer_text.pending = 1;
@@ -3643,7 +3892,7 @@ void void_touch_engine_event(const void_touch_event *event)
     }
     if (event->kind == TOUCH_POINTER) {
         void_touch_event abort = {TOUCH_ABORT, 0, 0, 0, 0, 1, 0};
-        void_touch_engine_event(&abort);
+        if (touch_mode || gesture.active) void_touch_engine_event(&abort);
         atb_clear();   /* the mouse owns the cursor again */
         memset(&minimap_tap, 0, sizeof minimap_tap);
         touch_mode = 0;
@@ -3664,12 +3913,14 @@ void void_touch_engine_event(const void_touch_event *event)
         return;
     }
     if (event->kind==TOUCH_ABORT) {
+        army_actions_clear();
         combat_pending_clear();
         split_zone_hide();
         choice_clear();
         memset(&army_batch,0,sizeof army_batch);
     }
     if (event->kind == TOUCH_BEGIN) {
+        army_actions_clear();
         combat_pending_clear();
         ctrl_latch(0);
         split_zone_hide();
@@ -3914,8 +4165,12 @@ void void_touch_engine_event(const void_touch_event *event)
             gesture.kind != SCREEN_MENU && void_port_console_enabled() &&
             console_button_at(gesture.start_x, gesture.start_y, "OnJog-Menu") &&
             console_button_at(event->x, event->y, "OnJog-Menu")) {
-            const void_touch_event toggle = {.kind = TOUCH_CONSOLE_TOGGLE, .scale = 1};
-            void_touch_engine_event(&toggle);
+            const void_touch_event abort = {.kind = TOUCH_ABORT, .scale = 1};
+            int adventure = gesture.kind == SCREEN_ADVENTURE;
+            void_touch_engine_event(&abort);
+            /* The cheats dialog also has a Console button; battle/town keep their native console. */
+            if (adventure) cheats_show();
+            else console_toggle();
             return;
         }
         if (kind == TOUCH_HOLD_BEGIN && !gesture.panning && !gesture.held &&

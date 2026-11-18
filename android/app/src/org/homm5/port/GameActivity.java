@@ -6,13 +6,12 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.RectF;
 import android.graphics.Rect;
-import android.graphics.Typeface;
+import android.graphics.Bitmap;
 import android.graphics.drawable.GradientDrawable;
 import android.hardware.input.InputManager;
 import android.os.Bundle;
@@ -43,7 +42,7 @@ import android.view.inputmethod.InputMethodManager;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
-import android.widget.ProgressBar;
+import android.widget.ImageView;
 import android.widget.TextView;
 import java.io.File;
 import java.io.IOException;
@@ -77,6 +76,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private static native void nativeTouch(int kind, float x, float y, float dx, float dy, float scale, float rotationRadians);
     private static native void nativePause(boolean paused);
     private static native void nativeUiScale(float scale);
+    private static native void nativeSafeArea(int width, int height, int left, int top, int right, int bottom);
     private static native void nativeRenderScale(float scale);
     private static native void nativeCameraSensitivity(float value);
     private static native void nativeNewCreatureFramework(boolean enabled);
@@ -92,6 +92,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private static native int nativeTextCancel();
     private static native void nativeCheatAction(int generation, int action, int value);
     private static native void nativeCombatConfirm(int generation);
+    private static native void nativeArmyAction(int generation, int action);
     /** Startup work done so far (files opened), and whether the first screen is up. */
     private static native int nativeLoadWork();
     private static native boolean nativeLoadReady();
@@ -104,6 +105,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private TouchLayer touch;
     private TroopZones troopZones;
     private CombatOverlay combatOverlay;
+    private ArmyActions armyActions;
     private HardwareInput hardware;
     private android.app.AlertDialog gamepadHelp;
     private android.app.AlertDialog gameSwitchDialog;
@@ -120,6 +122,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private static volatile String language;
     private Object backCallback;
     private boolean firstFrameShown;
+    private boolean startupFocusPending;
     private GestureProbe gestureProbe;
     /* Wi-Fi chips drop broadcast and multicast frames to save power unless an
        app holds this: the LAN game finds its sessions by UDP broadcast. */
@@ -130,6 +133,8 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private TextView textPreviewValue;
     private HorizontalScrollView textPreviewScroll;
     private Surface refreshSurface;
+    private final int[] safeAreaCache = new int[6];
+    private float frameRate = 60, refreshVote;
     private SharedPreferences preferences;
     private int pendingTouchHints;
     private boolean showingTouchHint;
@@ -142,8 +147,9 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private int fieldCaret;
     /* The loading screen over the black surface until the game shows its first screen. */
     private View loading;
-    private ProgressBar loadingBar;
-    private TextView loadingText;
+    private ImageView loadingImage;
+    private TextView loadingTitle, loadingText;
+    private Bitmap startupArtwork;
     private long loadingStart;
     private int loadingExpected;
     private float loadingShown;
@@ -160,6 +166,9 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private View launchCurtain;
 
     @Override protected void onCreate(Bundle state) {
+        // Only a real launcher hand-over dims its window. Direct activity/shortcut starts are opaque.
+        if (!getIntent().getBooleanExtra(LauncherHooks.EXTRA_HANDOVER, false))
+            setTheme(getResources().getIdentifier("GameDirect", "style", getPackageName()));
         super.onCreate(state);
         /* The launcher's hand-over first, before any native code: this start's distribution, folders
            and options (PORT_* in the environment too) and its record. */
@@ -177,7 +186,6 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         beginLaunchDimming();
         game = new FrameLayout(this);
         createLoading();
-        loadingBar.setIndeterminate(true);
         loadingText.setText(text(T_PREPARING));
         coverLaunchDimming();
         setContentView(game);
@@ -190,6 +198,15 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             try {
                 launchTiming("library-begin");
                 File originals = gameFolder();
+                if (startupArtwork == null) {
+                    Bitmap art = StartupArt.load(originals, gameEdition());
+                    runOnUiThread(() -> {
+                        if (loading == null || isFinishing() || isDestroyed()) return;
+                        startupArtwork = art;
+                        loadingImage.setImageBitmap(art);
+                        loadingTitle.setVisibility(art != null ? View.GONE : View.VISIBLE);
+                    });
+                }
                 Assets.verifyOriginals(this, originals, gameEdition(), allowUnsupported);
                 NativeLibrary.load(this, Games.library(gameEdition()));
                 launchTiming("library-ready");
@@ -335,6 +352,10 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         setContentView(game);
 
         preferences = getSharedPreferences(Games.preferences(gameEdition()), MODE_PRIVATE);
+        armyActions = new ArmyActions(this, game, preferences, "ru".equals(cheatText("en", "ru")), GameActivity::nativeArmyAction);
+        frameRate = savedFloat("fps_limit", 60);
+        if (!Float.isFinite(frameRate) || frameRate < 10 || frameRate > 240) frameRate = 60;
+        requestHighRefresh();
         File base = baseDir();
         gestureProbe = GestureProbe.register(this, touch, base);
         try {
@@ -463,23 +484,27 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
 
     @Override public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
-        if (hasFocus) { hideSystemUi(); requestHighRefresh(); }
+        if (hasFocus) { hideSystemUi(); requestHighRefresh(); restoreStartupFocus(); }
         else if (touch != null) releaseAll();
     }
 
-    private static int chooseRefreshMode(Display.Mode current, Display.Mode[] modes) {
-        if (current == null || modes == null || current.getPhysicalWidth() <= 0 || current.getPhysicalHeight() <= 0) return 0;
+    private static int chooseRefreshMode(Display.Mode current, Display.Mode[] modes, float fps) {
+        if (current == null || modes == null || current.getPhysicalWidth() <= 0 || current.getPhysicalHeight() <= 0
+                || !Float.isFinite(fps) || fps < 10 || fps > 240) return 0;
         int chosen = 0;
-        float bestDistance = Float.POSITIVE_INFINITY;
+        float best = Float.POSITIVE_INFINITY;
         for (Display.Mode mode : modes) {
             if (mode == null || mode.getModeId() <= 0 || mode.getPhysicalWidth() != current.getPhysicalWidth()
                     || mode.getPhysicalHeight() != current.getPhysicalHeight()) continue;
             float rate = mode.getRefreshRate();
-            if (!Float.isFinite(rate) || rate < 119.5f) continue;
-            float distance = Math.abs(rate - 120);
-            if (distance < bestDistance || (distance == bestDistance && mode.getModeId() == current.getModeId())) {
+            if (!Float.isFinite(rate) || rate < fps - .6f || rate > 240.6f) continue;
+            int multiple = Math.max(1, Math.round(rate / fps));
+            boolean even = Math.abs(rate - fps * multiple) <= .6f * multiple;
+            // Even cadence first, then the lowest refresh: 30 uses 60/2 rather than 90/3 or 120/4.
+            float score = (even ? 0 : 1000) + rate;
+            if (score < best || (score == best && mode.getModeId() == current.getModeId())) {
                 chosen = mode.getModeId();
-                bestDistance = distance;
+                best = score;
             }
         }
         return chosen;
@@ -491,16 +516,19 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         if (target == null || !target.isValid()) return;
         Display display = surface.getDisplay();
         if (display == null) return;
-        int mode = chooseRefreshMode(display.getMode(), display.getSupportedModes());
+        int mode = chooseRefreshMode(display.getMode(), display.getSupportedModes(), frameRate);
         WindowManager.LayoutParams params = getWindow().getAttributes();
-        if (mode != 0 && params.preferredDisplayModeId != mode) {
+        if (params.preferredDisplayModeId != mode) {
             params.preferredDisplayModeId = mode;
             getWindow().setAttributes(params);
         }
-        if (Build.VERSION.SDK_INT >= 30 && refreshSurface != target) {
+        if (Build.VERSION.SDK_INT >= 30 && (refreshSurface != target || refreshVote != frameRate)) {
             try {
-                target.setFrameRate(120, Surface.FRAME_RATE_COMPATIBILITY_DEFAULT);
+                if (Build.VERSION.SDK_INT >= 31)
+                    target.setFrameRate(frameRate, Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE, Surface.CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS);
+                else target.setFrameRate(frameRate, Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE);
                 refreshSurface = target;
+                refreshVote = frameRate;
             } catch (IllegalArgumentException ignored) { /* The surface can disappear during a lifecycle callback. */ }
         }
     }
@@ -510,8 +538,22 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private static void onPortSetting(int which, float value) {
         GameActivity activity = currentActivity.get();
         if (activity == null || !Float.isFinite(value)) return;
-        String key = which == 0 ? "ui_scale" : which == 1 ? "render_scale" : which == 2 ? "camera_sensitivity" : null;
-        if (key != null) activity.preferences.edit().putFloat(key, value).apply();
+        if (which == 4) {
+            activity.runOnUiThread(() -> {
+                if (currentActivity.get() == activity && activity.armyActions != null)
+                    activity.armyActions.setEnabled(value >= .5f);
+            });
+            return;
+        }
+        String key = which == 0 ? "ui_scale" : which == 1 ? "render_scale" : which == 2 ? "camera_sensitivity"
+                : which == 3 ? "fps_limit" : null;
+        if (key == null || which == 3 && (value < 10 || value > 240)) return;
+        activity.preferences.edit().putFloat(key, value).apply();
+        if (which == 3) activity.runOnUiThread(() -> {
+            if (currentActivity.get() != activity || value < 10 || value > 240) return;
+            activity.frameRate = value;
+            activity.requestHighRefresh();
+        });
         if (which == 0) activity.runOnUiThread(() -> {
             if (currentActivity.get() == activity && activity.combatOverlay != null)
                 activity.combatOverlay.setUiScale(value);
@@ -668,6 +710,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         if (gameSwitchDialog != null) gameSwitchDialog.dismiss();
         if (cheatDialog != null) cheatDialog.dismiss();
         if (startupDialog != null) startupDialog.dismiss();
+        if (armyActions != null) armyActions.close();
         if (Build.VERSION.SDK_INT >= 33 && backCallback != null)
             getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback((android.window.OnBackInvokedCallback) backCallback);
         handler.removeCallbacksAndMessages(null);
@@ -682,6 +725,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
        engine start independently. API 26 cannot combine translucency with sensorLandscape; its
        orientation-safe theme uses a window-enter animation over the same black curtain. */
     private void beginLaunchDimming() {
+        if (!getIntent().getBooleanExtra(LauncherHooks.EXTRA_HANDOVER, false)) return;
         launchDimming = true;
         launchDimStarted = SystemClock.uptimeMillis();
         if (Build.VERSION.SDK_INT >= 27) {
@@ -742,33 +786,30 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
 
     private void createLoading() {
         FrameLayout box = new FrameLayout(this);
-        box.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
-                new int[] {Color.rgb(20, 34, 48), Color.rgb(10, 16, 24), Color.rgb(2, 3, 5)}));
+        box.setBackgroundColor(Color.BLACK);
         box.setClickable(true);
-        LinearLayout column = new LinearLayout(this);
-        column.setOrientation(LinearLayout.VERTICAL);
-        column.setGravity(Gravity.CENTER_HORIZONTAL);
-        TextView title = new TextView(this);
-        title.setText(Games.title(gameEdition()));
-        title.setTextColor(Color.rgb(235, 203, 127));
-        title.setTextSize(34);
-        title.setTypeface(Typeface.create(Typeface.SERIF, Typeface.BOLD));
-        title.setGravity(Gravity.CENTER);
-        title.setPadding(0, 0, 0, dp(36));
-        column.addView(title, new LinearLayout.LayoutParams(-1, -2));
-        loadingBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        loadingBar.setMax(1000);
-        loadingBar.setProgressTintList(ColorStateList.valueOf(Color.rgb(235, 203, 127)));
-        loadingBar.setProgressBackgroundTintList(ColorStateList.valueOf(Color.rgb(60, 60, 70)));
-        column.addView(loadingBar, new LinearLayout.LayoutParams(-1, dp(14)));
+        loadingImage = new ImageView(this);
+        loadingImage.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        loadingImage.setImageBitmap(startupArtwork);
+        // FIT_CENTER centers the drawable. Center gravity would shift this MATCH_PARENT view
+        // upward by the asymmetric margins (and clip the original artwork's top edge).
+        FrameLayout.LayoutParams picture = new FrameLayout.LayoutParams(-1, -1, Gravity.TOP | Gravity.LEFT);
+        picture.setMargins(dp(16), dp(12), dp(16), dp(56));
+        box.addView(loadingImage, picture);
+        loadingTitle = new TextView(this);
+        loadingTitle.setText(Games.title(gameEdition()));
+        loadingTitle.setTextColor(Color.rgb(235, 203, 127));
+        loadingTitle.setTextSize(28);
+        loadingTitle.setGravity(Gravity.CENTER);
+        loadingTitle.setVisibility(startupArtwork != null ? View.GONE : View.VISIBLE);
+        box.addView(loadingTitle, new FrameLayout.LayoutParams(-1, -2, Gravity.CENTER));
         loadingText = new TextView(this);
-        loadingText.setTextColor(Color.rgb(190, 190, 200));
+        loadingText.setText(text(T_PREPARING));
+        loadingText.setTextColor(Color.rgb(235, 203, 127));
         loadingText.setTextSize(15);
         loadingText.setGravity(Gravity.CENTER);
-        loadingText.setPadding(0, dp(12), 0, 0);
-        column.addView(loadingText);
-        box.addView(column, new FrameLayout.LayoutParams(Math.min(dp(600),
-                getResources().getDisplayMetrics().widthPixels - dp(48)), -2, Gravity.CENTER));
+        loadingText.setPadding(dp(24), dp(8), dp(24), dp(16));
+        box.addView(loadingText, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
         loading = box;
         game.addView(loading, new FrameLayout.LayoutParams(-1, -1));
     }
@@ -787,11 +828,10 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             boolean ready = nativeLoadReady();
             int work = nativeLoadWork();
             float target = ready ? 1f : Math.min(0.97f, work / (float) loadingExpected);
-            /* Ease toward the target; time alone keeps the bar alive between bursts. */
+            /* Ease the status percentage; time alone keeps it alive between bursts of file work. */
             float elapsed = (System.currentTimeMillis() - loadingStart) / 1000f;
             target = Math.max(target, Math.min(0.3f, elapsed / 60f));
             loadingShown += (target - loadingShown) * (ready ? 1f : 0.35f);
-            loadingBar.setProgress(Math.round(loadingShown * 1000));
             loadingText.setText(String.format(Locale.getDefault(), "%s  %d%%", text(T_LOADING), Math.round(loadingShown * 100)));
             if (ready) {
                 /* This build's start of this edition reached its first screen: the icon may go
@@ -802,13 +842,28 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                 View done = loading;
                 loading = null;
                 done.animate().alpha(0f).setDuration(350).setListener(new AnimatorListenerAdapter() {
-                    @Override public void onAnimationEnd(Animator animation) { game.removeView(done); }
+                    @Override public void onAnimationEnd(Animator animation) {
+                        game.removeView(done);
+                        loadingImage.setImageDrawable(null);
+                        startupArtwork = null;
+                        startupFocusPending = true;
+                        restoreStartupFocus();
+                        if (armyActions != null) armyActions.offerForMouse();
+                    }
                 });
                 return;
             }
             handler.postDelayed(this, 100);
         }
     };
+
+    /* The first keyboard key must reach the game's pre-IME route, not just move Android focus
+       from its startup container. Defer this one startup request while another window owns focus;
+       ordinary later focus changes must not steal focus from Android controls or dialogs. */
+    private void restoreStartupFocus() {
+        if (!startupFocusPending || touch == null || !hasWindowFocus() || isFinishing() || isDestroyed()) return;
+        if (touch.requestFocus()) startupFocusPending = false;
+    }
 
     private static final int T_LOADING = 0, T_SWITCH_GAME = 1, T_OPEN_LAUNCHER = 2, T_CANCEL = 3, T_CURRENT_GAME = 4,
         T_PREPARING = 5, T_FILES_MISSING = 6, T_RUNTIME_MISSING = 7, T_UNSUPPORTED_ORIGINAL = 8, T_LAUNCH_ANYWAY = 9;
@@ -842,8 +897,8 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         switch (id) {
         case 1: return cheatText("To cancel a selected spell or a creature's active ability, briefly tap anywhere with two fingers at the same time.",
                 "Чтобы отменить выбранное заклинание или активный навык существа, коротко коснитесь любого места двумя пальцами одновременно.");
-        case 2: return cheatText("The game console is enabled. Hold the gear button to open or close it (or press ~ on a keyboard). Hold the adventure book button (scenario information) to open the cheats menu.",
-                "Консоль игры включена. Удерживайте кнопку с шестерёнкой, чтобы открыть или закрыть её (или нажмите ~ на клавиатуре). Удерживайте книгу приключений (кнопку информации о сценарии), чтобы открыть меню читов.");
+        case 2: return cheatText("The game console is enabled. Hold the gear button for cheats and the Console button. The adventure book also opens cheats; ~ on a keyboard opens or closes the console.",
+                "Консоль игры включена. Удерживайте шестерёнку: откроются читы с кнопкой «Консоль». Книга приключений также открывает читы; клавиша ~ открывает или закрывает консоль.");
         case 3: return cheatText("To stop a moving hero, briefly tap anywhere with two fingers at the same time.",
                 "Чтобы остановить движущегося героя, коротко коснитесь любого места двумя пальцами одновременно.");
         case 4: return cheatText("To restore the original camera view, briefly tap with three fingers at the same time. This also works during troop deployment, in battle and in towns.",
@@ -953,7 +1008,8 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     private android.app.AlertDialog.Builder cheatBuilder(String title) {
-        return new android.app.AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert).setTitle(title);
+        return new android.app.AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert).setTitle(title)
+                .setNeutralButton(cheatText("Console", "Консоль"), (dialog, which) -> nativeHardwareKey(0xC0, true));
     }
 
     private void confirmCheat(int generation, int action, int value, String message) {
@@ -1104,11 +1160,37 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         layout.setMargins(dp(20), 0, dp(20), dp(12));
         game.addView(textPreview, layout);
         textPreview.setVisibility(View.GONE);
-        game.getViewTreeObserver().addOnGlobalLayoutListener(this::positionTextPreview);
+        game.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
+            updateSafeArea();
+            positionTextPreview();
+        });
         game.setOnApplyWindowInsetsListener((view, insets) -> {
-            view.post(this::positionTextPreview);
+            view.post(() -> { updateSafeArea(); positionTextPreview(); });
             return insets;
         });
+    }
+
+    private void updateSafeArea() {
+        if (!nativeReady || game == null || game.getWidth() <= 0 || game.getHeight() <= 0) return;
+        int width = game.getWidth(), height = game.getHeight();
+        int left = 0, top = 0, right = 0, bottom = 0;
+        WindowInsets insets = game.getRootWindowInsets();
+        if (Build.VERSION.SDK_INT >= 28 && insets != null && insets.getDisplayCutout() != null) {
+            android.view.DisplayCutout cutout = insets.getDisplayCutout();
+            int[] origin = new int[2];
+            game.getLocationOnScreen(origin);
+            android.graphics.Point display = new android.graphics.Point();
+            getWindowManager().getDefaultDisplay().getRealSize(display);
+            left = Math.max(0, cutout.getSafeInsetLeft() - origin[0]);
+            top = Math.max(0, cutout.getSafeInsetTop() - origin[1]);
+            right = Math.max(0, origin[0] + width - display.x + cutout.getSafeInsetRight());
+            bottom = Math.max(0, origin[1] + height - display.y + cutout.getSafeInsetBottom());
+        }
+        if (safeAreaCache[0] == width && safeAreaCache[1] == height && safeAreaCache[2] == left
+                && safeAreaCache[3] == top && safeAreaCache[4] == right && safeAreaCache[5] == bottom) return;
+        safeAreaCache[0] = width; safeAreaCache[1] = height;
+        safeAreaCache[2] = left; safeAreaCache[3] = top; safeAreaCache[4] = right; safeAreaCache[5] = bottom;
+        nativeSafeArea(width, height, left, top, right, bottom);
     }
 
     private void positionTextPreview() {
@@ -1185,6 +1267,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     private void releaseAll() {
+        if (armyActions != null) armyActions.hide();
         if (troopZones != null) {
             troopZones.update(-1, 0, 0, 0);
             troopZones.hint(false, 0, 0);
@@ -1210,7 +1293,16 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     @Override public boolean dispatchTouchEvent(MotionEvent event) {
+        if (armyActions != null && armyActions.hit(event.getX(), event.getY())) return super.dispatchTouchEvent(event);
         return hasWindowFocus() && hardware != null && hardware.mouse(event) || super.dispatchTouchEvent(event);
+    }
+
+    private static void onArmyActions(int generation, float x, float y, int width, int height) {
+        GameActivity activity = currentActivity.get();
+        if (activity != null) activity.runOnUiThread(() -> {
+            if (currentActivity.get() == activity && activity.armyActions != null)
+                activity.armyActions.show(generation, x, y, width, height);
+        });
     }
 
     private static void onGamepadHelp() {
@@ -1247,9 +1339,13 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                 + "Удерживайте отряд, перетащите на портрет его героя и отпустите — отряды этого типа "
                 + "равномерно займут свободные ячейки; уже отделённые одиночки сохранятся. "
                 + "Быстрое перетаскивание отряда на портрет собирает этот тип вместе. "
-                + "Перетаскивание на портрет другого героя передаёт ему отряд.\n\n"
+                + "Перетаскивание отряда на портрет другого героя передаёт всю армию, оставляя одного воина "
+                + "в исходном отряде; отряды, которым не хватило места, остаются.\n\n"
+                + "Кнопки «1», «½», «=» над выбранным отрядом включаются отдельно в Настройки → Дополнительные → Интерфейс "
+                + "и по умолчанию выключены. При подключении мыши игра предложит их включить.\n\n"
                 + "Смещение курсора от пальца и его отображение: Настройки → Дополнительные → Управление.\n\n"
-                + "Там же можно включить консоль игры: клавиша ~ или удержание кнопки-шестерёнки.\n\n"
+                + "Там же можно включить консоль игры: клавиша ~; удержание шестерёнки открывает читы "
+                + "с кнопкой «Консоль» (в городе и бою — сразу консоль).\n\n"
                 + "Геймпад\n\nЛевый стик — курсор; LB / L1 — точное перемещение.\n\n"
                 + "A / крест — левый клик. Удерживайте для перетаскивания; два нажатия — двойной клик.\n"
                 + "B / круг — правый клик: описание, отмена действия.\n"
@@ -1319,8 +1415,14 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             ticking = false;
         }
 
-        @Override public void onInputDeviceAdded(int device) {}
-        @Override public void onInputDeviceChanged(int device) { onInputDeviceRemoved(device); }
+        @Override public void onInputDeviceAdded(int device) {
+            if (firstFrameShown && armyActions != null) armyActions.offerForMouse();
+        }
+        @Override public void onInputDeviceChanged(int device) {
+            onInputDeviceRemoved(device);
+            // Composite USB/Bluetooth devices may gain SOURCE_MOUSE after their initial report.
+            onInputDeviceAdded(device);
+        }
         @Override public void onInputDeviceRemoved(int device) {
             for (long id : new HashSet<>(held.keySet())) if ((int)(id >> 32) == device)
                 hold(device, (int)id, 0, false);

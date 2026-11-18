@@ -81,7 +81,8 @@ final class Games {
 
     static String[] required(String edition) {
         suffix(edition);
-        if ("hof".equals(edition)) return new String[] {"bina1/H5_Game.exe", "data/data.pak", "dataa1/a1-data.pak", "dataa1/a1p1-data.pak"};
+        // HoF is not standalone: its original startup also checks the base game's executable.
+        if ("hof".equals(edition)) return new String[] {"bina1/H5_Game.exe", "bin/H5_Game.exe", "data/data.pak", "dataa1/a1-data.pak", "dataa1/a1p1-data.pak"};
         if ("vanilla".equals(edition)) return new String[] {"bin/H5_Game.exe", "data/data.pak", "data/p3c-data.pak", "DataLS/p6-data.pak"};
         return new String[] {"bin/H5_Game.exe", "data/data.pak", "data/a2p1-data.pak"};
     }

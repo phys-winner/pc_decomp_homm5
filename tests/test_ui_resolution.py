@@ -1,10 +1,15 @@
 """Exercise production UI promotion, surface ownership and raster coordinates."""
 import json
 from pathlib import Path
+import sys
+import tempfile
 import unittest
 
 from test_d3d_lifecycle import function
 from test_static_tls import ROOT, compile_probe
+
+sys.path.insert(0, str(ROOT / "tools"))
+from port_patches import adapt_host_source
 
 
 HARNESS = r'''
@@ -29,7 +34,20 @@ static int window_mode=1,egl_surface=1,egl_display=1,raster_state_valid=1;
 static int active_unit;
 static GLuint unit_tex[32],unit_sampler[32],unit_target[32];
 static void d3d_shader_forget_current(void) {}
-static int void_port_filter(int ui) {(void)ui;return 0;}
+static int filter_mode, expected_filter;
+static int void_port_filter(int ui) {return ui ? filter_mode : 0;}
+enum {GUEST_START=0x1000,GUEST_END=0x1800,REGISTRY=0x01022BB8};
+static uint32_t g_ecx, guest[(GUEST_END - GUEST_START)/4], guest_registry[2];
+static int void_vm_readable(uint32_t address,uint32_t size) {
+    uint64_t end=(uint64_t)address+size;
+    return (address>=GUEST_START && end<=GUEST_END) ||
+           (address>=REGISTRY && end<=REGISTRY+8);
+}
+static uint32_t *guest_word(uint32_t address) {
+    assert(!(address % 4) && void_vm_readable(address,4));
+    return address>=REGISTRY ? &guest_registry[(address-REGISTRY)/4] : &guest[(address-GUEST_START)/4];
+}
+#define MEM32(address) (*guest_word(address))
 static float void_port_sharpness(void) {return 0;}
 static int d3d_filter_blit(d3d_surface *source,d3d_surface *target,int mode,float sharpness) {
     assert(source&&target&&!mode&&sharpness==0);return 0;
@@ -67,7 +85,45 @@ static void d3d_gl_blit(d3d_surface *src,const uint32_t *sr,d3d_surface *dst,con
 }
 static d3d_device *native_device;
 static d3d_device *d3d_rt_device(void) {return native_device;}
-void sub_00A46BC0_lifted(void) {assert(ui_quad_depth);++native_calls;render_ui=1;render_filter[0]=render_filter[1]=0;render_sharpness=0;ui_promote(native_device);}
+void sub_00A46BC0_lifted(void) {
+    assert(ui_quad_depth && ui_filter_for_draw()==expected_filter);
+    ++native_calls;
+    render_ui=1;
+    render_filter[0]=render_filter[1]=0;
+    render_sharpness=0;
+    ui_promote(native_device);
+}
+static void check_font_filter(void) {
+    const uint32_t renderer=0x1000,buckets=0x1100,node=0x1120,locale=0x1160,
+                   fonts=0x11A0,font=0x11C0,atlas=0x1200;
+    g_ecx=renderer;
+    guest_registry[0]=buckets;
+    guest_registry[1]=buckets+12;
+    MEM32(buckets+4*(0x2016EB40u%3))=node;
+    MEM32(node)=node+12;
+    MEM32(node+12+4)=0x2016EB40u;
+    MEM32(node+12+8)=locale;
+    MEM32(locale)=0x00E6F67Cu;
+    MEM32(locale+20)=fonts;
+    MEM32(locale+24)=fonts+8;
+    MEM32(fonts+4)=font;
+    MEM32(font+28)=atlas;
+    MEM32(atlas+20)=0x1300;
+    MEM32(renderer+0xE4)=0x1300;
+    for (filter_mode=0;filter_mode<4;++filter_mode) {
+        expected_filter=filter_mode>1 ? -1 : filter_mode;
+        sub_00A46BC0();
+        assert(!ui_quad_depth && ui_filter_for_draw()==filter_mode);
+    }
+    filter_mode=expected_filter=3;
+    MEM32(renderer+0xE4)=0x1340;
+    sub_00A46BC0();
+    MEM32(atlas+20)=0x1340; /* Reloading the atlas uses the current texture handle. */
+    expected_filter=-1;
+    sub_00A46BC0();
+    g_ecx=0;
+    filter_mode=expected_filter=0;
+}
 static void end_frame(d3d_device *d) {ui_active=0;ui_depth_source=NULL;d->fbo_dirty=1;raster_state_valid=0;}
 int main(void) {
     d3d_device d={0},other={0};
@@ -82,6 +138,7 @@ int main(void) {
     display_w=2400;display_h=1080;d3d_gl_limits.max_texture=1024;ui_promote(&d);assert(!allocations);d3d_gl_limits.max_texture=8192;
     fail_allocate=1;ui_promote(&d);assert(!ui_active&&!ui_color&&releases==1);fail_allocate=0;
     sub_00A46BC0();assert(native_calls==1&&!ui_quad_depth&&ui_active&&copies==1);
+    check_font_filter();
     assert(ui_color->width==2400&&ui_color->height==1080&&d.backbuffer==&bb&&bb.width==600);
     assert(ui_surface(&d,&bb)==ui_color&&ui_surface(&d,&off)==&off&&ui_surface(&other,&bb)==&bb);
     ui_rect(&d,rect,out);assert(out[0]==44&&out[1]==28&&out[2]==160&&out[3]==84);
@@ -117,8 +174,23 @@ class UiResolutionTest(unittest.TestCase):
         compile_probe("ui_resolution", HARNESS.replace("/* ACTUAL */", helpers).replace('"coords.json"', json.dumps(str(ROOT / "build/tests/ui_resolution/coords.json"))), {})
         cls.coords = json.loads((ROOT / "build/tests/ui_resolution/coords.json").read_text())
 
+    def test_legacy_font_filter_uses_each_engines_active_atlas(self):
+        for edition, registry, locale, flush in (
+            ("vanilla", "0x0108AB70", "0x00E4F24C", "sub_00A9F7F0"),
+            ("hof", "0x00FAAF10", "0x00E303E8", "sub_00A43420"),
+        ):
+            with self.subTest(edition=edition), tempfile.TemporaryDirectory() as out:
+                path, _ = adapt_host_source(ROOT / "android/host/d3d9_gl.c", Path(out), edition)
+                source = path.read_text(encoding="utf8")
+                helpers = source[source.index("/* The native quad renderer"):source.index("void d3d_gl_bind_targets(")]
+                harness = (HARNESS.replace("0x01022BB8", registry).replace("0x00E6F67C", locale)
+                           .replace("sub_00A46BC0", flush))
+                compile_probe("ui_resolution_" + edition, harness.replace("/* ACTUAL */", helpers), {})
+
     def test_native_routing_and_lifetime(self):
         source = (ROOT / "android/host/d3d9_gl.c").read_text(encoding="utf8")
+        queued = function(source, "int d3d_gl_draw(")
+        self.assertIn("a->ui_filter = ui_filter_for_draw();", queued)
         draw = function(source, "static int gl_draw(")
         self.assertLess(draw.index("if (render_ui) ui_promote(d);"), draw.index("d3d_gl_apply_state(d);"))
         present = function(source, "static void gl_present(")
@@ -127,9 +199,7 @@ class UiResolutionTest(unittest.TestCase):
         self.assertIn("ui_release(&ui_color); ui_release(&ui_depth);", function(source, "static void gl_device_destroy("))
 
     def test_quad_override_preserves_original_guest_register_summary(self):
-        import sys
         from unittest.mock import patch
-        sys.path.insert(0, str(ROOT / "tools"))
         import build_android
         with patch.object(build_android, "_protocol", None), patch.object(build_android, "Protocol") as protocol:
             build_android.call_protocol()

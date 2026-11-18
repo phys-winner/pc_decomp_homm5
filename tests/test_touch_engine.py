@@ -72,6 +72,10 @@ int void_port_combat_confirm(void) {return confirm_combat;}
 int void_port_combat_route(void) {return 1;}
 int void_port_attack_hints(void) {return attack_hints;}
 unsigned void_touch_combat_route(uint32_t s,uint32_t a,int x,int y,uint32_t g,int r,uint32_t action,uint32_t target,float *out) {(void)s;(void)a;(void)x;(void)y;(void)g;(void)r;(void)action;(void)target;(void)out;return 0;}
+int16_t void_input_key_state(uint32_t vk) {return vk<256 && key_down[vk] ? -32768 : 0;}
+static int army_actions_enabled;
+int void_port_army_actions(void) {return army_actions_enabled;}
+void void_port_enable_army_actions(void) {army_actions_enabled=1;}
 static int console_enabled, gear_hit, console_focus, console_visible, console_screen_focus;
 int void_port_console_enabled(void) {return console_enabled;}
 static int split_hints = 1, split_zones_enabled = 1;
@@ -559,6 +563,10 @@ int main(void) {
         MEM32(0x60A4)=0x9B000;MEM32(0x60A8)=0x9B004;MEM32(0x9B000)=0x31500;
         MEM32(0x315A4)=0x9B100;MEM32(0x315A8)=0x9B104;MEM32(0x9B100)=0x30000;
         event(TOUCH_BEGIN,100,200);event(TOUCH_HOLD_BEGIN,100,200);
+        if(world==1) {
+            assert(!console_actions&&!gesture.active); /* Adventure gear opens cheats, not a hidden console. */
+            event(TOUCH_CONSOLE_TOGGLE,0,0);
+        }
         assert(console_actions==1&&!gesture.active&&!downs&&!commands&&text_arms==1);
         assert(void_touch_text_focus(&text_field,&text_kind,&text_epoch)&&text_field==0x30000&&text_kind==1);
         assert(text_target.root_window==0x30000);

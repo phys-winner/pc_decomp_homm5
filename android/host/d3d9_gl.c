@@ -41,6 +41,7 @@ extern uint32_t d3d_constant_generation;
 /* Swap chain MSAA (see the MSAA section) and the gamma ramp pass (before present). */
 typedef void (*fb_texture_ms_fn)(GLenum, GLenum, GLenum, GLuint, GLint, GLsizei);
 static fb_texture_ms_fn fb_texture_ms;
+static PFNGLRENDERBUFFERSTORAGEMULTISAMPLEEXTPROC rb_storage_ms;
 uint32_t d3d_gl_msaa_counts;               /* bit n: n samples usable (2, 4); set by gl_init */
 static void gamma_release(void);
 static int xt_rect(d3d_device *d, const uint32_t in[4], uint32_t out[4]);
@@ -228,10 +229,11 @@ static int gl_init(void)
         }
     }
     gpu_profile_init(extensions);
-    /* Swap chain MSAA needs a multisampled depth texture too: the "2" extension. */
     d3d_gl_msaa_counts = 0;
     if (extensions && strstr(extensions, "GL_EXT_multisampled_render_to_texture2") && !getenv("VOID_NO_MSAA")) {
         fb_texture_ms = (fb_texture_ms_fn)eglGetProcAddress("glFramebufferTexture2DMultisampleEXT");
+        rb_storage_ms = (PFNGLRENDERBUFFERSTORAGEMULTISAMPLEEXTPROC)eglGetProcAddress("glRenderbufferStorageMultisampleEXT");
+        if (!rb_storage_ms) fb_texture_ms = NULL;
         GLint max_samples = 0;
         glGetIntegerv(GL_MAX_SAMPLES_EXT, &max_samples);
         for (int s = 2; fb_texture_ms && s <= 4 && s <= max_samples; s *= 2) d3d_gl_msaa_counts |= 1u << s;
@@ -425,17 +427,23 @@ static GLsizei fb_buf_count = -1;
 /* ---------------------------------------------------------------- MSAA
  * Multisampling of the swap chain, the game's FSAA option (0x00A3F980:
  * D3DMULTISAMPLE_NONMASKABLE at quality min(levels, gfx_fsaa) - 1), through
- * GL_EXT_multisampled_render_to_texture2: the back buffer and its automatic
- * depth stay the single-sample textures the rest of the bridge reads; while
- * the scene draws into them the GPU keeps the samples in tile memory and
- * resolves them as the render pass ends (no extra memory or resolve pass on a
- * tiler). Other targets, the full-resolution UI and every blit stay single
- * sample. */
+ * GL_EXT_multisampled_render_to_texture2. The swap chain exposes the single-
+ * sample textures the bridge reads. Color resolves as the render pass ends.
+ * Depth/stencil stays in a renderbuffer across passes because a resolve
+ * can invalidate a multisampled depth texture. Other targets and the
+ * full-resolution UI stay single sample. */
 typedef void (*fb_texture_ms_fn)(GLenum, GLenum, GLenum, GLuint, GLint, GLsizei);
 static fb_texture_ms_fn fb_texture_ms;      /* glFramebufferTexture2DMultisampleEXT, from gl_init */
 static GLuint msaa_color_tex, msaa_depth_tex;   /* render: the swap chain's textures */
 static GLenum msaa_depth_point;
 static GLsizei msaa_samples;
+static GLuint msaa_depth_buffer;
+
+static void msaa_depth_release(void)
+{
+    if (msaa_depth_buffer) glDeleteRenderbuffers(1, &msaa_depth_buffer);
+    msaa_depth_buffer = 0;
+}
 
 static fb_attachment attachment_of(d3d_surface *s)
 {
@@ -452,6 +460,8 @@ static int same_attachment(fb_attachment a, fb_attachment b)
 static void put_attachment(GLenum point, fb_attachment a)
 {
     if (!a.tex) glFramebufferTexture2D(GL_FRAMEBUFFER, point, GL_TEXTURE_2D, 0, 0);
+    else if (a.samples && a.tex == msaa_depth_tex && msaa_depth_buffer)
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, point, GL_RENDERBUFFER, msaa_depth_buffer);
     else if (a.samples && fb_texture_ms) fb_texture_ms(GL_FRAMEBUFFER, point, GL_TEXTURE_2D, a.tex, 0, a.samples);
     else if (a.target == GL_TEXTURE_3D) glFramebufferTextureLayer(GL_FRAMEBUFFER, point, a.tex, a.level, a.layer);
     else glFramebufferTexture2D(GL_FRAMEBUFFER, point, a.target, a.tex, a.level);
@@ -463,7 +473,10 @@ void d3d_gl_forget_texture(GLuint tex)
     for (int i = 0; i < 4; ++i) if (fb_color[i].tex == tex) fb_color[i].tex = FB_UNKNOWN;
     if (fb_depth.tex == tex) { fb_depth.tex = FB_UNKNOWN; fb_depth_point = FB_UNKNOWN; }
     if (msaa_color_tex == tex) { msaa_color_tex = 0; msaa_samples = 0; }
-    if (msaa_depth_tex == tex) msaa_depth_tex = 0;
+    if (msaa_depth_tex == tex) {
+        msaa_depth_tex = 0;
+        msaa_depth_release();
+    }
 }
 
 /* The main framebuffer holds multisampled attachments: blits must not write through it. */
@@ -490,6 +503,19 @@ static void run_msaa_names(void *args)
     a->color = s[0] ? d3d_surface_gl_texture(s[0], &target, &level, &layer) : 0;
     a->depth = s[1] ? d3d_surface_gl_texture(s[1], &target, &level, &layer) : 0;
     a->depth_point = s[1] && s[1]->fmt && s[1]->fmt->stencil ? GL_DEPTH_STENCIL_ATTACHMENT : GL_DEPTH_ATTACHMENT;
+    msaa_depth_release();
+    if (fb_texture_ms && a->samples && a->depth && s[1]->fmt) {
+        glGenRenderbuffers(1, &msaa_depth_buffer);
+        glBindRenderbuffer(GL_RENDERBUFFER, msaa_depth_buffer);
+        rb_storage_ms(GL_RENDERBUFFER, a->samples, s[1]->fmt->internal, (GLsizei)s[1]->width, (GLsizei)s[1]->height);
+        GLenum e = glGetError();
+        glBindRenderbuffer(GL_RENDERBUFFER, 0);
+        if (!msaa_depth_buffer || e) {
+            void_log("[gl] MSAA depth storage failed: %04X", e);
+            msaa_depth_release();
+            a->samples = 0;
+        }
+    }
     run_set_msaa(a);
 }
 void d3d_gl_set_msaa(d3d_surface *color, d3d_surface *depth, int samples)
@@ -727,12 +753,57 @@ static int ui_active;
 static d3d_device *ui_owner;
 static d3d_surface *ui_backbuffer, *ui_color, *ui_depth, *ui_depth_source;
 
+static uint32_t ui_quad_renderer;          /* game: C2DQuadsRenderer being flushed */
+
+/* CTextLocaleInfo owns the active fonts and their cached glyph atlases. */
+static int ui_font_batch(uint32_t renderer)
+{
+    if (!renderer || !void_vm_readable(renderer, 0xE8)) return 0;
+    uint32_t texture = MEM32(renderer + 0xE4);
+    const uint32_t registry = 0x01022BB8u;
+    if (!texture || !void_vm_readable(registry, 8)) return 0;
+
+    const uint32_t locale_key = 0x2016EB40u;
+    uint32_t buckets = MEM32(registry), end = MEM32(registry + 4);
+    if (end <= buckets || (end - buckets) % 4) return 0;
+    uint32_t slot = buckets + 4 * (locale_key % ((end - buckets) / 4));
+    if (!void_vm_readable(slot, 4)) return 0;
+    uint32_t node = MEM32(slot);
+    while (node && void_vm_readable(node, 12) && MEM32(node + 4) != locale_key)
+        node = MEM32(node);
+    if (!node || !void_vm_readable(node, 12)) return 0;
+    uint32_t locale = MEM32(node + 8);
+    if (!locale || !void_vm_readable(locale, 28) || MEM32(locale) != 0x00E6F67Cu) return 0;
+
+    uint32_t begin = MEM32(locale + 20);
+    end = MEM32(locale + 24);
+    if (end <= begin || (end - begin) % 4 || !void_vm_readable(begin, end - begin)) return 0;
+    for (uint32_t entry = begin; entry < end; entry += 4) {
+        uint32_t font = MEM32(entry);
+        if (!font || !void_vm_readable(font, 32)) continue;
+        uint32_t atlas = MEM32(font + 28); /* CFontInfo::cached CFileTexture */
+        if (atlas && void_vm_readable(atlas, 24) && MEM32(atlas + 20) == texture) return 1;
+    }
+    return 0;
+}
+
+static int ui_filter_for_draw(void)
+{
+    int filter = void_port_filter(1);
+    /* Preserve glyph coverage with the original sampler when using cubic or EASU. */
+    if (filter > 1 && ui_font_batch(ui_quad_renderer)) return -1;
+    return filter;
+}
+
 void sub_00A46BC0_lifted(void);
 void sub_00A46BC0(void)
 {
+    uint32_t previous_renderer = ui_quad_renderer;
+    ui_quad_renderer = g_ecx;
     ++ui_quad_depth;
     sub_00A46BC0_lifted();
     --ui_quad_depth;
+    ui_quad_renderer = previous_renderer;
 }
 
 static void ui_release(d3d_surface **surface)
@@ -2530,7 +2601,8 @@ int d3d_gl_draw(d3d_device *d, uint32_t primitive, uint32_t start_vertex, uint32
     if (vertex_bytes) memcpy(data, up_vertices, vertex_bytes);
     if (index_bytes) memcpy(data + ((vertex_bytes + 15u) & ~15u), up_indices, index_bytes);
     a->ui = ui_quad_depth != 0;
-    a->world_filter = void_port_filter(0); a->ui_filter = void_port_filter(1);
+    a->world_filter = void_port_filter(0);
+    a->ui_filter = ui_filter_for_draw();
     a->fog = void_port_fog();
     a->blur = void_port_battle_blur();
     a->sharpness = void_port_sharpness();
@@ -2672,6 +2744,24 @@ static void aa_release(void)
     aa_tex = 0; aa_w = aa_h = 0; aa_internal = 0;
 }
 
+static void msaa_resolve_depth(d3d_surface *src)
+{
+    if (!msaa_depth_buffer || src->gl != msaa_depth_tex) return;
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, read_fbo);
+    attach(GL_READ_FRAMEBUFFER, msaa_depth_point, NULL);
+    glFramebufferRenderbuffer(GL_READ_FRAMEBUFFER, msaa_depth_point, GL_RENDERBUFFER, msaa_depth_buffer);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw_fbo);
+    attach(GL_DRAW_FRAMEBUFFER, msaa_depth_point, src);
+    glDisable(GL_SCISSOR_TEST);
+    glDepthMask(GL_TRUE);
+    glStencilMask(0xFF);
+    GLbitfield mask = GL_DEPTH_BUFFER_BIT | (src->fmt->stencil ? GL_STENCIL_BUFFER_BIT : 0);
+    glBlitFramebuffer(0, 0, (GLint)src->width, (GLint)src->height, 0, 0, (GLint)src->width, (GLint)src->height,
+                      mask, GL_NEAREST);
+    GLenum e = glGetError();
+    if (e) void_log("[gl] MSAA depth resolve failed: %04X", e);
+}
+
 static void gl_blit_ex(d3d_surface *src, const uint32_t *sr, d3d_surface *dst, const uint32_t *dr, uint32_t filter,
     int smooth)
 {
@@ -2711,6 +2801,7 @@ static void gl_blit_ex(d3d_surface *src, const uint32_t *sr, d3d_surface *dst, c
         dr = target_rect;
     }
     src = source; dst = target;
+    if (depth) msaa_resolve_depth(src);
     uint32_t xt_rect_out[4];
     GLuint xt_target = depth ? 0 : xt_blit_target(dst, dr, xt_rect_out);
     if (xt_target) { dr = xt_rect_out; slot = -1; filter = 2; }
@@ -2982,6 +3073,7 @@ static void gl_device_destroy(void)
     fb_depth_point = FB_UNKNOWN;
     msaa_color_tex = msaa_depth_tex = 0;
     msaa_samples = 0;
+    msaa_depth_release();
     fb_depth_w = fb_depth_h = 0;
     memset(fb_bufs, 0, sizeof fb_bufs);
     fb_buf_count = -1;

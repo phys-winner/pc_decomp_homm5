@@ -23,9 +23,11 @@ V,P,I,U,B = None,C.c_void_p,C.c_int,C.c_uint,C.c_ubyte
 APIS = [
  ("glGenFramebuffers","void","GLsizei,GLuint *",V,[I,C.POINTER(U)]),
  ("glDeleteFramebuffers","void","GLsizei,const GLuint *",V,[I,C.POINTER(U)]),
+ ("glDeleteRenderbuffers","void","GLsizei,const GLuint *",V,[I,C.POINTER(U)]),
  ("glBindFramebuffer","void","GLenum,GLuint",V,[U,U]),
  ("glFramebufferTexture2D","void","GLenum,GLenum,GLenum,GLuint,GLint",V,[U,U,U,U,I]),
  ("glFramebufferTextureLayer","void","GLenum,GLenum,GLuint,GLint,GLint",V,[U,U,U,I,I]),
+ ("glFramebufferRenderbuffer","void","GLenum,GLenum,GLenum,GLuint",V,[U,U,U,U]),
  ("glReadBuffer","void","GLenum",V,[U]),
  ("glDrawBuffers","void","GLsizei,const GLenum *",V,[I,C.POINTER(U)]),
  ("glCheckFramebufferStatus","GLenum","GLenum",U,[U]),
@@ -61,7 +63,7 @@ def fixture(candidate):
                   "static int render_xt_blur;\nstatic void xt_canvas_resolve(void) {}\n")
     functions = source[start:stop] + "\n" + smooth_off + "\n".join(function(source, signature) for signature in (
         "static void attach(", "static GLenum depth_attachment(", "void d3d_gl_bind_targets(", "static int fbo_multisampled(",
-        "static void gl_blit_ex(", "static void gl_blit("))
+        "static void msaa_resolve_depth(", "static void gl_blit_ex(", "static void gl_blit("))
     declarations, assignments = [], []
     for index,(name,ret,args,_,_) in enumerate(APIS):
         declarations += [f"static {ret} (*p_{name})({args});",f"#define {name} p_{name}"]

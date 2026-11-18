@@ -1,4 +1,4 @@
-"""Compare host army cells with the original 1.6/2.1 troop handlers.
+"""Check 1.6/2.1 town cells and compare hero cells with the original troop handlers.
 
 The independent fixture uses the native named Army group, not the adjacent
 Inventory group. The complete original troop handler must resolve both endpoints
@@ -39,14 +39,20 @@ static int void_vm_readable(uint32_t p,uint32_t n) {return p>=0x100&&(uint64_t)p
 static uint32_t read32(uint32_t p) {return void_vm_readable(p,4)?MEM32(p):0;}
 static int same_screen(void) {return 1;}
 static int ui_idle(void) {return 1;}
-static int town_army_ready(void) {assert(0);return 0;}
-static uint32_t object_method(uint32_t self,unsigned slot) {assert(self==0x80000||self==0x80100);assert(slot==8);return 1;}
+static int town_army_ready(void) {return gesture.kind==SCREEN_TOWN;}
+static uint32_t object_method(uint32_t self,unsigned slot) {
+    if (self==0x41100) {assert(slot==0);return 0xE4000;}
+    assert(self==0x80000||self==0x80100);assert(slot==8);return 1;
+}
 static uint32_t object_query(uint32_t self,unsigned slot) {
+    if (self==0x41000) {assert(slot==0x90);return 0x41100;}
     assert(self==0x40000||self==0x40100);assert(slot==ARMY_SLOT);
     return self==0x40000?0x80000:0x80100;
 }
 static int void_dispatch_find(uint32_t va) {assert(va==TRANSFER_VA);return 1;}
 static uint32_t void_call_guest_this(uint32_t va,uint32_t self,unsigned n,const uint32_t *args) {
+    if (va==0xE4000) {assert(self==0x41100&&n==1&&args[0]<2);return 0x40000+0x100*args[0];}
+    if (va==TOWN_ARMY) {assert(self==gesture.screen&&n==1&&(args[0]==1||args[0]==2));return args[0]==1?0x80100:0x80000;}
     assert(va==TRANSFER_VA&&self==gesture.screen&&n==0&&!args);return 1;
 }
 static uint32_t ui_pick(uint32_t screen,float x,float y) {(void)x;(void)y;assert(screen==gesture.screen);return picked;}
@@ -75,6 +81,33 @@ static void native_pick(uint32_t source,uint32_t target) {
     MEM32(g_esp+4)=source;MEM32(g_esp+8)=0x90010;
     MEM32(g_esp+12)=target;MEM32(g_esp+16)=0x90020;
     RESOLVE();assert(g_esp==0x10018&&g_fp_sp==128&&g_fp_top==0);
+}
+static void town_rows(void) {
+    gesture.kind=SCREEN_TOWN;
+    MEM32(gesture.screen)=TOWN_VTABLE;
+    MEM32(gesture.screen+TOWN_VIEW)=0x41000;
+    MEM32(gesture.screen+TOWN_COMMAND)=0xA0000;MEM32(gesture.screen+TOWN_WORLD)=0xA1000;
+    /* The original town drop compares both IWindow arrays directly at index*4. */
+    MEM32(gesture.screen+TOWN_ROW0)=0x72000;MEM32(gesture.screen+TOWN_ROW1)=0x72100;
+    MEM32(gesture.screen+TOWN_PORTRAIT0)=0xD1000;MEM32(gesture.screen+TOWN_PORTRAIT1)=0xD2000;
+    for(unsigned row=0;row<2;++row) {
+        uint32_t cells=0x72000+row*0x100;
+        troop_cell cell;
+        for(unsigned i=0;i<7;++i) MEM32(cells+4*i)=cell_window(row,i);
+        for(unsigned i=0;i<7;++i) {
+            uint32_t window=cell_window(row,i);
+            assert(troop_cell_window(window,&cell));
+            assert(cell.window==window&&cell.row==cells&&cell.index==i&&cell.stride==4);
+            assert(cell.owner==0x40000+row*0x100&&cell.army==0x80000+row*0x100);
+            assert(cell.command==0xA0000&&cell.world==0xA1000&&!cell.policy);
+            assert(troop_row_window(&cell,i)==window);
+        }
+        picked=0xD1000+row*0x1000;
+        assert(troop_portrait_at(10,10,&cell)&&cell.row==cells&&cell.index==0);
+    }
+    troop_cell cell;
+    assert(!troop_cell_window(0xF0000,&cell));
+    puts("PASS both town rows: direct IWindow slots, owner/army/command for all fourteen cells, portraits");
 }
 int main(void) {
     MEM32(gesture.screen)=HERO_VTABLE;
@@ -140,6 +173,7 @@ int main(void) {
     }
     troop_cell cell;native_pick(0xF0000,cell_window(0,6));assert(!native_factories&&!troop_cell_window(0xF0000,&cell));++cases;
     printf("PASS %u original troop-handler/host cases: Army7x12, Inventory10 equipment+3backpack rejected, both selectors/rows, native controller args, portraits, RET16/x87 ABI\n",cases);
+    town_rows();
     return 0;
 }
 """
@@ -159,6 +193,10 @@ ENGINES = {
         "CONFIG": 0x1B0, "SELECTOR": 0x4B0,
         "PORTRAIT0": 0x4E0, "PORTRAIT1": 0x5D0,
         "ARMY_SLOT": 0x48, "TRANSFER_VA": 0x6784B0,
+        # Original town drop handler 0x5E0700.
+        "TOWN_VTABLE": 0xE08B1C, "TOWN_ARMY": 0x5DF980,
+        "TOWN_ROW0": 0x2A0, "TOWN_ROW1": 0x2AC, "TOWN_VIEW": 0x218,
+        "TOWN_COMMAND": 0x21C, "TOWN_WORLD": 0x214, "TOWN_PORTRAIT0": 0x298, "TOWN_PORTRAIT1": 0x29C,
     },
     "hof": {
         "resolver": 0x67C440, "borrow": 0x81C380, "split": 0x9FE8A0,
@@ -170,6 +208,10 @@ ENGINES = {
         "CONFIG": 0x1AC, "SELECTOR": 0x4AC,
         "PORTRAIT0": 0x4DC, "PORTRAIT1": 0x5CC,
         "ARMY_SLOT": 0x18, "TRANSFER_VA": 0x67A490,
+        # Original town drop handler 0x5E56A0.
+        "TOWN_VTABLE": 0xDDEEB8, "TOWN_ARMY": 0x5E48F0,
+        "TOWN_ROW0": 0x29C, "TOWN_ROW1": 0x2A8, "TOWN_VIEW": 0x214,
+        "TOWN_COMMAND": 0x218, "TOWN_WORLD": 0x210, "TOWN_PORTRAIT0": 0x294, "TOWN_PORTRAIT1": 0x298,
     },
 }
 
@@ -184,7 +226,8 @@ class LegacyArmyRowsTest(unittest.TestCase):
         # The two-army screen helpers come first: a hero screen is none of them (-1 falls through).
         layout = text[text.index("#define ARMY_HANDLER_SLOT"):text.index("static int army_screen(")]
         host = layout + "\n".join(function(text, signature) for signature in (
-            "static uint32_t virtual_base(", "static int army_screen(", "static uint32_t army_row(",
+            "static uint32_t virtual_base(", "static uint32_t town_army_row(", "static uint32_t town_army_portrait(",
+            "static int army_screen(", "static uint32_t army_row(",
             "static int army_cell_window(", "static int army_portrait_at(", "static int troop_cell_window(",
             "static uint32_t troop_row_window(", "static int troop_portrait_at(",
         ))

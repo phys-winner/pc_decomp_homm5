@@ -55,6 +55,9 @@ public class HardwareInputCheck {
     static class TextConnection {boolean sendKeyEvent(KeyEvent e){return true;}}
     TextConnection textConnection;
     int helps;
+    boolean firstFrameShown;
+    static class ArmyActions {int offers;void offerForMouse(){offers++;}}
+    final ArmyActions armyActions=new ArmyActions();
     HardwareInput hardware=new HardwareInput();
     boolean hasWindowFocus(){return focus;}
     void showGamepadHelp(){helps++;hardware.release();}
@@ -123,6 +126,9 @@ public class HardwareInputCheck {
         focus=false;frame(16);assert !buttons.get(0)&&hardware.held.isEmpty()&&hardware.pads.isEmpty();focus=true;
         padKey(KeyEvent.KEYCODE_BUTTON_SELECT,true);assert helps==1;
         hardware.release();assert touch.pending==null;
+        hardware.onInputDeviceAdded(8);assert armyActions.offers==0;
+        firstFrameShown=true;hardware.onInputDeviceAdded(8);hardware.onInputDeviceChanged(8);
+        assert armyActions.offers==2; // Actual ArmyActions independently checks whether a mouse is present.
         System.out.println("PASS hardware adapter: keyboard mapping, held references, press-time chords, repeated keys, mouse buttons/wheel, radial speed, precision, drift/NaN, camera, hat/key dedup, trigger dedup, unplug and focus release");
     }
     /* ACTUAL_CODE */

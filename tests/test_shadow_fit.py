@@ -319,6 +319,15 @@ int main(void)
     pass_once(n);
     CHECK(MEM8(fit + 0x80) == 0, "the same region keeps the texture: %d", MEM8(fit + 0x80));
 
+    float stable_u0 = getf(U0), stable_v0 = getf(V0);
+    void_shadow_texture_loaded();
+    void_shadow_texture_loaded();
+    pass_once(n);
+    CHECK(MEM8(fit + 0x80) == 1, "deferred textures refresh the same shadow region");
+    CHECK(getf(U0) == stable_u0 && getf(V0) == stable_v0, "texture loads keep the shadow projection");
+    pass_once(n);
+    CHECK(MEM8(fit + 0x80) == 0, "the loads are consumed by one shadow pass");
+
     /* ToE 3.1 and 1.6: the caller's eighth argument forces a refit; 2.1 has no such argument. */
     MEM8(esp + 0x1C) = 1;
     pass_once(n);
@@ -421,7 +430,8 @@ class ShadowFitTest(unittest.TestCase):
                     shutil.rmtree(out, ignore_errors=True)
                 addresses = load_contract(edition)["addresses"] if edition != "toe" else {}
                 mapped = {name: int(addresses.get(name, name), 16) for name in GLOBALS}
-                self.assertNotIn("HOMM5_LEGACY_UI", adapted)
+                if edition != "toe":
+                    self.assertNotIn("HOMM5_LEGACY_UI", adapted)
                 for value in mapped.values():
                     self.assertIn("0x%08X" % value, adapted)
                 defines = {"LINEAR": mapped["00F44E06"], "COUNTER": mapped["00F2D3A8"],

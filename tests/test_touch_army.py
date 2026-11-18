@@ -5,7 +5,7 @@ from test_touch_troop_split import fixture
 
 
 EXTRA = r'''
-static int army_test_mode,army_pending,army_sent,army_denied,army_mutate_validate,army_same_player;
+static int army_test_mode,army_pending,army_sent,army_denied,army_mutate_validate,army_same_player,army_ui_only;
 static uint32_t army_args[6],army_amount,army_source_min,army_target_min;
 static uint32_t army_stack(unsigned row,unsigned index) { return 0xB0000+row*0x1000+index*0x100; }
 static void army_set(unsigned row,unsigned index,uint32_t type,uint32_t count) {
@@ -21,12 +21,15 @@ static uint32_t army_spy(uint32_t va,uint32_t self,int n,const uint32_t *args) {
     if(va==0x410028) {
         assert(self==0x6044&&n==2);float x=MEMF(args[0]),y=MEMF(args[0]+4);
         if(troop_overlay)return 0x6900;
+        if(army_ui_only&&y<370&&x<130)return 0xD9000;
         if(x>700&&x<800&&y>300&&y<450)return y>370?0xB8100:0xB8000;
     }
     if(va==0x813DE0) {
         float x=MEMF(args[0]),y=MEMF(args[0]+4);
+        if(army_ui_only&&y<370)return 0;
         if(x>700&&x<800&&y>300&&y<450)return 0;
     }
+    if(va==0x470118) {assert(self==0xD9000&&!n);return 0x80000;}
     if(va==0x786E20 || va==0x6BD740) {
         if(va==0x786E20){assert(self==0xA4400&&g_edx==0xA4500&&n==6);memcpy(troop_args,args,24);}
         else {assert(self==0x10140&&!n&&MEM32(self)==0xA4400&&MEM32(self+4)==0xA4500&&MEM32(self+32)==77);memcpy(troop_args,ADDR(self+8),24);}
@@ -56,8 +59,8 @@ static uint32_t army_spy(uint32_t va,uint32_t self,int n,const uint32_t *args) {
 
 CASES = r'''
 static void army_reset(int hero) {
-    troop_reset();army_test_mode=army_same_player=1;
-    army_pending=army_sent=army_denied=army_mutate_validate=0;army_target_min=0;
+    troop_reset();army_test_mode=army_same_player=1;army_actions_enabled=0;
+    army_pending=army_sent=army_denied=army_mutate_validate=army_ui_only=0;army_target_min=0;
     MEM32(0xE4002C)=0x7868B0;MEM32(0xE40030)=0x7868C0;
     MEM32(0x42A0)=0xB8000;MEM32(0x42A4)=0xB8100;
     MEM32(0xB8000)=MEM32(0xB8100)=0xAD400;
@@ -109,7 +112,7 @@ static void army_tests(void) {
         assert(army_sent==1&&army_count(0,1)==9&&army_count(1,0)==23);
         army_reset(hero);army_set(0,1,5,7);army_set(0,2,6,3);source=army_cell(0,0);target=army_cell(1,0);
         army_start(ARMY_TRANSFER,&source,&target,0);army_finish();
-        assert(army_sent==3&&army_count(0,2)==1&&army_count(1,0)==30&&army_count(1,1)==2);
+        assert(army_sent==3&&army_count(0,0)==1&&!army_count(0,1)&&!army_count(0,2)&&army_count(1,0)==29&&army_count(1,1)==3);
         army_reset(hero);army_set(0,1,5,7);army_set(0,2,6,3);source=army_cell(0,0);
         army_start(ARMY_COLLECT,&source,&source,0);army_finish();
         assert(army_sent==1&&army_count(0,0)==30&&!army_count(0,1)&&army_count(0,2)==3);
@@ -151,6 +154,65 @@ static void army_tests(void) {
         army_reset(hero);army_set(0,0,5,1);source=army_cell(0,0);target=army_cell(1,0);
         army_start(ARMY_TRANSFER,&source,&target,1);assert(!army_sent&&army_count(0,0)==1);
     }
+    for(int hero=0;hero<2;++hero) {
+        /* Reserve the initiating stack, not the last type iterated. Conflicts stay untouched. */
+        army_reset(hero);army_set(0,1,6,9);army_set(0,2,7,8);
+        for(unsigned i=0;i<7;++i)army_set(1,i,i==4?6:100+i,10);
+        source=army_cell(0,0);target=army_cell(1,0);
+        army_start(ARMY_TRANSFER,&source,&target,0);army_finish();
+        assert(army_sent==1&&army_count(0,0)==23&&!army_count(0,1)&&army_count(0,2)==8&&army_count(1,4)==19);
+        army_reset(hero);source=army_cell(0,0);target=army_cell(1,5);
+        army_start(ARMY_MOVE,&source,&target,1);army_finish();
+        assert(army_sent==1&&army_args[4]==5&&army_count(0,0)==1&&army_count(1,5)==22&&!army_count(1,0));
+        for(unsigned action=0;action<3;++action) {
+            army_reset(hero);
+            /* The cell stores IWindow, not CWindow. The fixture's RTTI cast already maps -0xF8;
+               real creature buttons may use another virtual-base delta (0x160 in the live trace). */
+            MEM32(0xAD408)=0xD8100;MEM8(0xD8100)=0x2B; /* An IWindow event adjustor, not a getter. */
+            MEM32(0xAD608)=0xD8000;MEM8(0xD8000)=0x8B;MEM8(0xD8001)=0x81;
+            MEM32(0xD8002)=0xF0;MEM8(0xD8006)=0xC3;
+            for(unsigned r=0;r<2;++r)for(unsigned i=0;i<7;++i) {
+                uint32_t w=0x80000+r*0x1000+i*0x100-0xF8,p=0xD0000+r*0x1000+i*0x100;
+                MEM32(w)=0xAD600;MEM32(w+0xF0)=p;MEM8(p+0x70)=1;MEMF(p+0xA4)=MEMF(p+0xA8)=64;
+                MEMF(w+0x64)=70.0f+64*i;MEMF(w+0x68)=320.0f+64*r;
+            }
+            source=army_cell(0,0);
+            assert(!army_actions_select(&source,100,400)&&!army_selection.cell.window); /* Default off. */
+            army_actions_enabled=1;
+            event(TOUCH_TAP,100,400);event(TOUCH_END,100,400);
+            assert(army_selection.cell.window==source.window&&!army_sent&&!dnd_held(0x60000));
+            assert(!dnd_downs&&!dnd_ups&&!dnd_pickups);
+            if(!hero) {
+                /* The upper row can be hit through a portrait child without a DnD claim. */
+                army_ui_only=1;
+                MEM32(0xD9000)=0xD9100;MEM32(0xD91D8)=0x470118;
+                event(TOUCH_BEGIN,100,400);
+                assert(gesture.ui&&!gesture.dnd);
+                event(TOUCH_TAP,100,400);event(TOUCH_END,100,400);
+                assert(army_selection.cell.window==source.window&&!dnd_pickups);
+                army_ui_only=0;
+                event(TOUCH_BEGIN,100,400);event(TOUCH_DOUBLE_TAP,100,400);event(TOUCH_END,100,400);
+                assert(army_selection.cell.window==source.window&&!dnd_doubles&&!dnd_ups&&!dnd_pickups);
+            }
+            uint32_t token=army_selection.generation;
+            army_actions_command(token+1,action);assert(!army_sent);
+            void_touch_event command={.kind=TOUCH_ARMY_ACTION,.x=(float)token,.y=(float)action,.scale=1};
+            void_touch_engine_event(&command);
+            assert(army_sent==1&&army_pending&&!army_selection.cell.window);army_finish();
+            if(action==0)assert(army_count(0,0)==22&&army_count(0,1)==1);
+            else if(action==1)assert(army_count(0,0)==12&&army_count(0,1)==11);
+            else {uint32_t total=0;for(unsigned i=0;i<7;++i){uint32_t n=army_count(0,i);assert(n==3||n==4);total+=n;}assert(total==23);}
+            army_actions_command(token,action);assert(!army_pending); /* Consumed token. */
+        }
+    }
+    army_reset(0);army_set(0,0,5,1);army_actions_enabled=1;
+    event(TOUCH_TAP,100,400);event(TOUCH_END,100,400);
+    assert(!army_selection.cell.window&&!dnd_downs&&!dnd_ups&&!dnd_pickups&&army_count(0,0)==1);
+    event(TOUCH_BEGIN,100,400);event(TOUCH_DOUBLE_TAP,100,400);event(TOUCH_END,100,400);
+    assert(!army_selection.cell.window&&!dnd_doubles&&!dnd_ups&&!dnd_pickups&&army_count(0,0)==1);
+    army_reset(0);army_actions_enabled=1;
+    event(TOUCH_PAN,900,500);event(TOUCH_END,900,500);
+    assert(army_sent==1&&dnd_pickups==1);army_finish();
     army_reset(1);army_same_player=0;assert(!troop_cell_window(0x80000,&source));
     army_reset(1);MEM32(0x41BC)=2;assert(!troop_cell_window(0x80000,&source));
     army_reset(1);MEM8(0x41B8)=0;assert(!troop_cell_window(0x81000,&source));
@@ -163,6 +225,8 @@ static void army_tests(void) {
 
 def army_fixture():
     source = fixture().replace('static uint32_t troop_call(', EXTRA+'\nstatic uint32_t troop_call(', 1)
+    source = source.replace('        if(args[0]==0x6810',
+                            '        if((args[0]>=0x80000&&args[0]<0x82000)||args[0]==0xD9000)return 0;\n        if(args[0]==0x6810', 1)
     source = source.replace('    if(va==0x410028) {assert(self==0x6044',
                             '    {uint32_t out=army_spy(va,self,n,args);if(out!=UINT32_MAX)return out;}\n    if(va==0x410028) {assert(self==0x6044', 1)
     source = source.replace('int main(void) {\n    troop_tests();', 'static int legacy_main(void) {\n    troop_tests();', 1)
@@ -181,6 +245,8 @@ class ArmyTest(unittest.TestCase):
             ('acknowledgement','if (army_batch.waiting) {','if (0 && army_batch.waiting) {'),
             ('custom_minimum','destination>=target_minimum','destination>=target_minimum*0u'),
             ('single_transfer','army_batch.limit=source->index+1;','army_batch.limit=7;'),
+            ('army_action_cwindow','uint32_t window=void_call_guest(0x00D119FCu,5,cast,0);',
+             '(void)cast;uint32_t window=cell->window;'),
         ):
             self.assertIn(before, source)
             with self.subTest(name=name), self.assertRaises(AssertionError) as error:

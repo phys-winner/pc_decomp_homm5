@@ -3,9 +3,11 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
-typedef unsigned GLuint,GLenum;typedef int GLint,GLsizei;
+typedef unsigned GLuint,GLenum,GLbitfield;typedef int GLint,GLsizei;
 enum {GL_TEXTURE_2D=0xDE1,GL_TEXTURE_3D=0x806F,GL_FRAMEBUFFER=0x8D40,GL_COLOR_ATTACHMENT0=0x8CE0,
- GL_DEPTH_ATTACHMENT=0x8D00,GL_DEPTH_STENCIL_ATTACHMENT=0x821A,GL_FRAMEBUFFER_COMPLETE=0x8CD5,GL_NONE=0};
+ GL_DEPTH_ATTACHMENT=0x8D00,GL_DEPTH_STENCIL_ATTACHMENT=0x821A,GL_FRAMEBUFFER_COMPLETE=0x8CD5,GL_NONE=0,
+ GL_READ_FRAMEBUFFER=0x8CA8,GL_DRAW_FRAMEBUFFER=0x8CA9,GL_RENDERBUFFER=0x8D41,GL_SCISSOR_TEST=0xC11,
+ GL_DEPTH_BUFFER_BIT=0x100,GL_STENCIL_BUFFER_BIT=0x400,GL_NEAREST=0x2600,GL_TRUE=1};
 #define FB_UNKNOWN 0xFFFFFFFFu
 typedef struct {int internal,stencil;} d3d_format;
 typedef struct d3d_texture {GLuint gl;GLenum target;uint32_t levels,lod;} d3d_texture;
@@ -13,9 +15,11 @@ typedef struct {const d3d_format *fmt;uint32_t width,height,format;GLuint gl;d3d
 typedef struct {void *textures[20];uint32_t ss[20][14];} d3d_state;
 typedef struct {d3d_state st;d3d_surface *ds,*rt[4],*backbuffer;int fbo_dirty;uint32_t frame;} d3d_device;
 static GLuint fbo,unit_tex[32];static GLenum unit_target[32];static uint64_t draw_calls;
+static GLuint read_fbo=2,draw_fbo=3,draw_depth,read_depth_buffer;
 static d3d_surface *trace_rt;
 static unsigned api_calls,queries,logs,alias_logs,sample_logs,end_logs;
 static GLuint attached_depth,attached_stencil;
+static unsigned depth_resolves,depth_deletes;
 static char last_log[2048];
 static int tracing(d3d_device *d) {(void)d;return 0;}
 static void trace_dump(d3d_device *d,d3d_surface *s,const char *message) {(void)d;(void)s;(void)message;}
@@ -29,7 +33,10 @@ static GLuint d3d_surface_gl_texture(d3d_surface *s,GLenum *target,GLint *level,
     *target=GL_TEXTURE_2D;*level=(GLint)s->level;*layer=(GLint)s->face;return s->container?s->container->gl:s->gl;
 }
 static void glGenFramebuffers(GLsizei n,GLuint *name) {assert(n==1);*name=1;++api_calls;}
-static void glBindFramebuffer(GLenum target,GLuint name) {assert(target==GL_FRAMEBUFFER&&name==1);++api_calls;}
+static void glBindFramebuffer(GLenum target,GLuint name) {
+    assert((target==GL_FRAMEBUFFER&&name==1)||(target==GL_READ_FRAMEBUFFER&&name==2)||(target==GL_DRAW_FRAMEBUFFER&&name==3));
+    ++api_calls;
+}
 static void glFramebufferTexture2D(GLenum target,GLenum point,GLenum texture_target,GLuint name,GLint level) {
     assert(target==GL_FRAMEBUFFER&&texture_target==GL_TEXTURE_2D&&level==0);++api_calls;
     if(point==GL_DEPTH_ATTACHMENT)attached_depth=name;
@@ -38,11 +45,31 @@ static void glFramebufferTexture2D(GLenum target,GLenum point,GLenum texture_tar
 static void glFramebufferTextureLayer(GLenum target,GLenum point,GLuint name,GLint level,GLint layer) {
     (void)target;(void)point;(void)name;(void)level;(void)layer;assert(!"unexpected layered attachment");
 }
+static void glFramebufferRenderbuffer(GLenum target,GLenum point,GLenum kind,GLuint name) {
+    assert(kind==GL_RENDERBUFFER&&point==GL_DEPTH_STENCIL_ATTACHMENT&&name==91);
+    if(target==GL_READ_FRAMEBUFFER)read_depth_buffer=name;
+    else {assert(target==GL_FRAMEBUFFER);attached_depth=attached_stencil=name;}
+}
+static void glDeleteRenderbuffers(GLsizei count,const GLuint *names) {assert(count==1&&*names==91);++depth_deletes;}
+static void attach(GLenum target,GLenum point,d3d_surface *s) {
+    assert(point==GL_DEPTH_STENCIL_ATTACHMENT);
+    if(target==GL_DRAW_FRAMEBUFFER){assert(s);draw_depth=s->gl;}else assert(target==GL_READ_FRAMEBUFFER&&!s);
+}
+static void glDisable(GLenum state) {assert(state==GL_SCISSOR_TEST);}
+static void glDepthMask(int on) {assert(on==GL_TRUE);}
+static void glStencilMask(GLuint mask) {assert(mask==0xFF);}
+static GLenum glGetError(void) {return 0;}
+static void glBlitFramebuffer(GLint x0,GLint y0,GLint w,GLint h,GLint u0,GLint v0,GLint dw,GLint dh,GLbitfield mask,GLenum filter) {
+    assert(!x0&&!y0&&!u0&&!v0&&w==dw&&h==dh&&w==600&&h==270);
+    assert(mask==(GL_DEPTH_BUFFER_BIT|GL_STENCIL_BUFFER_BIT)&&filter==GL_NEAREST);
+    assert(read_depth_buffer==91&&draw_depth==120);++depth_resolves;
+}
 static void glDrawBuffers(GLsizei n,const GLenum *points) {assert(n>=1&&points);++api_calls;}
 static GLenum glCheckFramebufferStatus(GLenum target) {assert(target==GL_FRAMEBUFFER);++queries;return GL_FRAMEBUFFER_COMPLETE;}
 /* ACTUAL_ATTACHMENTS */
 /* ACTUAL_DEPTH_POINT */
 /* ACTUAL_FORGET */
+/* ACTUAL_DEPTH_RESOLVE */
 /* ACTUAL_TARGETS */
 /* ACTUAL_HELPERS */
 static void retain(d3d_device *d,d3d_surface *depth) {
@@ -98,6 +125,13 @@ int main(void) {
     d3d_request_depth_trace();depth_trace_present(&d);
     assert(depth_trace_remaining==120&&!depth_trace_draws&&!depth_trace_aliases);
     assert(api_calls==before&&queries==q);
+    d3d_surface swap_depth={&stencil,600,270,75,120,NULL,0,0};
+    msaa_depth_tex=swap_depth.gl;msaa_depth_buffer=91;msaa_depth_point=GL_DEPTH_STENCIL_ATTACHMENT;
+    fb_attachment msaa=attachment_of(&swap_depth);msaa.samples=4;
+    put_attachment(msaa_depth_point,msaa);assert(attached_stencil==91);
+    msaa_resolve_depth(&depth);assert(!depth_resolves);
+    msaa_resolve_depth(&swap_depth);assert(depth_resolves==1);
+    d3d_gl_forget_texture(swap_depth.gl);assert(depth_deletes==1&&!msaa_depth_buffer);
     puts("PASS actual depth diagnostic: active PS/VS and storage identity, logical DS/unknown/deleted exclusions; 120 frames/16 records, zero-hit coverage, coalesced requests; no GL calls or attachment mutations");
     return 0;
 }

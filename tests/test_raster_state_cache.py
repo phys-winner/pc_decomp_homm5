@@ -109,6 +109,7 @@ static uint32_t aa_w,aa_h;
 static GLint aa_downsample(d3d_surface *s,const uint32_t *sr,d3d_surface *t,const uint32_t *dr,uint32_t f) { (void)s;(void)sr;(void)t;(void)dr;(void)f;return 0; }
 static GLuint xt_blit_target(d3d_surface *s,const uint32_t *r,uint32_t *o) { (void)s;(void)r;(void)o;return 0; }
 static int fbo_multisampled(void) { return 0; }
+static void msaa_resolve_depth(d3d_surface *s) { (void)s; }
 static void xt_canvas_resolve(void) {}
 static void glFramebufferTexture2D(GLenum a,GLenum b,GLenum c,GLuint d,GLint e) { (void)a;(void)b;(void)c;(void)d;(void)e; }
 static void glReadBuffer(GLenum a) { (void)a; }

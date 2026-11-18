@@ -29,6 +29,10 @@ public class LaunchDimmingCheck {
   List<View> children=new ArrayList<>();void addView(View v,LayoutParams p){children.add(v);}void removeView(View v){children.remove(v);}}
  static class android {static class util {static class Log {
   static List<String> lines=new ArrayList<>();static int i(String tag,String s){lines.add(s);return 0;}}}}
+ static class LauncherHooks {static final String EXTRA_HANDOVER="homm5.launcherHandover";}
+ boolean handover=true;
+ class Intent {boolean getBooleanExtra(String key,boolean fallback){assert key.equals(LauncherHooks.EXTRA_HANDOVER)&&!fallback;return handover;}}
+ Intent getIntent(){return new Intent();}
  final Handler handler=new Handler();final Window window=new Window();FrameLayout game=new FrameLayout();
  private long launchStarted=SystemClock.now,launchDimStarted;private boolean launchDimming;private View launchCurtain;
  int opaqueCalls;boolean setTranslucent(boolean translucent){assert !translucent;opaqueCalls++;return true;}
@@ -68,6 +72,11 @@ public class LaunchDimmingCheck {
    SystemClock.now=1000;a=new LaunchDimmingCheck();a.beginLaunchDimming();a.coverLaunchDimming();
    a.advance(1217);same(a.window.p.dimAmount,sdk>=27?189/255f:0);a.advance(2000);assert !a.launchDimming;
   }
+  LaunchDimmingCheck direct=new LaunchDimmingCheck();direct.handover=false;
+  direct.beginLaunchDimming();direct.coverLaunchDimming();
+  assert !direct.launchDimming&&direct.handler.queue.isEmpty()&&direct.game.children.isEmpty();
+  assert direct.window.changes==0&&direct.opaqueCalls==0;direct.advance(9000);
+  same(direct.window.p.alpha,1);same(direct.window.p.dimAmount,0);
   assert android.util.Log.lines.stream().anyMatch(s->s.contains("dim-end-complete"));
   System.out.println("PASS compositor timing, original alpha steps, root replacement, clock catch-up and all cancellations");
  }
@@ -132,6 +141,12 @@ class LaunchDimmingTest(unittest.TestCase):
         self.assertEqual(old["android:windowDisablePreview"], "true")
         self.assertEqual(new["android:windowDisablePreview"], "true")
         self.assertEqual(new["android:windowBackground"], "@android:color/transparent")
+        direct = {n.attrib["name"]: n.text for n in base.find("style[@name='GameDirect']")}
+        self.assertEqual(direct["android:windowIsTranslucent"], "false")
+        self.assertEqual(direct["android:windowBackground"], "@android:color/black")
+        create = function(self.source, "    @Override protected void onCreate(Bundle state)")
+        self.assertLess(create.index('setTheme('), create.index('super.onCreate(state);'))
+        self.assertIn('!getIntent().getBooleanExtra(LauncherHooks.EXTRA_HANDOVER, false)', create)
         alpha = ET.parse(app / "res/anim/game_launch_dim.xml").getroot()
         self.assertEqual((alpha.get(ANDROID+"fromAlpha"), alpha.get(ANDROID+"toAlpha"), alpha.get(ANDROID+"duration")), ("0", "1", "290"))
         manifest = ET.parse(app / "AndroidManifest.xml").getroot()

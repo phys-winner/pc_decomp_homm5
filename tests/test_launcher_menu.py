@@ -29,6 +29,8 @@ static int void_vm_writable(uint32_t a,uint32_t n) {return void_vm_readable(a,n)
 static uint32_t read32(uint32_t a) {return void_vm_readable(a,4)?MEM32(a):0;}
 static uint32_t mock_screen=0x1000, mock_db=0x2000;
 static uint32_t current_screen(void) {return mock_screen;}
+enum {SCREEN_MENU};
+static int screen_kind(uint32_t s) {assert(s==mock_screen);return SCREEN_MENU;}
 static int originals,confirms,returns,accepts,messages,clones;
 static int helps,switches,switch_request,skips;
 void void_android_touch_hint(int id) {assert(id==0);skips++;}

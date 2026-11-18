@@ -9,9 +9,14 @@ extern int void_android_display_size(int *w, int *h) __attribute__((weak));
 
 static pthread_mutex_t scale_lock = PTHREAD_MUTEX_INITIALIZER;
 static int scale_percent = 100;
+/* Java publishes physical window/cutout bounds; only the guest UI thread uses
+   the applied insets. Nothing changes the D3D viewport, camera or hit-test ABI. */
+static struct { int width, height, edge[4]; } safe_pending, safe_current;
+static float safe_active[4];
+static uint32_t safe_root;
 static uint32_t viewport_scratch;
 static struct {
-    uint32_t screen, root;
+    uint32_t screen, root, type;
     float width, height, actual_x, actual_y;
     float rect[4];
 } viewport;
@@ -142,6 +147,29 @@ static int scale_viewport_apply(void)
     return isfinite(viewport.actual_x) && isfinite(viewport.actual_y);
 }
 
+static void scale_cutout_insets(uint32_t screen, float width, float height, float edge[4])
+{
+    memset(edge, 0, 4 * sizeof *edge);
+    /* HeroScreen3 owns both hero details and the native meeting/exchange UI. */
+    if (scale_read32(screen) != 0x00E3584Cu || safe_current.width <= 0 || safe_current.height <= 0) return;
+    int w, h;
+    void_input_screen_size(&w, &h);
+    if (w <= 0 || h <= 0) return;
+    double fit_scale = fmin((double)safe_current.width / w, (double)safe_current.height / h);
+    double drawn[2] = {w * fit_scale, h * fit_scale};
+    double bars[2] = {(safe_current.width - drawn[0]) * .5, (safe_current.height - drawn[1]) * .5};
+    for (int i = 0; i < 4; ++i) {
+        /* A cutout entirely inside a letterbox bar does not cover game UI. */
+        double fraction = fmax(0, safe_current.edge[i] - bars[i % 2]) / drawn[i % 2];
+        edge[i] = ceilf((float)fmin(.45, fraction) * (i % 2 ? height : width));
+    }
+}
+
+static int scale_safe_owner(uint32_t owner)
+{
+    return safe_root && owner == safe_root && scale_read32(viewport.screen) == 0x00E3584Cu;
+}
+
 /* The screen's root keeps the 1024x768 frame its windows are drawn for, anchored at
    the top-left of the screen; scale_anchor then brings every element onto it. */
 static int scale_viewport_ready(float width, float height)
@@ -151,7 +179,14 @@ static int scale_viewport_ready(float width, float height)
         viewport.root = 0;
         return 0;
     }
-    if (viewport.screen == screen && viewport.root == root &&
+    float edge[4];
+    scale_cutout_insets(screen, width, height, edge);
+    if (memcmp(edge, safe_active, sizeof edge)) {
+        memcpy(safe_active, edge, sizeof edge);
+        viewport.root = 0;
+    }
+    safe_root = (edge[0] || edge[1] || edge[2] || edge[3]) ? root - 0xF8 : 0;
+    if (viewport.screen == screen && viewport.root == root && viewport.type == scale_read32(screen) &&
         viewport.width == width && viewport.height == height) {
         /* Original resize/layout can run between gestures. Restore our parent rectangle once. */
         if (MEMF(root - 0xF8 + 0x64) != viewport.actual_x ||
@@ -171,10 +206,10 @@ static int scale_viewport_ready(float width, float height)
     float span_h = vertical == 3 ? canvas_h : 768;
     float base_x = horizontal == 1 ? (canvas_w - 1024) * 0.5f : horizontal == 2 ? canvas_w - 1024 : 0;
     float base_y = vertical == 1 ? (canvas_h - 768) * 0.5f : vertical == 2 ? canvas_h - 768 : 0;
-    viewport.screen = screen; viewport.root = root;
+    viewport.screen = screen; viewport.root = root; viewport.type = scale_read32(screen);
     viewport.width = width; viewport.height = height;
-    viewport.rect[0] = base_x; viewport.rect[1] = base_y;
-    viewport.rect[2] = base_x + span_w; viewport.rect[3] = base_y + span_h;
+    viewport.rect[0] = base_x + edge[0]; viewport.rect[1] = base_y + edge[1];
+    viewport.rect[2] = base_x + span_w - edge[2]; viewport.rect[3] = base_y + span_h - edge[3];
     if (scale_viewport_apply()) return 1;
     viewport.root = 0;
     return 0;
@@ -294,6 +329,75 @@ static int scale_named(uint32_t placement, const char *expected)
     return name && end - name == length && void_vm_readable(name, end - name) && !memcmp(GPTR(name), expected, length);
 }
 
+/* CTownBuildScreen creates root-owned arrows from the absolute positions of
+   building_x_y windows inside BuildingsHolder (65AAE0; the legacy builders are
+   independently mapped). Relayout moves the holder but does not recreate those
+   cached positions. Follow its actual motion, not a guessed scale/128px delta. */
+static int scale_building_cell(uint32_t placement)
+{
+    uint32_t begin = scale_read32(placement + 0x58), end = scale_read32(placement + 0x5C);
+    if (!begin || end < begin || end - begin < 12 || end - begin > 40 ||
+        !void_vm_readable(begin, end - begin)) return 0;
+    const char *name = (const char *)GPTR(begin);
+    unsigned at = 9, length = end - begin;
+    if (memcmp(name, "building_", 9) || name[at] < '0' || name[at] > '9') return 0;
+    while (at < length && name[at] >= '0' && name[at] <= '9') ++at;
+    if (at + 1 >= length || name[at++] != '_' || name[at] < '0' || name[at] > '9') return 0;
+    while (at < length && name[at] >= '0' && name[at] <= '9') ++at;
+    return at == length;
+}
+
+static uint32_t scale_town_holder(uint32_t window)
+{
+    if (scale_read32(fit.screen) != 0x00E2D9D4u) return 0;
+    uint32_t interface = scale_screen_root(fit.screen), root = interface >= 0xF8 ? interface - 0xF8 : 0;
+    uint32_t placement = scale_placement(window);
+    if (!root || scale_read32(window + 0x28) != root || !placement ||
+        !MEM8(placement + 0x70) || !scale_named(placement, "") ||
+        !void_vm_readable(root + 0x64, 8) || MEMF(root + 0x64) != 0 || MEMF(root + 0x68) != 0) return 0;
+    /* The original full-screen construction root has zero origin. Do not mix
+       its root-absolute arrow offsets with an unknown translated-root ABI. */
+    uint32_t begin = scale_read32(window + 0xA4), end = scale_read32(window + 0xA8);
+    if (!begin || end < begin || (end - begin) % 4 || end - begin > 4096 ||
+        !void_vm_readable(begin, end - begin)) return 0;
+    for (uint32_t at = begin; at < end; at += 4) {
+        uint32_t child = MEM32(at), own = child && child != window ? scale_placement(child) : 0;
+        if (own && scale_read32(child + 0x28) == window && scale_building_cell(own)) return root;
+    }
+    return 0;
+}
+
+static void scale_town_arrows(uint32_t holder, uint32_t root, float dx, float dy)
+{
+    if (scale_town_holder(holder) != root || !void_dispatch_find(0x00D119FCu)) return;
+    unsigned moved = 0;
+    for (unsigned i = 0; i < 1024; ++i) {
+        /* A native setter can replace vector storage or a COW placement. */
+        uint32_t begin = scale_read32(root + 0xA4), end = scale_read32(root + 0xA8);
+        if (!begin || end < begin || (end - begin) % 4 || end - begin > 4096 ||
+            i >= (end - begin) / 4 || !void_vm_readable(begin, end - begin)) break;
+        uint32_t child = MEM32(begin + 4 * i), placement = child ? scale_placement(child) : 0;
+        if (!placement || scale_read32(child + 0x28) != root ||
+            MEM32(placement + 0x94) || MEM32(placement + 0x9C) ||
+            !(scale_named(placement, "arrow_1") || scale_named(placement, "arrow_2") ||
+              scale_named(placement, "arrow_3"))) continue;
+        float point[2] = {MEMF(placement + 0x88) + dx, MEMF(placement + 0x8C) + dy};
+        if (!isfinite(point[0]) || !isfinite(point[1]) || fabsf(point[0]) > 16384 || fabsf(point[1]) > 16384) continue;
+        /* Keep the original interface/SetPlacement(x,y,0,0,3) and its COW,
+           clipping and child-layout behavior; never edit a shared resource. */
+        const uint32_t cast[] = {child, 0, 0x00F2DA88u, 0x00F2DAF4u, 0};
+        uint32_t window = void_call_guest(0x00D119FCu, 5, cast, 0);
+        uint32_t method = scale_read32(scale_read32(window) + 0x58);
+        if (!window || !method || !void_dispatch_find(method)) continue;
+        if (scale_town_holder(holder) != root || scale_read32(child + 0x28) != root) return;
+        uint32_t args[5] = {0, 0, 0, 0, 3};
+        memcpy(args, point, sizeof point);
+        void_call_guest_this(method, window, 5, args);
+        ++moved;
+    }
+    VLOG("[touch] ui-town-arrows root=%08X moved=%u delta=%.2f,%.2f", root, moved, dx, dy);
+}
+
 /* An element of a screen: a child of its root, or of a container as large as the
    root (the screens' "Main" windows), shown with its ancestors. Gives the root's
    frame, and whether the element is such a container itself. */
@@ -321,7 +425,7 @@ static int scale_element(uint32_t window, uint32_t placement, float frame[4], in
     rect[3] = scale_size(MEM32(placement + 0x94), frame[3] - frame[1], rect[3],
                          MEMF(placement + 0xB4), MEMF(placement + 0xC0));
     *container = parent == root && scale_covers(rect, frame);
-    return 1;
+    return (int)root; /* Also identify the actual owner: never inset an unrelated modal/root. */
 }
 
 /* Where the original layout 0x00A50560 places an element inside the parent
@@ -348,6 +452,33 @@ static void scale_place(uint32_t placement, const float parent[4], const float f
         shift[1] = roundf(fminf(50.0f, view_h * .1f) - position[1]);
 }
 
+static void scale_place_safe(uint32_t owner, uint32_t placement, const float parent[4], const float frame[4],
+                              float view_w, float view_h, float position[2], float size[2], float shift[2])
+{
+    if (!scale_safe_owner(owner)) {
+        scale_place(placement, parent, frame, view_w, view_h, position, size, shift);
+        return;
+    }
+    float inner_parent[4], inner_frame[4];
+    for (int i = 0; i < 4; ++i) {
+        inner_parent[i] = parent[i] - safe_active[i % 2];
+        inner_frame[i] = frame[i] - safe_active[i % 2];
+    }
+    float inner_view[2] = {view_w - safe_active[0] - safe_active[2], view_h - safe_active[1] - safe_active[3]};
+    scale_place(placement, inner_parent, inner_frame, inner_view[0], inner_view[1], position, size, shift);
+    for (int axis = 0; axis < 2; ++axis) {
+        /* A cutout also activates this pass at UI100. On an unreduced axis the
+           native layout is authoritative: a full-height structural hero page
+           intentionally starts at Y125, with unused space below the canvas.
+           Treating it as a modal to fit at Y0 detaches its children from the art. */
+        if ((axis ? view_h >= 767.5f : view_w >= 1023.5f)) shift[axis] = 0;
+        if ((safe_active[axis] || safe_active[axis + 2]) && size[axis] <= inner_view[axis])
+            /* Do not round a fractional far edge back underneath the cutout. */
+            shift[axis] = fminf(inner_view[axis] - size[axis], fmaxf(0, position[axis] + shift[axis])) - position[axis];
+        position[axis] += safe_active[axis];
+    }
+}
+
 /* CWindow::Layout(const float parent[4]), thiscall, RET 4, as virtual calls reach
    it (its dispatch entry): a dialog's modal loop lays out its windows while the
    frame pumps wait for it. Above 100% an element of a screen gets its parent's
@@ -356,7 +487,7 @@ static void scale_place(uint32_t placement, const float parent[4], const float f
    by the frame pump (scale_anchor). */
 void sub_00A50560(void);
 
-static void scale_layout_override(void)
+static void scale_layout_window(void)
 {
     static uint32_t scratch;
     static unsigned depth;
@@ -364,9 +495,12 @@ static void scale_layout_override(void)
     float view_w = MEMF(0x00F74BE0u), view_h = MEMF(0x00F74BE4u), parent[4], frame[4];
     float position[2], size[2], shift[2];
     int container = 0;
-    if (!(view_w < 1023.5f || view_h < 767.5f) || !isfinite(view_w) || !isfinite(view_h) ||
+    uint32_t owner = 0;
+    int reduced = view_w < 1023.5f || view_h < 767.5f;
+    if ((!reduced && !safe_root) || !isfinite(view_w) || !isfinite(view_h) ||
         !rect || !void_vm_readable(rect, 16) || !(placement = scale_placement(window)) ||
-        !scale_element(window, placement, frame, &container) || container) {
+        !(owner = (uint32_t)scale_element(window, placement, frame, &container)) || container ||
+        (!reduced && !scale_safe_owner(owner))) {
         sub_00A50560();
         return;
     }
@@ -382,7 +516,7 @@ static void scale_layout_override(void)
     }
     /* A root's own children are laid out in the rectangle given (a dialog's is the screen's). */
     if (scale_is_root(scale_read32(window + 0x28))) memcpy(frame, parent, sizeof frame);
-    scale_place(placement, parent, frame, view_w, view_h, position, size, shift);
+    scale_place_safe(owner, placement, parent, frame, view_w, view_h, position, size, shift);
     if ((!shift[0] && !shift[1]) || !scratch || !void_vm_writable(scratch, 16 * 8)) {
         sub_00A50560();
         return;
@@ -394,6 +528,23 @@ static void scale_layout_override(void)
     MEM32(g_esp + 4) = shifted;
     sub_00A50560();
     --depth;
+}
+
+static void scale_layout_override(void)
+{
+    uint32_t window = g_ecx, root = scale_town_holder(window);
+    float before[2] = {0, 0};
+    if (root) memcpy(before, GPTR(window + 0x64), sizeof before);
+    scale_layout_window();
+    if (!root || !void_vm_readable(window + 0x64, 8)) return;
+    float dx = MEMF(window + 0x64) - before[0], dy = MEMF(window + 0x68) - before[1];
+    if ((!dx && !dy) || !isfinite(dx) || !isfinite(dy) || fabsf(dx) > 16384 || fabsf(dy) > 16384) return;
+    /* Additional original calls must leave CWindow::Layout's native return
+       registers, flags and x87/SSE state exactly as the caller received them. */
+    void_regs saved;
+    void_regs_save(&saved);
+    scale_town_arrows(window, root, dx, dy);
+    void_regs_load(&saved);
 }
 
 typedef struct {
@@ -431,12 +582,14 @@ static void scale_anchor(uint32_t parent, unsigned depth, scale_pass *pass)
                 ++pass->stacks;
             }
         }
-        if (!placement || !void_vm_readable(child, 0xF0) || !scale_element(child, placement, frame, &container)) continue;
+        uint32_t owner = 0;
+        if (!placement || !void_vm_readable(child, 0xF0) ||
+            !(owner = (uint32_t)scale_element(child, placement, frame, &container))) continue;
         if (container) {
             scale_anchor(child, depth + 1, pass);
             continue;
         }
-        scale_place(placement, rect, frame, pass->view_w, pass->view_h, position, size, shift);
+        scale_place_safe(owner, placement, rect, frame, pass->view_w, pass->view_h, position, size, shift);
         if (scale_read32(viewport.screen) == 0x00E1DA84u && MEM32(placement + 0x94) == 2) {
             if ((scale_named(placement, "ATBBar") || scale_named(placement, "PlacementBar")) &&
                 MEM32(placement + 0x9C) == 0)
@@ -471,7 +624,12 @@ static void scale_anchor(uint32_t parent, unsigned depth, scale_pass *pass)
         } else {
             /* Windows their own code places (dialogs it centres on 1024x768, tooltips,
                dragged icons) are only kept on the screen, from where that code put them. */
-            float keep_x = scale_clamp(x, size[0], pass->view_w), keep_y = scale_clamp(y, size[1], pass->view_h);
+            float left = scale_safe_owner(owner) ? safe_active[0] : 0;
+            float top = scale_safe_owner(owner) ? safe_active[1] : 0;
+            float right = scale_safe_owner(owner) ? safe_active[2] : 0;
+            float bottom = scale_safe_owner(owner) ? safe_active[3] : 0;
+            float keep_x = left + scale_clamp(x - left, size[0], pass->view_w - left - right);
+            float keep_y = top + scale_clamp(y - top, size[1], pass->view_h - top - bottom);
             if (size[0] < 1 || size[1] < 1 || (keep_x == x && keep_y == y)) continue;
             shift[0] = keep_x - position[0];
             shift[1] = keep_y - position[1];
@@ -506,6 +664,10 @@ static int scale_fits(uint32_t root, int anchor, float width, float height, floa
         void_touch_adventure_frame(viewport.screen, height, pass.map_army ? pass.map_top : 0,
                                     pass.map_army ? pass.map_bottom : height);
     if (pass.moved) VLOG("[touch] ui-anchor root=%08X moved=%u view=%.0fx%.0f", root, pass.moved, width, height);
+    if (scale_safe_owner(root)) {
+        base_w *= (width - safe_active[0] - safe_active[2]) / width;
+        base_h *= (height - safe_active[1] - safe_active[3]) / height;
+    }
     int fits = percent;
     if (pass.need_w > 0) fits = (int)fminf((float)fits, floorf(base_w * 100.0f / pass.need_w));
     if (pass.need_h > 0) fits = (int)fminf((float)fits, floorf(base_h * 100.0f / pass.need_h));
@@ -690,6 +852,18 @@ void void_touch_set_scale(float scale)
     pthread_mutex_unlock(&scale_lock);
 }
 
+void void_touch_safe_area(int width, int height, int left, int top, int right, int bottom)
+{
+    if (width <= 0 || height <= 0 || width > 16384 || height > 16384 ||
+        left < 0 || top < 0 || right < 0 || bottom < 0 ||
+        left >= width || right >= width - left || top >= height || bottom >= height - top) return;
+    pthread_mutex_lock(&scale_lock);
+    safe_pending.width = width; safe_pending.height = height;
+    safe_pending.edge[0] = left; safe_pending.edge[1] = top;
+    safe_pending.edge[2] = right; safe_pending.edge[3] = bottom;
+    pthread_mutex_unlock(&scale_lock);
+}
+
 static int scale_pump(uint32_t screen)
 {
     int explicit_screen = screen != 0;
@@ -725,6 +899,8 @@ static int scale_pump(uint32_t screen)
 
     pthread_mutex_lock(&scale_lock);
     int requested = scale_percent;
+    int safe_changed = memcmp(&safe_current, &safe_pending, sizeof safe_current) != 0;
+    safe_current = safe_pending;
     pthread_mutex_unlock(&scale_lock);
     /* Match B295D0's original aspect threshold and integer rounding first. */
     double aspect = (double)buffer_w / (double)buffer_h;
@@ -742,6 +918,12 @@ static int scale_pump(uint32_t screen)
     /* Above 100% the scale is the screen's: a new screen, or a new request, starts
        from the request and anchoring lowers it while an element does not fit. */
     if (!screen) screen = scale_current_screen();
+    if (safe_changed && scale_read32(screen) == 0x00E3584Cu) {
+        const void_touch_event abort = {.kind = TOUCH_ABORT, .scale = 1};
+        void_touch_engine_event(&abort);
+    }
+    /* Keep the ordinary UI100 layout fast after leaving the cutout-aware screen. */
+    if (scale_read32(screen) != 0x00E3584Cu) safe_root = 0;
     if (!explicit_screen && scale_read32(screen) != 0x00E34674u) loading_layout.root = 0;
     /* Cinematic viewports and loading artwork keep the native frame instead of cropping at the saved UI scale. */
     if (scale_read32(screen) == 0x00E3261Cu || scale_read32(screen) == 0x00E3DD4Cu ||
@@ -783,7 +965,23 @@ static int scale_pump(uint32_t screen)
         /* Arm the battle lens before labels or deployment widgets are visible, at every UI scale. */
         if (scale_read32(screen) == 0x00E1DA84u)
             void_touch_combat_frame(screen, wanted_w, wanted_h, wanted_h, 0, 0);
-        if (requested <= 100) return 1;
+        if (requested <= 100) {
+            if (scale_read32(screen) == 0x00E3584Cu &&
+                (safe_root || safe_current.edge[0] || safe_current.edge[1] || safe_current.edge[2] || safe_current.edge[3])) {
+                uint32_t root = scale_viewport_ready(wanted_w, wanted_h) ? viewport.root : 0;
+                /* Removing/letterboxing the cutout restores the native parent too,
+                   but must not run small-canvas anchoring on ordinary UI100. */
+                if (root && safe_root) (void)scale_fits(root - 0xF8, 1, wanted_w, wanted_h, base_w, base_h, requested);
+            }
+#ifdef HOMM5_LEGACY_UI
+            /* A newly installed legacy adventure root can still have its 1024-wide constructor
+               rectangle although B295D0 already set the widescreen canvas. No scale change then
+               triggers the resize path above. Lay out that root once, not after the first zoom. */
+            if (scale_read32(screen) == 0x00E230E4u)
+                (void)scale_viewport_ready(wanted_w, wanted_h);
+#endif
+            return 1;
+        }
         int fits;
         if (percent > 100) {
             uint32_t root = scale_viewport_ready(wanted_w, wanted_h) ? viewport.root : 0;

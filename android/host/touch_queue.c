@@ -11,6 +11,13 @@ static unsigned touch_head, touch_count;
 static int touch_dropping, touch_pumping;
 static int pointer_mode_requested;
 
+/* These are explicit commands, not a continuation of a cancelled contact. In particular a
+ * dialog's Console button and the physical keyboard do not send a new surface TOUCH_BEGIN. */
+static int touch_focus_command(int kind)
+{
+    return kind == TOUCH_CHEAT_ACTION || kind == TOUCH_CONSOLE_TOGGLE || kind == TOUCH_ARMY_ACTION;
+}
+
 static void touch_abort_locked(int preserve_commands)
 {
     /* Dialog focus can cancel contacts after its confirmed command was queued. */
@@ -18,7 +25,7 @@ static void touch_abort_locked(int preserve_commands)
     unsigned commands = 0;
     if (preserve_commands) for (unsigned i = 0; i < touch_count; ++i) {
         unsigned at = (touch_head + i) % TOUCH_QUEUE_CAPACITY;
-        if (touch_queue[at].kind == TOUCH_CHEAT_ACTION) pending[commands++] = touch_queue[at];
+        if (touch_focus_command(touch_queue[at].kind)) pending[commands++] = touch_queue[at];
     }
     if (commands == TOUCH_QUEUE_CAPACITY) commands = 0;
     pointer_mode_requested = 0;
@@ -50,7 +57,7 @@ void void_touch_enqueue(const void_touch_event *event)
     } else {
         if (event->kind == TOUCH_BEGIN) { touch_dropping = 0; pointer_mode_requested = 0; }
         if (!touch_dropping || event->kind == TOUCH_PAD_CAMERA || event->kind == TOUCH_POINTER_CLICK
-            || event->kind == TOUCH_CHEAT_ACTION || event->kind == TOUCH_COMBAT_CONFIRM
+            || touch_focus_command(event->kind) || event->kind == TOUCH_COMBAT_CONFIRM
         ) {
             if (touch_count == TOUCH_QUEUE_CAPACITY) touch_abort_locked(0);
             else {

@@ -63,7 +63,7 @@ int main(void){
             source,_=port_patches.adapt_host_source(source,ROOT/'build/tests'/('scenario-choice-'+edition),edition)
             addresses=json.loads((ROOT/'config'/(edition+'.patches.json')).read_text(encoding='utf-8'))['addresses']
         text=source.read_text()
-        code=text[text.index('static int choice_named(uint32_t window, const char *name)\n{'):text.index('\nstatic void ui_event')]
+        code=text[text.index('static int choice_named(uint32_t window, const char *name)\n{'):text.index('\n/* A selected stack owns')]
         defines='#define CAST_VA 0x%su\n#define RTTI_WINDOW 0x%su\n#define ROOT_OFFSET 0x%X\n'%(
             addresses.get('00D119FC','00D119FC'),addresses.get('00F2DA88','00F2DA88'),0xA0 if edition=='toe' else 0x98)
         harness=defines+r'''

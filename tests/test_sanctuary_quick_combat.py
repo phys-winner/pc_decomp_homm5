@@ -56,11 +56,11 @@ static void objects(unsigned flag,unsigned kind,unsigned invalid) {
  if(invalid==7)MEM32(0x30104)=0x7FFF0000;
  if(invalid==8)bad_range=0x20000;
  if(invalid==9)MEM32(0x18004)=UINT32_MAX-3;
- g_ecx=0x18000;
+ g_eax=0x123456A5;g_ecx=0x18000;
 }
 static void equivalent(unsigned flag,unsigned kind,unsigned invalid) {
- objects(flag,kind,invalid);ORIGINAL_GETTER();take(&expected);
- objects(flag,kind,invalid);unsigned before=original_calls;dispatch();take(&actual);
+ objects(flag,kind,invalid);take(&initial);ORIGINAL_GETTER();take(&expected);
+ objects(flag,kind,invalid);restore(&initial);unsigned before=original_calls;dispatch();take(&actual);
  assert(original_calls==before+1&&g_esp==0x51004);
  if(flag&&!kind&&!invalid)expected.registers[0]&=~255u;
  if(memcmp(&expected,&actual,sizeof expected)) {
@@ -138,7 +138,7 @@ class SanctuaryQuickCombatTest(unittest.TestCase):
         runtime = runtime.replace('#error "This header is the ARM64 runtime model; x86 builds use native/recomp_types.h"', "")
         runtime = runtime.replace(function(runtime, "static inline uint64_t __rdtsc("), "")
         prefix = STREAM[:STREAM.index("static uint64_t clock_ns")]
-        snapshot = STREAM[STREAM.index("typedef struct {\n    uint32_t registers[8]"):STREAM.index("static void restore(")]
+        snapshot = STREAM[STREAM.index("typedef struct {\n    uint32_t registers[8]"):STREAM.index("static uint32_t stream_at(")]
         setup = function(FMOD, "static void setup(")
         for edition, spec in EDITIONS.items():
             with self.subTest(edition=edition), tempfile.TemporaryDirectory() as tmp:

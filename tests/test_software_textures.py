@@ -1,6 +1,13 @@
 """The production CPU texture hook must hand decoded BGRA to the original loader."""
+from pathlib import Path
+import sys
+import tempfile
 import unittest
+
 from test_static_tls import ROOT, compile_probe
+
+sys.path.insert(0, str(ROOT / "tools"))
+from port_patches import adapt_host_source, load_contract
 
 
 HARNESS = r'''
@@ -54,6 +61,8 @@ static void *dlsym(void *lib,const char *name) {
     assert(!strcmp(name,"texconv_decode_dxt"));return (void *)decode_dxt;
 }
 static void sub_00A9CDC0_lifted(void) {g_eax=6;g_esp+=4;}
+static int shadow_updates;
+void void_shadow_texture_loaded(void) {++shadow_updates;}
 static void sub_00CC5F50_lifted(void) {
     calls++;assert(g_ecx==0x1000 && g_esp==0x3000);
     uint32_t io=0x201c,begin=MEM32(io+4),end=MEM32(io+12);
@@ -92,6 +101,9 @@ static void run(void) {
     assert(allocs==frees);
 }
 int main(void) {
+    setup();g_ecx=0;sub_00A9CDC0();assert(!shadow_updates);
+    g_ecx=0x4004;g_esp=0x3000;sub_00A9CDC0();
+    assert(shadow_updates==1&&g_eax==5&&g_esp==0x3004);
     setup();run();assert(decode_calls==4);
     setup();fail_alloc=1;expected_raw=0;run();assert(!decode_calls);
     setup();fail_decode=1;expected_raw=0;run();assert(decode_calls==1);
@@ -116,9 +128,15 @@ class SoftwareTexturesTest(unittest.TestCase):
         compile_probe("software-textures", HARNESS.replace("/* PRODUCTION */", source), {})
 
     def test_legacy_cpu_loader_decodes_original_and_converted_dds(self):
-        source = (ROOT / "android/host/texture_native.c").read_text()
-        source = "\n".join(line for line in source.splitlines() if not line.startswith("#include"))
-        compile_probe("software-textures-legacy", "#define HOMM5_LEGACY_UI 1\n" + HARNESS.replace("/* PRODUCTION */", source), {})
+        for edition in ("vanilla", "hof"):
+            with self.subTest(edition=edition), tempfile.TemporaryDirectory() as out:
+                file, _ = adapt_host_source(ROOT / "android/host/texture_native.c", Path(out), edition)
+                source = "\n".join(line for line in file.read_text().splitlines() if not line.startswith("#include"))
+                addresses = load_contract(edition)["addresses"]
+                harness = HARNESS
+                for address in ("00A9CDC0", "00CC5F50"):
+                    harness = harness.replace("sub_" + address, "sub_" + addresses[address])
+                compile_probe("software-textures-" + edition, harness.replace("/* PRODUCTION */", source), {})
 
 
 if __name__ == "__main__":

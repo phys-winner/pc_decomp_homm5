@@ -65,7 +65,9 @@ public class TouchHintsCheck {
    language=lang;
    assert touchHintText(1).contains(lang.equals("en")?"two fingers":"двумя пальцами");
    assert touchHintText(2).contains("~");
-   assert touchHintText(2).contains(lang.equals("en")?"scenario information":"информации о сценарии");
+   assert touchHintText(2).contains(lang.equals("en")?"cheats":"читы");
+   assert touchHintText(2).contains(lang.equals("en")?"gear":"шестерёнку");
+   assert touchHintText(2).contains(lang.equals("en")?"Console":"Консоль");
    assert touchHintText(3).contains(lang.equals("en")?"moving hero":"движущегося героя");
    assert touchHintText(4).contains(lang.equals("en")?"three fingers":"тремя пальцами");
    assert touchHintText(5).contains(lang.equals("en")?"enable or disable":"включить или выключить");

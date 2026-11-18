@@ -3,7 +3,7 @@
 Heroes of Might and Magic V, Hammers of Fate and Tribes of the East on Android ARM64 through static
 x86 recompilation, with native touch controls and a Direct3D 9 to OpenGL ES bridge.
 
-**Current version: 0.8-dev.** All three engines use ThinLTO and their own device-trained PGO profiles.
+**Current version: 0.8.1-dev.** All three engines use ThinLTO and their own device-trained PGO profiles.
 This is an experimental port for sideloading.
 The original game's menus, adventure maps, towns, battles, sound and saves run
 through a local Win32 compatibility host. The game and eight DLLs are translated
@@ -548,9 +548,9 @@ in all three editions; each edition keeps its own profile settings:
   special-attack hints, route and attack direction).
 - **Доп. графика**: page **Изображение** (render scale, frame rate, OpenGL ES scene
   filter, FSR sharpness, interface filter) and page **Эффекты**:
-  - **Подробные модели на карте** (on by default): creatures and heroes on the
-    adventure map use their full models and textures instead of the reduced `_LOD`
-    ones the original data assigns there. It applies after the game restarts.
+  - **Подробные модели на карте** is off by default in all three editions.
+    With it enabled, creatures and heroes on the adventure map use their full models and
+    textures. The setting takes effect after the game restarts.
   - **Туман** (on by default): the engine's Direct3D 9 fog (battle arenas, towns,
     underground and snowy scenes) is drawn under OpenGL ES; DXVK draws it itself.
   - **Плавное размытие входа в бой** (off by default): a smooth zoom-streak version
@@ -632,15 +632,16 @@ send `homm5.1.log` (the session that crashed) together with `homm5.log`.
 
 ## Versions and local release files
 
-The current version is `0.8-dev` / code `13`. Earlier development builds used
-`0.1-dev`, `0.2-dev`, `0.3-dev`, `0.3.1-dev`, `0.3.2-dev`, `0.4-dev`, `0.5-dev`, `0.5.1-dev`, `0.6-dev` and `0.7-dev`. The version is stored in
+The current version is `0.8.1-dev` / code `14`. Earlier development builds used
+`0.1-dev`, `0.2-dev`, `0.3-dev`, `0.3.1-dev`, `0.3.2-dev`, `0.4-dev`, `0.5-dev`, `0.5.1-dev`, `0.6-dev`, `0.7-dev` and `0.8-dev`. The version is stored in
 `android/app/AndroidManifest.xml`; increase `android:versionCode` for every
 subsequent published build. Version `0.3-dev` uses code `5` (the replacement
 build supersedes the earlier code `4` APK); `0.3.1-dev` uses code `6`, and
 `0.3.2-dev` uses code `7`, `0.4-dev` uses code `8`, `0.5-dev` uses code `9`, and
-`0.5.1-dev` uses code `10`, `0.6-dev` uses code `11`, and `0.7-dev` uses code `12`.
+`0.5.1-dev` uses code `10`, `0.6-dev` uses code `11`, `0.7-dev` uses code `12`, and
+`0.8-dev` uses code `13`.
 
-Local release copies use `heroes-v-0.8-dev-<sha256-prefix>.apk`, where the suffix
+Local release copies use `heroes-v-0.8.1-dev-<sha256-prefix>.apk`, where the suffix
 is the first eight characters of the APK's SHA-256, with a companion `.sha256`
 file. The `pub/` directory is ignored. Building and naming an APK does not
 automatically publish it or create a Git tag.

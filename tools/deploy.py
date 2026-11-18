@@ -46,6 +46,7 @@ def main():
     if header[:4] != b"\x7fELF" or header[4:6] != b"\x02\x01" or header[18:20] != b"\xb7\x00":
         raise ValueError("The Android executable must be a little-endian ARM64 ELF")
     ui_override, directories, profiles, overrides = None, [], {}, {}
+    extra_originals = []
     overlay_receipt = None
     if args.data:
         game = game_directory(args.edition, ROOT)
@@ -63,6 +64,13 @@ def main():
                 names.add(relative.casefold())
                 overrides[relative] = contents
         profiles = bootstrap_profiles(ROOT, args.edition)
+        if args.edition == "hof":
+            # Original HoF checks the base executable before creating its first window.
+            base_bin = source_directory(game, "bin")
+            base_exe = base_bin / "H5_Game.exe" if base_bin is not None else None
+            if base_exe is None or not base_exe.is_file():
+                raise ValueError("hof: missing original base-game bin/H5_Game.exe")
+            extra_originals.append((base_exe, "bin/H5_Game.exe"))
         required = [spec["bin"], *spec["data"]]
         for name in [*required, "music", "video", "profiles", "Maps", "UserCampaigns", "UserMODs", "hwcursors", "DuelPresets"]:
             source = source_directory(game, name)
@@ -104,8 +112,13 @@ def main():
     if args.data:
         for source in directories:
             run("push", "--sync", str(source), device_game + "/")
-        parents = {"profiles/default_profile", "video", *(Path(name).parent.as_posix() for name in overrides)}
+        parents = {"profiles/default_profile", "video", *(Path(name).parent.as_posix() for name in overrides),
+                   *(Path(name).parent.as_posix() for _, name in extra_originals)}
         shell("mkdir -p " + " ".join(shlex.quote(device_game + "/" + name) for name in sorted(parents)))
+        for source, relative in extra_originals:
+            destination = device_game + "/" + relative
+            run("push", str(source), destination)
+            verify(source, destination)
         for relative in profiles:
             run("push", str(stage / relative), device_game + "/" + relative)
         intro_name = "intro.xml" if args.edition == "vanilla" else "intro_a1.xml"

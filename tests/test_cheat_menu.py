@@ -95,6 +95,8 @@ public class CheatDialogsCheck {
     static final int T_CANCEL=3;
     static int generation,action,value,calls;
     static String toast;
+    static int consoleCalls;
+    static void nativeHardwareKey(int vk,boolean down){assert vk==0xC0&&down;consoleCalls++;}
     static final List<Runnable> pending=new ArrayList<>();
     Dialog cheatDialog;
     static class Touch {void requestFocus(){}}
@@ -105,12 +107,13 @@ public class CheatDialogsCheck {
     interface Click {void run(Dialog dialog,int which);}
     interface Dismiss {void run(Dialog dialog);}
     static class Dialog {
-        String title,message;String[] items;Click item,positive;Dismiss listener;boolean shown;
+        String title,message,neutralText;String[] items;Click item,positive,neutral;Dismiss listener;boolean shown;
         void setOnDismissListener(Dismiss d){listener=d;}
         void show(){shown=true;}
         void dismiss(){if(shown){shown=false;if(listener!=null)pending.add(()->listener.run(this));}}
         void choose(int index){assert shown;item.run(this,index);dismiss();}
         void apply(){assert shown&&positive!=null;positive.run(this,0);dismiss();}
+        void console(){assert shown&&neutral!=null;neutral.run(this,0);dismiss();}
         static class Builder {
             Dialog d=new Dialog();
             Builder(CheatDialogsCheck a,int theme){assert a!=null&&theme==1;}
@@ -119,6 +122,7 @@ public class CheatDialogsCheck {
             Builder setItems(String[] s,Click c){d.items=s;d.item=c;return this;}
             Builder setPositiveButton(String s,Click c){d.positive=c;return this;}
             Builder setNegativeButton(String s,Click c){assert c==null;return this;}
+            Builder setNeutralButton(String s,Click c){d.neutralText=s;d.neutral=c;return this;}
             Dialog create(){return d;}
         }
     }
@@ -132,6 +136,9 @@ public class CheatDialogsCheck {
     static void sent(int g,int a,int v){assert generation==g&&action==a&&value==v;}
     public static void main(String[] unused){
         CheatDialogsCheck c=new CheatDialogsCheck();
+        c.showCheats(6,0);assert c.cheatDialog.neutralText.equals("Консоль");
+        c.cheatDialog.console();drain();assert consoleCalls==1&&calls==0&&c.cheatDialog==null;
+        c.showCheats(6,1);c.cheatDialog.console();drain();assert consoleCalls==2&&calls==0;
         c.showCheats(7,0);assert c.cheatDialog.message.equals("Включить читы для текущей карты?");
         c.cheatDialog.dismiss();drain();assert calls==0&&c.cheatDialog==null;
         c.showCheats(7,0);c.cheatDialog.apply();drain();sent(7,0,0);
@@ -156,6 +163,7 @@ public class CheatDialogsCheck {
         c.showCheats(40,3);assert toast.equals("Готово");
         c.showCheats(40,4);assert toast.contains("Выберите своего героя");
         language="en";c.showCheats(41,0);assert c.cheatDialog.message.equals("Enable cheats for the current map?");
+        assert c.cheatDialog.neutralText.equals("Console");
         System.out.println("PASS actual cheat dialogs: enable/decline, all actions, gold/army disclosure, twelve skills, submenu lifetime, RU/EN");
     }
 }

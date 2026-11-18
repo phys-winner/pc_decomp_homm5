@@ -58,6 +58,13 @@ public class GameActivity extends Context {
  private final Launch launch=new Launch();private android.app.AlertDialog startupDialog;
  private boolean destroyed,finishing,nativeReady;private int started,openedLauncher;private String edition="toe";
  private File folder,executable;private static File root;
+ // Synthetic bitmap/widgets: this probe exercises worker/consent/lifecycle, not Android decoding.
+ static class Bitmap {}
+ static class View {static final int GONE=8,VISIBLE=0;int visibility;Bitmap image;
+  void setImageBitmap(Bitmap b){image=b;}void setVisibility(int v){visibility=v;}}
+ static class StartupArt {static int loads;static Bitmap load(File folder,String edition){loads++;return new Bitmap();}}
+ private Bitmap startupArtwork;private final Object loading=new Object();
+ private final View loadingImage=new View(),loadingTitle=new View();
  private GameActivity(File assets,File own){super(assets,own);}
  private String gameEdition(){return edition;}private File gameFolder(){return folder;}
  private boolean isFinishing(){return finishing;}private boolean isDestroyed(){return destroyed;}
@@ -72,7 +79,7 @@ public class GameActivity extends Context {
   file.getParentFile().mkdirs();Files.write(file.toPath(),value.getBytes("UTF-8"));
  }
  private static GameActivity fresh(String edition,String lang)throws Exception {
-  Thread.work.clear();NativeLibrary.loads=0;NativeLibrary.fail=false;language=lang;
+  Thread.work.clear();NativeLibrary.loads=0;NativeLibrary.fail=false;StartupArt.loads=0;language=lang;
   File dir=Files.createTempDirectory(root.toPath(),"case-").toFile(),assets=new File(dir,"assets");
   GameActivity a=new GameActivity(assets,new File(dir,"private"));a.edition=edition;a.folder=new File(dir,"game");
   for(String path:Games.required(edition))write(new File(a.folder,path),"original");
@@ -86,7 +93,9 @@ public class GameActivity extends Context {
  }
  private void warning(){startLibrary(false);assert !Thread.work.isEmpty();runWorker();assert NativeLibrary.loads==0;
   assert startupDialog==null;drainUi();assert startupDialog.visible&&startupDialog.negative!=null;
-  assert started==0&&!nativeReady&&launch.failed.isEmpty();assert dimEnds.equals(Arrays.asList("warning"));}
+  assert started==0&&!nativeReady&&launch.failed.isEmpty();assert dimEnds.equals(Arrays.asList("warning"));
+  assert startupArtwork==loadingImage.image&&startupArtwork!=null&&loadingTitle.visibility==View.GONE;
+  assert StartupArt.loads==1;}
  public static void main(String[] args)throws Exception {
   root=new File(args[0]);assert root.mkdirs();
   for(String edition:new String[]{"toe","vanilla","hof"})for(String lang:new String[]{"ru","en"}) {
@@ -98,6 +107,7 @@ public class GameActivity extends Context {
    a.startupDialog.yes();assert NativeLibrary.loads==0&&Thread.work.size()==1;
    a.runWorker();a.drainUi();
    assert NativeLibrary.loads==1&&a.started==1&&a.nativeReady&&a.launch.failed.isEmpty();
+   assert StartupArt.loads==1; // An explicit retry reuses the already loaded original illustration.
 
    a=fresh(edition,lang);a.warning();a.startupDialog.no();
    assert a.openedLauncher==1&&Thread.work.isEmpty()&&NativeLibrary.loads==0;

@@ -74,6 +74,10 @@ public class EditionCheck {
             Path mixed=root.resolve("mixed");
             for(String name:Games.required("hof")) file(mixed,name.toUpperCase(Locale.ROOT));
             assert Games.installed(mixed.toFile(),"hof");
+            // A HoF-only executable plus all resource banks used to pass, then exit before its window.
+            Path baseExe=Games.child(mixed.toFile(),"bin/H5_Game.exe").toPath();
+            Files.delete(baseExe);assert !Games.installed(mixed.toFile(),"hof");
+            file(mixed,"bin/H5_Game.exe");assert Games.installed(mixed.toFile(),"hof");
             assert Games.pathKey("toe").equals("game") && Games.userdata("toe").equals("userdata");
             assert Games.preferences("toe").equals("port_settings") && Games.marker("toe").equals("game-started");
             HashSet<String> userdata=new HashSet<>(),prefs=new HashSet<>(),libs=new HashSet<>(),markers=new HashSet<>();

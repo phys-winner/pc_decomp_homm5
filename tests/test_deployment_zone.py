@@ -26,6 +26,8 @@ HARNESS = r'''
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "touch.h"
+static int void_verbose;
 static uint8_t memory[0x1100000],snapshot[0x1100000];
 #define GPTR(p) (memory+(uint32_t)(p))
 #define MEM32(p) (*(uint32_t *)GPTR(p))
@@ -36,7 +38,8 @@ static void_regs registers;
 #define g_esp registers.gp[4]
 #define ARG(i) MEM32(g_esp+4u+4u*(i))
 typedef void (*void_fn)(void);
-#define VLOG(...) ((void)0)
+static void fixture_log(const char *format,...) {(void)format;}
+#define VLOG(...) fixture_log(__VA_ARGS__)
 static uint32_t camera_scratch;
 static unsigned dimensions_calls,position_calls,allocation_calls;
 static int fail_allocation,bad_dimensions,bad_return,nonfinite,terrain,bad_context_depth;

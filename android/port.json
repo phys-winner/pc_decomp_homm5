@@ -55,7 +55,7 @@
           "userFolders": {"UserMODs": {"en": "Mods (UserMODs)", "ru": "Моды (UserMODs)"},
                           "Maps": null, "UserCampaigns": null, "DuelPresets": null},
           "needed": ["bin/", "bina1/", "data/", "dataa1/", "datals/", "music/", "video/", "profiles/", "maps/",
-                     "usercampaigns/", "usermods/", "hwcursors/", "duelpresets/"]
+                     "usercampaigns/", "usermods/", "hwcursors/", "duelpresets/", "splasha2.bmp"]
         }
       ]
     },
@@ -81,10 +81,10 @@
           "folderGroup": "gold",
           "folderTitle": {"en": "Heroes V + Hammers of Fate (GOG)", "ru": "Герои V + Владыки Севера (GOG)"},
           "marker": "bina1/H5_Game.exe",
-          "required": ["bina1/H5_Game.exe", "data/data.pak", "dataa1/a1-data.pak", "dataa1/a1p1-data.pak"],
+          "required": ["bina1/H5_Game.exe", "bin/H5_Game.exe", "data/data.pak", "dataa1/a1-data.pak", "dataa1/a1p1-data.pak"],
           "userFolders": {"UserMODs": {"en": "Mods (UserMODs)", "ru": "Моды (UserMODs)"}, "Maps": null},
           "needed": ["bin/", "bina1/", "data/", "dataa1/", "datals/", "music/", "video/", "profiles/", "maps/",
-                     "usercampaigns/", "usermods/", "hwcursors/", "duelpresets/"]
+                     "usercampaigns/", "usermods/", "hwcursors/", "duelpresets/", "splash.bmp", "splasha1.bmp"]
         }
       ]
     },
@@ -114,7 +114,7 @@
           "userFolders": {"UserMODs": {"en": "Mods (UserMODs)", "ru": "Моды (UserMODs)"},
                           "Maps": null, "UserCampaigns": null, "DuelPresets": null},
           "needed": ["bin/", "bina1/", "data/", "dataa1/", "datals/", "music/", "video/", "profiles/", "maps/",
-                     "usercampaigns/", "usermods/", "hwcursors/", "duelpresets/"]
+                     "usercampaigns/", "usermods/", "hwcursors/", "duelpresets/", "splash.bmp", "splasha1.bmp"]
         }
       ]
     }
@@ -160,7 +160,7 @@
       {"id": "docs", "part": "game", "title": {"en": "Manuals and readme files", "ru": "Руководства и файлы readme"},
        "globs": ["*.pdf", "*.rtf", "*.txt", "*.doc", "*.htm", "*.html", "manual/", "manuals/", "docs/", "documentation/"]},
       {"id": "store", "part": "game", "title": {"en": "Shop and Windows launcher files at the top of the game folder", "ru": "Файлы магазинов и запуска Windows в корне папки игры"},
-       "globs": ["goggame-*", "webcache.zip", "*.exe", "*.dll", "*.ico", "*.url", "*.lnk", "*.info", "*.hashdb", "*.dat", "*.msg", "*.bmp", "*.vdf"]}
+       "globs": ["goggame-*", "webcache.zip", "*.exe", "*.dll", "*.ico", "*.url", "*.lnk", "*.info", "*.hashdb", "*.dat", "*.msg", "*.vdf"]}
     ]
   },
   "textures": {"backend": "org.homm5.port.TexconvBackend"},

@@ -553,6 +553,7 @@ LEGACY_CINEMATIC_HARNESS = r'''
 #include <stdint.h>
 #include <stdio.h>
 #include <stddef.h>
+#include <string.h>
 static uint8_t memory[0x1200000];
 #define MEM32(a) (*(uint32_t *)(memory+(uint32_t)(a)))
 #define MEMF(a) (*(float *)(memory+(uint32_t)(a)))
@@ -566,6 +567,8 @@ typedef struct {int kind;float scale;} void_touch_event;
 enum {TOUCH_ABORT=10};
 static pthread_mutex_t scale_lock;
 static int scale_percent=100;
+static struct {int width,height,edge[4];} safe_pending,safe_current;
+static uint32_t safe_root;
 static uint32_t viewport_scratch;
 static struct {uint32_t root;} viewport;
 static struct {uint32_t screen;int requested,percent;} fit;
