@@ -13,6 +13,7 @@
     "allFilesAccess": true,
     "localNetwork": true,
     "autoLaunch": true,
+    "hyperosNotice": true,
     "processes": {"launcher": ":launcher"}
   },
   "theme": {
@@ -138,6 +139,14 @@
     ]
   },
   "options": [
+    {"key": "main_menu_3d", "type": "bool", "default": "1",
+     "title": {"en": "3D main menu", "ru": "Трёхмерное главное меню"},
+     "hint": {"en": "Show the animated 3D background in the main menu. Takes effect the next time the game opens.",
+              "ru": "Показывать анимированный трёхмерный фон главного меню. Применяется при следующем запуске игры."}},
+    {"key": "fast_main_menu", "type": "bool", "default": "0",
+     "title": {"en": "Fast main menu", "ru": "Быстрый запуск главного меню"},
+     "hint": {"en": "Open the menu with a solid background while the 3D scene loads. Takes effect the next time the game opens.",
+              "ru": "Открывать меню со сплошным фоном, пока загружается 3D-сцена. Применяется при следующем запуске игры."}},
     {"key": "large_address_aware", "type": "bool", "default": "0", "defaultMinRamGiB": 5, "arm64Only": true,
      "title": {"en": "4 GB address space", "ru": "Адресное пространство 4 ГБ"},
      "hint": {"en": "Allows the 32-bit game to use addresses above 2 GB. Enabled by default with at least 5 GB RAM. Does not reserve 4 GB of physical RAM or fix memory leaks. Restart the game after changing this option.",

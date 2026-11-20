@@ -250,7 +250,8 @@ ADAPTED_HARNESS = r"""
 #include "host.h"
 #define GUEST_SIZE 0x02000000u
 uint8_t *guest;
-int void_verbose, probe_engine_fit;
+int void_verbose, probe_engine_fit, probe_shadow_fix;
+int void_port_shadow_fix(void) { return probe_shadow_fix; }
 int void_vm_readable(uint32_t address, uint32_t size) { return address >= 0x1000u && (uint64_t)address + size <= GUEST_SIZE; }
 int void_vm_writable(uint32_t address, uint32_t size) { return void_vm_readable(address, size); }
 uint64_t void_perf_now_ns(void) { return 0; }
@@ -304,6 +305,9 @@ int main(void)
     CHECK(shadow_fit_solve(&reference, &in, &want), "reference square");
 
     pass_once(n);
+    CHECK(MEM8(fit + 0x80) == 0 && getf(U0) == 0, "stock fit is the default");
+    probe_shadow_fix = 1;
+    pass_once(n);
     CHECK(getf(U0) == (float)want.u0 && getf(U1) == (float)(want.u0 + want.side), "u bounds %.4f..%.4f", getf(U0), getf(U1));
     CHECK(getf(V0) == (float)want.v0 && getf(V1) == (float)(want.v0 + want.side), "v bounds %.4f..%.4f", getf(V0), getf(V1));
     for (int k = 0; k < 4; ++k) {
@@ -341,6 +345,17 @@ int main(void)
     pass_once(n);
     CHECK(MEM8(fit + 0x80) == 1, "counter: %d", MEM8(fit + 0x80));
     MEM32(COUNTER) = 0;
+
+    /* Disabling the correction refits with the original projection on the first stock pass. */
+    probe_shadow_fix = 0;
+    MEM8(fit + 0x80) = 0x5A;
+    pass_once(n);
+    CHECK(MEM32(COUNTER) == 1 && MEM8(fit + 0x80) == 0x5A, "switching to stock invalidates the square");
+    MEM32(COUNTER) = 0;
+    pass_once(n);
+    CHECK(MEM32(COUNTER) == 0, "steady-state stock fit is untouched");
+    probe_shadow_fix = 1;
+    pass_once(n);
 
     /* The engine's fit stays with shadow-fit-original and in the warp mapping. */
     float u0 = getf(U0);
@@ -443,7 +458,7 @@ class ShadowFitTest(unittest.TestCase):
                 prefix += "#define REQUEST_FORCES %d\n" % int(SEAM_FUNCTIONS[edition]["arguments"] == 8)
                 prefix += "#define CHECK_TOE_UNTOUCHED %d\n" % int(edition != "toe")
                 compile_probe("shadow-fit-adapted-" + edition, prefix + ADAPTED_HARNESS,
-                              {"shadow_fit.h": header, "host.h": ADAPTED_HOST, "native_mode.h": ADAPTED_MODE,
+                              {"shadow_fit.h": header, "host.h": ADAPTED_HOST, "native_mode.h": ADAPTED_MODE, "touch.h": "",
                                "shadow_fit_adapted.c": adapted})
 
 

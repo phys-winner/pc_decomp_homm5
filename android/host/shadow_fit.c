@@ -27,6 +27,7 @@
  * <data>/shadow-fit-original containing 1 keeps the engine's own fit. */
 #include "host.h"
 #include "native_mode.h"
+#include "touch.h"
 #include <math.h>
 #include <string.h>
 #include "shadow_fit.h"
@@ -57,7 +58,13 @@ void void_shadow_texture_loaded(void)
 void void_shadow_fit_begin(uint32_t fit, uint32_t esp)
 {
     pass.active = 0;
-    if (void_native_mode_get(&engine_mode, "shadow-fit-original", "[shadow] engine fit %d")) return;
+    if (!void_port_shadow_fix() ||
+        void_native_mode_get(&engine_mode, "shadow-fit-original", "[shadow] force engine fit %d")) {
+        if (square.valid && (int32_t)MEM32(0x00F2D3A8u) < 1)
+            MEM32(0x00F2D3A8u) = 1;   /* Restore the stock projection on the next fit. */
+        square.valid = 0;
+        return;
+    }
     if (!MEM8(0x00F44E06u)) return;     /* the logarithmic warp mapping keeps the engine's fit */
     if (!void_vm_readable(esp, 0x20) || !void_vm_writable(fit, 0x84)) return;
     uint32_t light = MEM32(esp + 8);

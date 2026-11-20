@@ -53,6 +53,10 @@ public class GameActivity extends ActivityBase {
  Preferences preferences=new Preferences();Handler handler=new Handler();Launch launch=new Launch();ArmyActions armyActions=new ArmyActions();
  int hideCalls,refreshCalls,releases;
  boolean nativeLoadReady(){return ready;}int nativeLoadWork(){return work;}
+ int menuReadyCalls;void nativeMenuReady(){menuReadyCalls++;}
+ /* Tribes of the East's PerfMonitor (null in the legacy editions): focus events only here. */
+ static class PerfMonitor {int focuses;void focus(boolean on){focuses++;}}
+ PerfMonitor perf=new PerfMonitor();
  static String text(int n){assert n==0;return "Loading";}
  void hideSystemUi(){hideCalls++;}void requestHighRefresh(){refreshCalls++;}void releaseAll(){releases++;}
  /* ACTUAL */

@@ -6,6 +6,10 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 
 /** What the APK carries beside the library (tools/build_game_apk.py):
  *  assets/lifted, prepared DLLs (FMOD unpacked) and the original-image manifest;
@@ -111,6 +115,30 @@ final class Assets {
             return null;
         }
         return own;
+    }
+
+    /** HoF's archive loader only discovers these optional mods as map archives. */
+    static void mountHofUserMods(File overlay, File game) {
+        if (overlay == null) return;
+        File mods = Games.child(game, "UserMODs");
+        Path maps = new File(overlay, "Maps").toPath();
+        for (String mod : new String[] {"zzzz_h5_static_main_menu", "zzzz_h5_static_hero_markers"}) {
+            Path archive = maps.resolve(mod + ".h5m");
+            Path part = maps.resolve(mod + ".part");
+            try {
+                Files.deleteIfExists(archive);
+                File source = mods != null && Files.isDirectory(mods.toPath(), LinkOption.NOFOLLOW_LINKS)
+                    ? Games.child(mods, mod + ".h5u") : null;
+                if (source == null || !Files.isRegularFile(source.toPath(), LinkOption.NOFOLLOW_LINKS)) continue;
+                Files.createDirectories(maps);
+                Files.copy(source.toPath(), part, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES);
+                Files.move(part, archive, StandardCopyOption.ATOMIC_MOVE);
+            } catch (IOException e) {
+                android.util.Log.w("HeroesV", "UserMODs: " + mod + ": " + e);
+            } finally {
+                part.toFile().delete();
+            }
+        }
     }
 
     /** Whether the APK carries the game's images (the launcher asks before it starts). */

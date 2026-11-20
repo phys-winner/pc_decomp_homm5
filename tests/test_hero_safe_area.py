@@ -54,6 +54,9 @@ int main(void){
    scale_place_safe(safe_root,0x3000,parent,parent,w,h,position,size,shift);
    for(int axis=0;axis<2;++axis){
     float lo=position[axis]+shift[axis],view=axis?h:w;
+    /* Every edition: on an unreduced axis the inset root's native layout moves
+       the whole interface; no single window is clamped out of its group. */
+    if(axis?h>=767.5f:w>=1023.5f){near(shift[axis],0);continue;}
     assert(lo>=edge[axis]-.0002f);
     if(size[axis]<=view-edge[axis]-edge[axis+2])assert(lo+size[axis]<=view-edge[axis+2]+.0002f);
    }
@@ -124,12 +127,14 @@ ROOT_PROBE = r'''
     near(viewport.rect[0],69);near(viewport.rect[1],12);near(viewport.rect[2],1707-35);near(viewport.rect[3],768-15);
     assert(safe_root==0x24000-0xF8&&fit.requested==100&&scale_percent==100);
     assert(MEMF(elements[0]+0x64)>=69&&MEMF(elements[0]+0x68)>=12);
-    near(MEMF(elements[1]+0x64)+80,1707-35);near(MEMF(elements[1]+0x68)+64,768-15);
+    /* The far element follows the inset root's actual edge (the mock adds +7,+9). */
+    {float r[4];assert(scale_rect(0x24000-0xF8,r));near(r[2],1707-35+7);near(r[3],768-15+9);
+     near(MEMF(elements[1]+0x64)+80,r[2]);near(MEMF(elements[1]+0x68)+64,r[3]);}
     int calls=viewport_calls;
     for(int i=0;i<8;++i)pump();assert(viewport_calls==calls); /* No repeated native relayout. */
     void_touch_safe_area(2400,1080,0,0,96,0);pump();
     assert(viewport_calls==calls+1);near(viewport.rect[0],0);near(viewport.rect[2],1707-69);
-    near(MEMF(elements[1]+0x64)+80,1707-69);
+    {float r[4];assert(scale_rect(0x24000-0xF8,r));near(r[2],1707-69+7);near(MEMF(elements[1]+0x64)+80,r[2]);}
     void_touch_safe_area(2400,1080,0,0,0,0);pump();assert(!safe_root);
     near(viewport.rect[0],0);near(viewport.rect[2],1707);
     calls=viewport_calls;for(int i=0;i<8;++i)pump();assert(viewport_calls==calls);
@@ -160,6 +165,18 @@ ROOT_PROBE = r'''
         assert(lifted_layouts==layouts);near(MEMF(hp+0x8C),125);near(MEMF(hp+0xA8),768);
         near(MEMF(0xF74BE0),1707);near(MEMF(0xF74BE4),768);
     }
+    /* A larger requested scale falls back to 100% on the hero screen (768-tall page):
+       its root takes this canvas's inset too, and every window keeps its native
+       offset from it: the interface moves as one, never only the overhanging tabs. */
+    void_touch_safe_area(2400,1080,93,0,0,0);void_touch_set_scale(1.5f);
+    for(int i=0;i<4;++i)pump();
+    near(MEMF(0xF74BE0),1707);near(MEMF(0xF74BE4),768);
+    assert(fit.requested==150&&fit.percent==100&&safe_root==0x24000-0xF8);
+    near(safe_active[0],67);near(viewport.rect[0],67);
+    {float r[4];assert(scale_rect(0x24000-0xF8,r));near(r[0],67+7);
+     near(MEMF(header+0x64),r[0]+60);near(MEMF(elements[0]+0x64),r[0]);}
+    void_touch_set_scale(1);pump();
+    puts("PASS actual hero cutout at requested UI150 shown at 100%: inset root and uniform shift");
     puts("PASS actual root cutout integration at UI100: full canvas, native parent/children and full-height hero offset, pump/dispatch paths, four sides, idempotence and removal");
     }
 '''
@@ -179,7 +196,8 @@ class HeroSafeAreaTest(unittest.TestCase):
                     path, _ = port_patches.adapt_host_source(path, ROOT / "build/tests" / ("hero-safe-" + edition), edition)
                 source = path.read_text(encoding="utf8")
                 actual = "\n".join(function(source, name) for name in signatures)
-                compile_probe("hero-safe-" + edition, PROBE.replace("/* ACTUAL */", actual), {}, ["/DHERO=0x" + hero])
+                compile_probe("hero-safe-" + edition, PROBE.replace("/* ACTUAL */", actual), {},
+                              ["/DHERO=0x" + hero])
 
     def root_fixture(self):
         source = (ROOT / "android/host/touch_scale.c").read_text(encoding="utf8")
@@ -203,11 +221,14 @@ class HeroSafeAreaTest(unittest.TestCase):
         harness, source = self.root_fixture()
         mutants = {
             "unreduced_axis_fit": (
-                "if ((axis ? view_h >= 767.5f : view_w >= 1023.5f)) shift[axis] = 0;",
+                "if (axis ? view_h >= 767.5f : view_w >= 1023.5f) shift[axis] = 0;\n        else",
                 "/* Reintroduce ordinary fitting on a native-sized axis. */"),
-            "clamp_axis_without_cutout": (
-                "if ((safe_active[axis] || safe_active[axis + 2]) && size[axis] <= inner_view[axis])",
-                "if (size[axis] <= inner_view[axis])"),
+            "clamp_unreduced_axis": (
+                "else if ((safe_active[axis] || safe_active[axis + 2]) && size[axis] <= inner_view[axis])",
+                "if ((safe_active[axis] || safe_active[axis + 2]) && size[axis] <= inner_view[axis])"),
+            "fallback_keeps_stale_inset": (
+                "safe && scale_viewport_ready(wanted_w, wanted_h) ? viewport.root :",
+                "0 ? viewport.root :"),
             "unrelated_owner_fit": (
                 " ||\n        (!reduced && !scale_safe_owner(owner))", ""),
             "fit_after_inset_removal": (

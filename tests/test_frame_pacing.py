@@ -1,8 +1,18 @@
 """Execute the production deadline scheduler with interrupted waits and guest ownership."""
+import sys
 import unittest
 
 from test_d3d_lifecycle import function
 from test_static_tls import ROOT, compile_probe
+
+sys.path.insert(0, str(ROOT / "tools"))
+from port_patches import legacy_ui_branch
+
+
+def edition_source(legacy):
+    """d3d9_gl.c as an edition compiles it (since 2026-11-20 the same pacer in all three)."""
+    text = (ROOT / "android/host/d3d9_gl.c").read_bytes().replace(b"\r\n", b"\n")
+    return legacy_ui_branch(text, legacy).decode("utf8")
 
 
 HARNESS = r'''
@@ -37,6 +47,8 @@ static int clock_nanosleep(int clock,int flags,const struct timespec *deadline,s
  fake_now=target+oversleep;return 0;
 }
 #include "pacing.h"
+/* The pacer's timer path: d3d_gl_frame_pace() calls frame_limit() with the effective cap. */
+static void d3d_gl_frame_pace(void){frame_limit(void_port_fps_limit());}
 int main(void){
  d3d_gl_frame_pace();assert(!waits&&frame_deadline_ns==fake_now+16666666ull);
  fake_now+=5000000ull;interrupts=2;d3d_gl_frame_pace();
@@ -64,17 +76,22 @@ int main(void){
 
 class FramePacingTest(unittest.TestCase):
     def test_actual_deadlines_and_guest_release(self):
-        source = (ROOT / "android/host/d3d9_gl.c").read_text(encoding="utf8")
-        pace = function(source, "void d3d_gl_frame_pace(")
+        source = edition_source(True)
+        self.assertEqual(source, edition_source(False))
+        self.assertIn("frame_limit(fps);", function(source, "void d3d_gl_frame_pace("))
+        pace = function(source, "static void frame_limit(")
         compile_probe("frame_pacing", HARNESS, {"pacing.h": pace})
         with self.assertRaisesRegex(AssertionError, "Assertion failed"):
             compile_probe("frame_pacing_missing_release", HARNESS,
                           {"pacing.h": pace.replace("void_blocking_begin();", "/* omitted */", 1)})
 
     def test_surface_and_device_reset_deadline(self):
-        source = (ROOT / "android/host/d3d9_gl.c").read_text(encoding="utf8")
+        source = edition_source(True)
         self.assertIn("atomic_store(&pace_restart, 1);", function(source, "static void follow_window("))
         self.assertIn("atomic_exchange(&pace_restart, 0)", function(source, "void d3d_gl_frame_pace("))
+        toe = edition_source(False)
+        self.assertIn("atomic_exchange(&pace_restart, 0)", function(toe, "static void frame_limit("))
+        self.assertIn("frame_limit(fps);", function(toe, "void d3d_gl_frame_pace("))
         for name in ("int d3d_gl_init(", "void d3d_gl_device_destroy("):
             self.assertIn("frame_deadline_ns = 0;", function(source, name))
 

@@ -80,6 +80,21 @@ static void troop_reset(void) {
     MEM32(0x91000)=0xA6000;MEM32(0xA6020)=23;
     dnd_down_x=91;dnd_down_y=333;
 }
+static void troop_reset_resurrection(void) {
+    troop_reset();
+    MEM32(0x4000)=0xE42A1C;
+    MEM32(0xE42A1C+ARMY_HANDLER_SLOT)=0x649E70;
+    MEM32(0x4000+ARMY_COMMAND)=0xA4400;MEM32(0x4000+ARMY_COMMAND+4)=0xA4500;
+    MEM32(0x4000+ARMY_UPDATE)=0xAF000;MEM8(0xAF03C)=0;
+    MEM32(0x4000+ARMY_ROWS)=0xAF100;MEM32(0x4000+ARMY_ROWS+4)=0xAF108;
+    for (unsigned row=0;row<2;++row) {
+        uint32_t node=0xAF200+row*0x40,cells=0xAF800+row*0x200;
+        MEM32(0xAF100+4*row)=node;MEM32(node+4)=row;
+        MEM32(node+8)=row?0:0xA4200;MEM32(node+12)=row?0x92000:0x90000;
+        MEM32(node+20)=cells;MEM32(node+24)=cells+7*48;
+        for (unsigned i=0;i<7;++i) MEM32(cells+48*i)=0x80000+row*0x1000+i*0x100;
+    }
+}
 static void troop_begin(int drag) {
     event(TOUCH_BEGIN,100,400);event(TOUCH_HOLD_BEGIN,100,400);
     if(drag)event(TOUCH_HOLD_DRAG,130,402);
@@ -168,6 +183,11 @@ static void troop_tests(void) {
     troop_reset();troop_begin(0);event(TOUCH_HOLD_DRAG,200,400);assert(gesture.x==200&&dnd_moves>=2);
     event(TOUCH_END,200,400);assert(!gesture.active&&!dnd_held(0x60000)&&dnd_drops==1);
     troop_reset();troop_overlay=1;troop_begin(0);assert(!gesture.second_troop&&!dnd_pickups);
+    troop_reset_resurrection();
+    MEM32(0x91004)=0xA6100;MEM32(0xA611C)=MEM32(0xA601C);MEM32(0xA6120)=3;
+    troop_begin(0);event(TOUCH_SECOND_HOLD,200,400);
+    assert(troop_dialogs==1&&troop_installs==1&&!troop_commits&&troop_pins==troop_unpins);
+    assert(troop_args[1]==0&&troop_args[4]==1&&MEM32(0xA6020)==23&&MEM32(0xA6120)==3);
     troop_mode=0;
     puts("PASS troop native splitting: physically separate contacts, held-source/repeat/free/source exclusion/full sound, long-hold drag, flyby-independent army, controller ABI+validation, modal/crossrow UI ownership");
 }

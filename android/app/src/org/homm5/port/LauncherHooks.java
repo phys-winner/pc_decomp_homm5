@@ -77,6 +77,16 @@ public final class LauncherHooks implements PortHooks {
 
     @Override public void checkedLibraries(Context context, String mode, File folder) { DxvkRuntime.checked(context, folder); }
 
+    /** The edition's current game log for the launcher's HyperOS tip: <userdata>/homm5.log, which
+     *  SessionLog begins and the engine appends to; homm5.1.log and homm5.2.log of the earlier
+     *  sessions lie beside it. The folder is GameActivity.baseDir()'s, built here: the launcher's
+     *  process does not load the game's activity. */
+    @Override public String logFile(Context context, String distribution) {
+        if (!Games.valid(distribution)) return null;
+        File base = new File(android.os.Environment.getExternalStorageDirectory(), "HeroesV");
+        return new File(new File(base, Games.userdata(distribution)), "homm5.log").getPath();
+    }
+
     @Override public void migrate(Context context) {
         keepCurrentTask(context);
         GameShortcuts.install(context);

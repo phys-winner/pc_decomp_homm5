@@ -88,7 +88,8 @@ def distributions_java():
         for p in d["parts"]:
             lines += ["    { Spec.Part p = new Spec.Part();",
                       f"      p.id = {java_text(p['id'])}; p.folder = {java_text(p.get('folder', ''))};",
-                      f"      p.fixed = {str(p.get('fixed', False)).lower()}; p.mount = {str(p.get('mount', False)).lower()};"]
+                      f"      p.fixed = {str(p.get('fixed', False)).lower()}; p.mount = {str(p.get('mount', False)).lower()};",
+                      f"      p.folderGroup = {java_text(p.get('folderGroup', ''))};"]
             for r in p["required"]:
                 lines.append(f"      p.required.add({java_text(r)});")
             lines.append(f"      p.marker = {java_text(p.get('marker', p['required'][0]))};")
@@ -176,7 +177,11 @@ class LauncherSpecTest(unittest.TestCase):
         self.assertEqual((modes["dxvk"]["kind"], modes["dxvk"]["vulkan"], modes["dxvk"]["minSdk"]), ("vulkan", "1.3", 30))
         self.assertTrue(modes["turnip"]["needsBC"] and modes["dxvk"]["needsBC"])   # the game's DXT textures, unconverted
         options = {o["key"]: o for o in data["options"]}
-        self.assertEqual(set(options), {"new_creature_framework", "lan_peers", "large_address_aware"})
+        self.assertEqual(set(options), {"new_creature_framework", "lan_peers", "large_address_aware",
+                                        "main_menu_3d", "fast_main_menu"})
+        for key, default in (("main_menu_3d", "1"), ("fast_main_menu", "0")):
+            self.assertEqual((options[key]["type"], options[key]["default"]), ("bool", default))
+            self.assertNotIn("only", options[key])
         self.assertEqual((options["new_creature_framework"]["type"], options["new_creature_framework"]["default"]), ("bool", "0"))
         self.assertEqual((options["lan_peers"]["type"], options["lan_peers"]["default"]), ("text", ""))
         memory = options["large_address_aware"]
@@ -302,6 +307,22 @@ public class HeroesImportCheck {
             at.clear();
             for (Install.Found f : found) at.put(f.distribution.id, f.folder);
             assert at.size() == 3 && at.get("toe").equals(tribes) && at.get("hof").equals(gold) && at.get("vanilla").equals(gold) : at;
+            // The launcher's folder pick: the selected card's edition, then the others beside it (0.2-dev took all at once).
+            List<Install.Found> chosen = Install.discover(all, d("toe"), games);
+            List<Install.Found> others = Install.others(all, d("toe"), games, chosen);
+            assert chosen.size() == 1 && chosen.get(0).folder.equals(tribes) : chosen.size();
+            assert others.size() == 1 && others.get(0).folder.equals(gold)
+                && Install.key(others.get(0).distribution, others.get(0).part).equals("part.gold.game")
+                : "Heroes V + Hammers of Fate come along once, for their shared folder: " + others.size();
+            chosen = Install.discover(all, d("toe"), gold);
+            others = Install.others(all, d("toe"), gold, chosen);
+            assert chosen.isEmpty() && others.size() == 1 && others.get(0).folder.equals(gold) : "the Gold folder picked on the ToE card";
+            for (String id : new String[] {"hof", "vanilla"}) {
+                chosen = Install.discover(all, d(id), games);
+                others = Install.others(all, d(id), games, chosen);
+                assert chosen.size() == 1 && chosen.get(0).folder.equals(gold) && others.size() == 1
+                    && others.get(0).distribution.id.equals("toe") && others.get(0).folder.equals(tribes) : id + ": ToE beside the Gold folder";
+            }
             assert Install.discover(all, new File(games, "Partial")).isEmpty() : "an unknown version is no edition's ready game";
             File mixed = new File(games, "Mixed");
             assert Install.present(d("hof").parts.get(0), mixed) : "case is ignored, as on Windows";

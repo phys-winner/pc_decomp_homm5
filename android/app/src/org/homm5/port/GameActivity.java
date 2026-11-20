@@ -96,6 +96,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     /** Startup work done so far (files opened), and whether the first screen is up. */
     private static native int nativeLoadWork();
     private static native boolean nativeLoadReady();
+    private static native void nativeMenuReady();
     private static native void nativeRequestGameSwitch();
     private static volatile WeakReference<GameActivity> currentActivity = new WeakReference<>(null);
 
@@ -133,6 +134,8 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private TextView textPreviewValue;
     private HorizontalScrollView textPreviewScroll;
     private Surface refreshSurface;
+    /* All editions: the display-rate follower, the perf flag files and HyperOS diagnostics. */
+    private PerfMonitor perf;
     private final int[] safeAreaCache = new int[6];
     private float frameRate = 60, refreshVote;
     private SharedPreferences preferences;
@@ -386,6 +389,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         }
         File images = Assets.images(this, base, gameEdition());
         File overlay = Assets.overlay(this, skipIntro(), gameEdition());
+        if ("hof".equals(gameEdition())) Assets.mountHofUserMods(overlay, gameDir);
         File cache = new File(getCacheDir(), Games.cache(gameEdition()));
         cache.mkdirs();
         /* The saved scales seed the game's port variables before it registers them. */
@@ -412,6 +416,9 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         /* Every edition keeps its previous sessions' logs and how they ended, in its own userdata
            folder (the engine appends to this one: <userdata>/homm5.log). */
         SessionLog.begin(this, data);
+        /* Every edition's engine has the frame monitor (android/host/perf_diag.c). */
+        perf = PerfMonitor.start(this, base, gameDir, renderer, new File(base, "verbose").exists());
+        if (resumed) perf.resume();
         launchTiming("native-start");
         nativeStart(gameDir.getAbsolutePath(), data.getAbsolutePath(), images.getAbsolutePath(),
                 overlay != null ? overlay.getAbsolutePath() : null, cache.getAbsolutePath(), 0, 0,
@@ -486,6 +493,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         super.onWindowFocusChanged(hasFocus);
         if (hasFocus) { hideSystemUi(); requestHighRefresh(); restoreStartupFocus(); }
         else if (touch != null) releaseAll();
+        if (perf != null) perf.focus(hasFocus);
     }
 
     private static int chooseRefreshMode(Display.Mode current, Display.Mode[] modes, float fps) {
@@ -517,6 +525,10 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         Display display = surface.getDisplay();
         if (display == null) return;
         int mode = chooseRefreshMode(display.getMode(), display.getSupportedModes(), frameRate);
+        if (perf != null) {
+            if (perf.noPreferredMode()) mode = 0;     /* A/B flag file no-preferred-mode: the vote alone */
+            perf.requested(display, mode, frameRate);
+        }
         WindowManager.LayoutParams params = getWindow().getAttributes();
         if (params.preferredDisplayModeId != mode) {
             params.preferredDisplayModeId = mode;
@@ -643,6 +655,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
 
     @Override public void surfaceCreated(SurfaceHolder holder) {
         refreshSurface = null;
+        if (perf != null) perf.surface("created");
         requestHighRefresh();
         surfaceHidden = false;
         nativeSurface(holder.getSurface());
@@ -650,6 +663,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     @Override public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) { requestHighRefresh(); }
     @Override public void surfaceDestroyed(SurfaceHolder holder) {
         refreshSurface = null;
+        if (perf != null) perf.surface("destroyed");
         releaseAll();
         if (!surfaceHidden) nativeSurface(null);
         surfaceHidden = false;
@@ -688,7 +702,13 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         if (nativeReady) nativePause(true);
         hideDxvkSurface();
         if (lanLock != null && lanLock.isHeld()) lanLock.release();
+        if (perf != null) perf.pause();
         super.onPause();
+    }
+
+    @Override public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        if (perf != null) perf.trim(level);
     }
 
     @Override protected void onResume() {
@@ -700,10 +720,12 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         showNextTouchHint();
         requestHighRefresh();
         if (lanLock != null && !lanLock.isHeld()) lanLock.acquire();
+        if (perf != null) perf.resume();
     }
 
     @Override protected void onDestroy() {
         finishLaunchDimming("destroy");
+        if (perf != null) perf.destroy();
         releaseAll();
         if (hardware != null) ((InputManager)getSystemService(Context.INPUT_SERVICE)).unregisterInputDeviceListener(hardware);
         if (gamepadHelp != null) gamepadHelp.dismiss();
@@ -848,6 +870,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                         startupArtwork = null;
                         startupFocusPending = true;
                         restoreStartupFocus();
+                        nativeMenuReady();
                         if (armyActions != null) armyActions.offerForMouse();
                     }
                 });

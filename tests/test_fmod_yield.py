@@ -72,6 +72,11 @@ static int nanosleep(const struct timespec *request,struct timespec *remaining) 
 static void void_fatal(const char *message) {fputs(message,stderr);assert(0);}
 static volatile LONG pins;
 static void pin_guest_thread(void) {InterlockedIncrement(&pins);}
+/* Tribes of the East's machine-holder diagnostics (perf_diag.c): bookkeeping only here. */
+static volatile LONG lock_waits_done,owner_begins,owner_ends;
+static void lock_wait_done(uint64_t waited) {(void)waited;InterlockedIncrement(&lock_waits_done);}
+static void lock_owner_begin(void) {InterlockedIncrement(&owner_begins);}
+static void lock_owner_end(void) {InterlockedIncrement(&owner_ends);}
 /* ACTUAL_MACHINE */
 /* ACTUAL_BLOCKING_AND_YIELD */
 /* ACTUAL_SLEEP */

@@ -3,7 +3,7 @@
 Heroes of Might and Magic V, Hammers of Fate and Tribes of the East on Android ARM64 through static
 x86 recompilation, with native touch controls and a Direct3D 9 to OpenGL ES bridge.
 
-**Current version: 0.8.1-dev.** All three engines use ThinLTO and their own device-trained PGO profiles.
+**Current version: 0.8.2-dev.** All three engines use ThinLTO and their own device-trained PGO profiles.
 This is an experimental port for sideloading.
 The original game's menus, adventure maps, towns, battles, sound and saves run
 through a local Win32 compatibility host. The game and eight DLLs are translated
@@ -319,7 +319,9 @@ are excluded from Git.
    and HoF, and **Tribes of the East**. Their defaults are
    `/sdcard/HeroesV/game-hof/` and `/sdcard/HeroesV/game/`. Choose an installed
    GOG folder (a folder inside or above it also works) or a ZIP of that installed
-   game. The Gold folder must contain both `bin/` and `bina1/`, base `data/`,
+   game. One folder pick also takes the other games found there: picking the
+   folder that holds both the Gold folder and the Tribes of the East folder sets
+   up all three editions; an edition that already has a working folder keeps it. The Gold folder must contain both `bin/` and `bina1/`, base `data/`,
    `DataLS/` including `p6-data.pak`, and `dataa1/` including `a1p1-data.pak`.
    ToE uses its separate `bin/` and `data/`, including `a2p1-data.pak`.
    An empty required EXE or data bank is reported as `0 B`.
@@ -558,8 +560,10 @@ in all three editions; each edition keeps its own profile settings:
     same frame rate.
 
 In battle the game disables the first page of each category, so everything that can
-change during a battle sits on the second page. Render and interface scales use native
-sliders with fixed percentage steps. The frame rate dropdown is built from the
+change during a battle sits on the second page. The render scale uses a native
+slider with fixed percentage steps. The interface scale is a dropdown in all three
+editions (50–200% in 25% steps); a value saved by the former slider stays in effect
+and the dropdown shows its nearest step. The frame rate dropdown is built from the
 display's own refresh rates (30 FPS and every supported rate from 45 to 240 Hz).
 The game's own video options now work under OpenGL ES as well: **Гамма** (applied
 in the final presentation pass), **Сглаживание** 2x/4x (multisampled rendering; it
@@ -577,7 +581,9 @@ refuses incompatible import destinations before replacing files.
 
 The interface scale is an upper limit: a large panel temporarily uses
 the largest scale at which it fits on screen. Closing it restores the requested
-scale. This also applies to adventure dialogs such as level-up; wrapped list
+scale. In all three editions the hero screen and the hero meeting move as a whole
+away from a camera cutout, at any interface scale; their tabs and buttons stay on
+their panels and respond to taps. This also applies to adventure dialogs such as level-up; wrapped list
 rows grow to keep their text from overlapping the next row.
 Cutscenes, dialogue scenes, video screens and loading illustrations temporarily
 use the original 100% interface scale, then restore the chosen game scale. This
@@ -630,18 +636,40 @@ faulting thread, the host backtrace as `libhomm5.so+offset` (resolve it with
 and the guest return addresses found on the game's stack. To report a crash,
 send `homm5.1.log` (the session that crashed) together with `homm5.log`.
 
+## Xiaomi HyperOS: stutter and Game Turbo
+
+HyperOS chooses its CPU thermal limits by the name of the app in front. An app that is
+not on its list of games gets the strictest scenario, which can slow the big CPU core
+from about 3 GHz to 2 GHz once the phone is warm. The game's own thread needs most of a
+60 Hz frame on that core, so the result is stutter and long frames at any graphics
+setting. If the game does not run smoothly, add it to **Game Turbo** (Security app →
+Game Turbo → add game) and restart the phone; the launcher offers a shortcut to Game
+Turbo on HyperOS ("Don't show again" hides the tip, the launcher's About section brings
+it back). If even frames become uneven after adding the game, remove it from Game
+Turbo again and compare.
+
+Starting with 0.8.2-dev, all three editions also follow the display's actual refresh rate (for
+example 120 → 60 Hz when HyperOS limits the panel while hot) instead of waiting for
+frames the panel no longer shows, ask the system for CPU frequency hints (Android's
+ADPF, Android 13+, on HyperOS by default) and, on HyperOS, write `[hyperos]` lines
+about every long frame into the edition's `homm5.log`. Attach `homm5.log`, `homm5.1.log` and
+`homm5.2.log` to a stutter report. Files in `/sdcard/HeroesV` switch the diagnostics
+for comparisons: `perf-diag` turns them on on any phone, `no-perf-diag` off; `no-adpf`,
+`adpf`, `pace-timer`, `no-refresh-follow`, `cores-near`, `cores-none` and
+`rt-cores-early` are experiments described in the developer notes.
+
 ## Versions and local release files
 
-The current version is `0.8.1-dev` / code `14`. Earlier development builds used
-`0.1-dev`, `0.2-dev`, `0.3-dev`, `0.3.1-dev`, `0.3.2-dev`, `0.4-dev`, `0.5-dev`, `0.5.1-dev`, `0.6-dev`, `0.7-dev` and `0.8-dev`. The version is stored in
+The current version is `0.8.2-dev` / code `15`. Earlier development builds used
+`0.1-dev`, `0.2-dev`, `0.3-dev`, `0.3.1-dev`, `0.3.2-dev`, `0.4-dev`, `0.5-dev`, `0.5.1-dev`, `0.6-dev`, `0.7-dev`, `0.8-dev` and `0.8.1-dev`. The version is stored in
 `android/app/AndroidManifest.xml`; increase `android:versionCode` for every
 subsequent published build. Version `0.3-dev` uses code `5` (the replacement
 build supersedes the earlier code `4` APK); `0.3.1-dev` uses code `6`, and
 `0.3.2-dev` uses code `7`, `0.4-dev` uses code `8`, `0.5-dev` uses code `9`, and
 `0.5.1-dev` uses code `10`, `0.6-dev` uses code `11`, `0.7-dev` uses code `12`, and
-`0.8-dev` uses code `13`.
+`0.8-dev` uses code `13` and `0.8.1-dev` uses code `14`.
 
-Local release copies use `heroes-v-0.8.1-dev-<sha256-prefix>.apk`, where the suffix
+Local release copies use `heroes-v-0.8.2-dev-<sha256-prefix>.apk`, where the suffix
 is the first eight characters of the APK's SHA-256, with a companion `.sha256`
 file. The `pub/` directory is ignored. Building and naming an APK does not
 automatically publish it or create a Git tag.

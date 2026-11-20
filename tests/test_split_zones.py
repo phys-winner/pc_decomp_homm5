@@ -39,6 +39,22 @@ static void zone_tests(void) {
     assert(split_zone.visible&&!split_hint_visible);
     mock_now_ns+=1000000000ull;void_touch_ui_pump();assert(troop_commits==1);
     event(TOUCH_ABORT,0,0);split_hints=1;
+    troop_reset_resurrection();
+    event(TOUCH_BEGIN,100,400);event(TOUCH_HOLD_BEGIN,100,400);
+    event(TOUCH_HOLD_DRAG,800,80);void_touch_ui_pump();
+    mock_now_ns+=1000000000ull;void_touch_ui_pump();assert(troop_commits==1);
+    /* The engine cancels the drag as it refreshes both army rows after each order. */
+    for (int repeat=1;repeat<=2;++repeat) {
+        assert(MEM8(0xAF03C)&&MEM32(0xA6020)==(uint32_t)(23-repeat));
+        MEM32(0x60100)=0xE476F4;
+        void_touch_ui_pump();assert(!dnd_held(0x60000)&&split_zone.zone==2);
+        MEM8(0xAF03C)=0;
+        void_touch_ui_pump();assert(dnd_held(0x60000)&&dnd_pickups==1+repeat);
+        mock_now_ns+=500000000ull;void_touch_ui_pump();assert(troop_commits==repeat+1);
+    }
+    MEM32(0x60100)=0xE476F4;MEM8(0xAF03C)=0;
+    event(TOUCH_END,800,80);void_touch_ui_pump();
+    assert(!gesture.active&&!split_zone.visible&&!dnd_held(0x60000)&&dnd_pickups==3);
     troop_mode=0;
     puts("PASS split zones: half on release, first unit at exactly 1s, repeats at 0.5s, independent hint/zone switches, exit and abort");
 }

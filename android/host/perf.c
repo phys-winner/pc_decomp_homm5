@@ -23,9 +23,26 @@ uint64_t void_perf_calls(int kind)
     return kind >= 0 && kind < VOID_PERF_COUNT ? atomic_load_explicit(&perf_calls[kind], memory_order_relaxed) : 0;
 }
 
+#include "perf_diag.h"
+/* The calling thread's file work for the frame monitor (perf_diag.c). A file operation releases
+ * the machine around its system call; the wait to take it back (the last one, inside this
+ * operation) belongs to the lock, not to I/O. */
+static __thread uint64_t t_io_ns, t_io_bytes;
+
+void void_perf_io_take(uint64_t *ns, uint64_t *bytes)
+{
+    *ns = t_io_ns; *bytes = t_io_bytes;
+    t_io_ns = t_io_bytes = 0;
+}
+
 void void_perf_add(int kind, uint64_t ns, uint64_t bytes)
 {
     if (kind < 0 || kind >= VOID_PERF_COUNT) return;
+    if (void_diag_on && kind <= VOID_PERF_FILE_READ) {
+        uint64_t end, wait = void_lock_last_wait(&end), now = void_perf_now_ns();
+        t_io_ns += wait < ns && end + ns >= now ? ns - wait : ns;
+        t_io_bytes += kind == VOID_PERF_FILE_READ ? bytes : 0;
+    }
     atomic_fetch_add_explicit(&perf_ns[kind], ns, memory_order_relaxed);
     atomic_fetch_add_explicit(&perf_calls[kind], 1, memory_order_relaxed);
     atomic_fetch_add_explicit(&perf_bytes[kind], bytes, memory_order_relaxed);

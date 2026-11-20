@@ -148,13 +148,17 @@ OPTIONS = (
      "Сглаженный вариант эффекта размытия при переходе с карты в бой вместо исходного крупноблочного. "
      "При выключении эффект остаётся исходным.",
      "Выкл.", "Вкл.", (0.0, 1.0), 0),
+    ("port_shadow_fix", "port_shadow_fix", "port_battle_blur",
+     "Исправленные тени",
+     "Стабилизирует тени при повороте камеры. Выключите, если на устройстве появляются дефекты теней.",
+     "Выкл.", "Вкл.", (0.0, 1.0), 0),
 )
 
 # "Дополнительные" keeps the interface, network and touch controls; "Доп. графика" holds the
 # picture and the effects. Native battle mode disables page zero of a category as a unit, so
 # everything a player may change during a battle sits on page one of its category.
 GRAPHICS_PICTURE = ("port_render_scale", "port_fps_limit", "port_world_filter", "port_sharpness", "port_ui_filter")
-GRAPHICS_EFFECTS = ("port_lod_fix", "port_fog", "port_battle_blur")
+GRAPHICS_EFFECTS = ("port_lod_fix", "port_fog", "port_battle_blur", "port_shadow_fix")
 INTERFACE = ("port_ui_scale", "port_lan_vpn", "port_console", "port_army_actions")
 
 # Native numeric comboboxes store an item index; fractional scales need scrollers.
@@ -164,12 +168,25 @@ KINDS = {"port_fps_limit": "rates",
          "port_split_hints": "check", "port_split_zones": "check", "port_army_actions": "check",
          "port_combat_confirm": "check", "port_attack_hints": "check", "port_combat_route": "check",
          "port_lod_fix": "check", "port_fog": "check", "port_battle_blur": "check", "port_fast_ai": "check",
+         "port_shadow_fix": "check",
          "port_world_filter": "combo", "port_ui_filter": "combo"}
 COMBO_TEMPLATE = "UI/GameOptions/Templates/ComboBox/Combo.(WindowComboBox).xdb"
+# The interface scale is a list in every edition. The combobox stores the item index in
+# port_ui_scale_item; port_settings.c keeps port_ui_scale (the value, which old profiles hold)
+# in step with it. Its items must match port_settings.c:port_ui_items.
+UI_SCALE_LIST = "port_ui_scale_item"
+
+
+def kind(identifier, edition="toe"):
+    if identifier == "port_ui_scale":
+        return "combo"
+    return KINDS.get(identifier, "scroller")
 
 
 def options(edition="toe"):
-    return tuple(option for option in OPTIONS if option[0] != "port_combat_fit")
+    rows = tuple(option for option in OPTIONS if option[0] != "port_combat_fit")
+    return tuple(option[:1] + (UI_SCALE_LIST,) + option[2:] if option[0] == "port_ui_scale" else option
+                 for option in rows)
 
 
 def utf16(text):
@@ -196,7 +213,7 @@ def option_xml(option, indent="\t\t\t\t\t\t\t", kind="scroller"):
         for index, value in enumerate(values):
             lines += [f"{t}\t\t<Item>",
                       f'{t}\t\t\t<NameFileRef href="{folder}/Item{index:02d}.txt"/>',
-                      f"{t}\t\t\t<Value>{value:g}</Value>",
+                      f"{t}\t\t\t<Value>{index if kind == 'combo' else value:g}</Value>",
                       f"{t}\t\t</Item>"]
         lines.append(f"{t}\t</Items>")
     else:
@@ -267,7 +284,7 @@ def patch_uiconsts(data, edition="toe"):
         for identifier, page_name, page in pages:
             block += (f'<Item><ID>{identifier}</ID><NameFileRef href="Consts/GameOptions/{page_name}.txt"/>'
                       f'<TooltipFileRef href="Consts/GameOptions/{tooltip}.txt"/><Options>').encode()
-            block += b"".join(option_xml(option, kind=KINDS.get(option[0], "scroller")) for option in page)
+            block += b"".join(option_xml(option, kind=kind(option[0], edition)) for option in page)
             block += b"</Options></Item>"
         block += b"</Pages><Enabled>true</Enabled></Item>"
     data = data[:end] + block + data[end:]
@@ -286,7 +303,7 @@ def combo_rows(game_dir, edition="toe"):
     rows = window.find("MaxVisibleRows")
     if rows is None:
         raise ValueError("combobox template lacks MaxVisibleRows")
-    rows.text = str(max(int(rows.text), *(len(option[7]) for option in OPTIONS if KINDS.get(option[0]) == "combo")))
+    rows.text = str(max(int(rows.text), *(len(option[7]) for option in options(edition) if kind(option[0], edition) == "combo")))
     return {COMBO_TEMPLATE: ET.tostring(window, encoding="utf-8", xml_declaration=True)}
 
 
@@ -315,7 +332,7 @@ def texts(edition="toe"):
         for index, value in enumerate(values):
             if identifier == "port_fps_limit":
                 label = f"{value:g} кадров/с" if value else "Частота экрана"
-            elif KINDS.get(identifier) == "check":
+            elif kind(identifier, edition) == "check":
                 label = "Вкл." if value else "Выкл."
             elif identifier == "port_world_filter":
                 label = ("Билинейный", "Бикубический", "FSR 1 (EASU + RCAS)")[index]

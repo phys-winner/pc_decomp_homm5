@@ -60,8 +60,11 @@ int void_android_take_game_switch(void)
     return __atomic_exchange_n(&game_switch_requested, 0, __ATOMIC_ACQUIRE);
 }
 
+void void_diag_exit(void);
+
 void void_android_process_exit(void)
 {
+    void_diag_exit();
     if (!return_to_launcher || !jvm || !activity) return;
     JNIEnv *env = NULL;
     int attached = (*jvm)->GetEnv(jvm, (void **)&env, JNI_VERSION_1_6) == JNI_EDETACHED;
@@ -159,6 +162,8 @@ void *void_android_window_acquire(uint32_t *serial)
 static void *game_main(void *arg)
 {
     (void)arg;
+    /* The game's own thread had the Java thread's name: traces and vendor heuristics see it now. */
+    pthread_setname_np(pthread_self(), "h5-game");
     int code = void_game_main(game_dir, data_dir, images_dir, 0);
     void_log("[android] game thread finished with %d", code);
     void_process_exit((uint32_t)code, 0);
@@ -647,7 +652,7 @@ void void_android_text_state(uint32_t generation, const uint16_t *text, uint32_t
 }
 
 /* The loading screen polls the startup: files opened so far, and readiness. */
-static int load_ready;
+static int load_ready, menu_ready;
 
 void void_android_load_ready(void) { __atomic_store_n(&load_ready, 1, __ATOMIC_RELEASE); }
 
@@ -662,6 +667,14 @@ JNIEXPORT jboolean JNICALL Java_org_homm5_port_GameActivity_nativeLoadReady(JNIE
     (void)env; (void)type;
     return __atomic_load_n(&load_ready, __ATOMIC_ACQUIRE) ? JNI_TRUE : JNI_FALSE;
 }
+
+JNIEXPORT void JNICALL Java_org_homm5_port_GameActivity_nativeMenuReady(JNIEnv *env, jclass type)
+{
+    (void)env; (void)type;
+    __atomic_store_n(&menu_ready, 1, __ATOMIC_RELEASE);
+}
+
+int void_android_menu_ready(void) { return __atomic_load_n(&menu_ready, __ATOMIC_ACQUIRE); }
 
 /* port_settings.c: a profile or the options page changed a port variable;
  * Java keeps it as the next start's default. */

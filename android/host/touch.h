@@ -97,6 +97,7 @@ float void_port_sharpness(void);
 int void_port_lod_fix(void);
 int void_port_fog(void);
 int void_port_battle_blur(void);
+int void_port_shadow_fix(void);
 int void_port_fast_ai(void);
 void void_port_settings_pump(void);
 

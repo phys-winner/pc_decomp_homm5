@@ -468,11 +468,14 @@ static void scale_place_safe(uint32_t owner, uint32_t placement, const float par
     scale_place(placement, inner_parent, inner_frame, inner_view[0], inner_view[1], position, size, shift);
     for (int axis = 0; axis < 2; ++axis) {
         /* A cutout also activates this pass at UI100. On an unreduced axis the
-           native layout is authoritative: a full-height structural hero page
-           intentionally starts at Y125, with unused space below the canvas.
-           Treating it as a modal to fit at Y0 detaches its children from the art. */
-        if ((axis ? view_h >= 767.5f : view_w >= 1023.5f)) shift[axis] = 0;
-        if ((safe_active[axis] || safe_active[axis + 2]) && size[axis] <= inner_view[axis])
+           root's inset parent rectangle already moves the whole interface away
+           from the cutout through the native layout: a full-height structural
+           hero page keeps its Y125, and no single window is pulled out of its
+           group. Clamping only the windows that overhang the inset (the hero
+           tabs, the meeting's left page) moved them off their art and under
+           siblings that then took their taps. */
+        if (axis ? view_h >= 767.5f : view_w >= 1023.5f) shift[axis] = 0;
+        else if ((safe_active[axis] || safe_active[axis + 2]) && size[axis] <= inner_view[axis])
             /* Do not round a fractional far edge back underneath the cutout. */
             shift[axis] = fminf(inner_view[axis] - size[axis], fmaxf(0, position[axis] + shift[axis])) - position[axis];
         position[axis] += safe_active[axis];
@@ -530,12 +533,29 @@ static void scale_layout_window(void)
     --depth;
 }
 
+#ifndef HOMM5_LEGACY_UI
+static void scale_necromancy_icon_bounds(uint32_t window)
+{
+    if (scale_read32(fit.screen) != 0x00E42A1Cu || scale_read32(window) != 0x00E2FDB0u ||
+        !void_vm_readable(window + 0xDC, 0x11) || !MEM8(window + 0xEC)) return;
+    uint32_t placement = scale_placement(window);
+    if (!placement || MEM8(placement + 0x70) || MEM32(placement + 0x9C) || MEM32(placement + 0x94) ||
+        !scale_named(placement, "icon") || !void_vm_writable(window + 0x64, 8)) return;
+    /* Layout defers hidden creature icons, but the drag map hit-tests them, including empty slots. */
+    MEMF(window + 0x64) = MEMF(window + 0xDC) + MEMF(placement + 0x88);
+    MEMF(window + 0x68) = MEMF(window + 0xE0) + MEMF(placement + 0x8C);
+}
+#endif
+
 static void scale_layout_override(void)
 {
     uint32_t window = g_ecx, root = scale_town_holder(window);
     float before[2] = {0, 0};
     if (root) memcpy(before, GPTR(window + 0x64), sizeof before);
     scale_layout_window();
+#ifndef HOMM5_LEGACY_UI
+    scale_necromancy_icon_bounds(window);
+#endif
     if (!root || !void_vm_readable(window + 0x64, 8)) return;
     float dx = MEMF(window + 0x64) - before[0], dy = MEMF(window + 0x68) - before[1];
     if ((!dx && !dy) || !isfinite(dx) || !isfinite(dy) || fabsf(dx) > 16384 || fabsf(dy) > 16384) return;
@@ -996,9 +1016,17 @@ static int scale_pump(uint32_t screen)
         } else {
             /* Shown at 100% because an element needs it: the original layout, measured
                to see whether it still does. */
-            uint32_t root = screen ? scale_screen_root(screen) : 0;
+            /* The hero screen always falls back here (its pages are 768 tall). Its root
+               takes the cutout inset of this canvas, as at a requested 100%; otherwise the
+               layout hook kept the larger scale's inset and moved only the overhanging
+               windows. */
+            int safe = scale_read32(screen) == 0x00E3584Cu &&
+                       (safe_root || safe_current.edge[0] || safe_current.edge[1] ||
+                        safe_current.edge[2] || safe_current.edge[3]);
+            uint32_t root = safe && scale_viewport_ready(wanted_w, wanted_h) ? viewport.root :
+                            screen ? scale_screen_root(screen) : 0;
             if (!root) return 0;
-            fits = scale_fits(root - 0xF8, 0, wanted_w, wanted_h, base_w, base_h, requested);
+            fits = scale_fits(root - 0xF8, safe && safe_root, wanted_w, wanted_h, base_w, base_h, requested);
         }
         if (!fits || fits == fit.percent) return 1;
         VLOG("[touch] ui-fit screen=%08X %d%% -> %d%%", screen, fit.percent, fits);

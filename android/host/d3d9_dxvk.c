@@ -28,6 +28,7 @@
 #include <sys/stat.h>
 #include <time.h>
 #include "../dxvk/bridge_abi.h"
+#include "perf_diag.h"
 
 void *void_android_window_current(uint32_t *serial, int wait);
 void void_android_window_ack(uint32_t serial);
@@ -149,7 +150,7 @@ static void dxvk_wait_window(const char *what)
 /* port_fps_limit as d3d_gl_frame_pace applies it: after the present, without a catch-up burst. */
 static void dxvk_frame_pace(void)
 {
-    float fps = void_port_fps_limit();
+    float fps = void_port_effective_fps();     /* the panel's actual refresh (port_settings.c) */
     if (fps <= 0.0f) { frame_deadline_ns = 0; return; }
     uint64_t period = (uint64_t)(1000000000.0 / (double)fps), now = void_perf_now_ns();
     if (period != frame_period_ns || !frame_deadline_ns || now >= frame_deadline_ns + period) {
@@ -234,6 +235,11 @@ static uint32_t dxvk_present(dxvk_object *object, unsigned kind, unsigned slot, 
     void_touch_frame_presented();
     dxvk_frame_pace();
     pace_ns += void_monotonic_ns() - presented;
+    if (void_frame_monitor_on) {
+        void_frame_in in = { .frame = shadow.frame - 1u, .surface_live = 1, .pace_ns = pace_ns, .swap_ns = present_ns,
+                             .cap = void_port_fps_limit(), .eff_cap = void_port_effective_fps() };
+        void_frame_monitor(&in);
+    }
     dxvk_frame_stats();
     if (recomp_yield_hook) recomp_yield_hook();
     return hr;

@@ -104,6 +104,7 @@ public class PortSettingsCheck {
 '''
 
 NATIVE_HARNESS = r'''
+#define UI_LIST 1   /* every edition: the interface scale list */
 #include <assert.h>
 #include <math.h>
 #include <stdint.h>
@@ -135,8 +136,12 @@ static void void_log(const char *format, ...) { (void)format; }
 static void void_fatal(const char *format, ...) { fprintf(stderr, "%s\n", format); abort(); }
 static int void_vm_readable(uint32_t va, uint32_t size) { return va >= 0x1000 && va + size <= sizeof memory; }
 /* The engine allocator 0x008791F0 (cdecl size) for string storage, as its static initializers use it. */
-static int engine_allocations;
+static int engine_allocations, profile_saves;
+static char last_set[64];   /* the variable the engine setter last changed */
 static uint32_t void_call_guest(uint32_t va, int n, const uint32_t *args, int pops) {
+    /* 0x008353E0 (mapped per edition) saves the global config and the current profile, the
+     * options page's call; the army switch must already be in the engine's value then. */
+    if (va == 0x008353E0u) { assert(!n && !pops && !strcmp(last_set, "port_army_actions")); ++profile_saves; return 0; }
     assert(va == 0x008791F0u && n == 1 && args[0] == 8 && !pops); ++engine_allocations;
     uint32_t at = heap; heap += 16; assert(heap < 0x20000); memset(GPTR(at), 0, 16); return at;
 }
@@ -173,6 +178,32 @@ void sub_00C11400_lifted(void) {
     g_ebx = 0xB000u + (uint32_t)registrations; g_esi = 0x5000u + (uint32_t)registrations;
     g_edi = 0xE000u + (uint32_t)registrations; g_ebp = 0xF000u + (uint32_t)registrations;
 }
+/* ToE: the engine's variable setter 0x00C11900 (fastcall name, value; stack level; RET 4) runs
+ * the registered copier: here it writes the bound storage. The guest registers are kept around it. */
+typedef struct { uint32_t eax, ebx, ecx, edx, esi, edi, ebp, esp; } void_regs;
+static void void_regs_save(void_regs *r) { *r = (void_regs){g_eax, g_ebx, g_ecx, g_edx, g_esi, g_edi, g_ebp, g_esp}; }
+static void void_regs_load(const void_regs *r) {
+    g_eax = r->eax; g_ebx = r->ebx; g_ecx = r->ecx; g_edx = r->edx; g_esi = r->esi; g_edi = r->edi; g_ebp = r->ebp; g_esp = r->esp;
+}
+static int engine_sets;
+void sub_00C11900(void) {
+    assert(MEM32(g_esp) == RECOMP_RETADDR && MEM32(g_esp + 4) == 0xFFFFFFFFu);
+    uint32_t begin = MEM32(g_ecx), end = MEM32(g_ecx + 4), value = g_edx;
+    char name[64]; assert(end > begin && end - begin < sizeof name);
+    memcpy(name, GPTR(begin), end - begin); name[end - begin] = 0;
+    assert(MEM32(value + 8) > MEM32(value + 4) && !MEM16(MEM32(value + 8)));
+    for (int i = 0; i < registrations; ++i)
+        if (!strcmp(registered[i].name, name)) {
+            MEMF(registered[i].storage) = MEMF(value); ++engine_sets; strcpy(last_set, name);
+            g_esp += 8; g_eax = g_ecx = g_edx = 0xBAD; return;
+        }
+    assert(!"unregistered variable");
+}
+/* Tribes of the East's display-rate follower (port_settings.c) uses the frame monitor's switches. */
+int void_diag_on;
+unsigned void_perf_options(void) { return 0; }
+void void_perf_log_summary(void) {}
+uint64_t void_perf_now_ns(void) { return 0; }
 #include "port_settings_impl.h"
 static uint32_t engine_name;
 static void engine_registers(const char *name) {
@@ -227,7 +258,7 @@ int main(void) {
     /* The first engine registration also registers the port's four profile floats. */
     engine_name = void_galloc(64); int blocks = live_blocks;
     engine_registers("net_timeout");
-    assert(registrations == PORT_COUNT+3 && !strcmp(registered[0].name, "net_timeout") && registered[0].storage == 0x2F010);
+    assert(registrations == PORT_COUNT+3+UI_LIST && !strcmp(registered[0].name, "net_timeout") && registered[0].storage == 0x2F010);
     assert(g_eax == 0x1001 && g_ecx == 0xC001 && g_edx == 0xD001 && g_ebx == 0xB001);
     assert(g_esi == 0x5001 && g_edi == 0xE001 && g_ebp == 0xF001);
     static const char *const texts[PORT_COUNT] = {"1.25", "0.6", "2", "60", "0", "0", "0", "0", "0", "2", "1", "0.25", "1" /* SPLIT_DEFAULTS */};
@@ -262,9 +293,9 @@ int main(void) {
         uint32_t text = port_text_storage + 12u * (uint32_t)i;
         assert(MEM32(text) && MEM32(text + 4) == MEM32(text) && MEM32(text + 8) == MEM32(text) + 8);
     }
-    assert(live_blocks == blocks + 2);     /* storage only: names, texts and scratch are freed */
+    assert(live_blocks == blocks + 2 + UI_LIST);     /* storage only: names, texts and scratch are freed */
     engine_registers("net_port");
-    assert(registrations == PORT_COUNT+4 && !strcmp(registered[PORT_COUNT+3].name, "net_port") && g_eax == 0x1000u+PORT_COUNT+4);
+    assert(registrations == PORT_COUNT+4+UI_LIST && !strcmp(registered[PORT_COUNT+3+UI_LIST].name, "net_port") && g_eax == 0x1000u+PORT_COUNT+4+UI_LIST);
     /* The frame pump applies and reports each change once, clamped to its range. */
     void_port_settings_pump();
     assert(ui_sets == 1 && ui_applied == 1.25f && render_sets == 1 && render_applied == 0.6f && notifications == 5);
@@ -305,8 +336,14 @@ int main(void) {
     choose("20");void_port_settings_pump();assert(notified(3,20.0f));
     int before_notifications=notifications;void_port_settings_pump();assert(notifications==before_notifications);
     choose("241");void_port_settings_pump();assert(notified(3,60.0f));
-    assert(!void_port_army_actions());void_port_enable_army_actions();void_port_settings_pump();
-    assert(void_port_army_actions()&&notified(4,1));
+    assert(!void_port_army_actions());
+    /* The engine's value is set (the options page and profile read it), then saved as the
+     * options page does; the guest registers and stack stay as they were. */
+    int sets_before = engine_sets;
+    uint32_t army_esp = g_esp, army_ebx = g_ebx;
+    void_port_enable_army_actions();void_port_settings_pump();
+    assert(void_port_army_actions()&&notified(4,1)&&profile_saves==1&&engine_sets==sets_before+1);
+    assert(g_esp == army_esp && g_ebx == army_ebx);
     MEM32(port_text_storage + 16) = MEM32(port_text_storage + 12) - 1; assert(void_port_fps_limit() == 60.0f);
     MEMF(port_storage + 28) = 1; assert(void_port_lan_vpn());
     MEMF(port_storage + 28) = 0; assert(!void_port_lan_vpn());
@@ -315,6 +352,40 @@ int main(void) {
     MEMF(port_storage + 20) = 3; assert(void_port_cursor_offset(1) == 0.2f);
     MEMF(port_storage + 16) = NAN; assert(void_port_cursor_offset(0) == 0.0f);
     MEMF(port_storage + 24) = NAN; assert(!void_port_touch_cursor());
+#if UI_LIST
+    {   /* ToE: the interface scale list (port_ui_scale_item, an index) beside its value. */
+        const registration *list = &registered[3 + PORT_COUNT];
+        assert(!strcmp(list->name, "port_ui_scale_item") && list->level == 2 && list->copier == 0x00499630u);
+        assert(list->value == -1.0f && !strcmp(list->text, "-1") && list->storage == port_ui_item_storage);
+        /* A slider profile's value shows its nearest item and is kept as saved. */
+        int set_calls = engine_sets, blocks_now = live_blocks;
+        uint32_t esp = g_esp, ebx = g_ebx;
+        MEMF(port_storage) = 1.25f; void_port_settings_pump();
+        assert(MEMF(port_ui_item_storage) == 3.0f && MEMF(port_storage) == 1.25f && ui_applied == 1.25f);
+        /* Through the engine's setter (menus and the profile read its value), registers and heap kept. */
+        assert(engine_sets > set_calls && live_blocks == blocks_now && g_esp == esp && g_ebx == ebx);
+        MEMF(port_storage) = 1.1f; void_port_settings_pump();
+        assert(MEMF(port_ui_item_storage) == 2.0f && MEMF(port_storage) == 1.1f && ui_applied == 1.1f);
+        /* The player picks an item: its value applies, once. */
+        MEMF(port_ui_item_storage) = 4; void_port_settings_pump();
+        assert(MEMF(port_storage) == 1.5f && ui_applied == 1.5f && notified(0, 1.5f));
+        int sets = ui_sets; void_port_settings_pump();
+        assert(ui_sets == sets && MEMF(port_ui_item_storage) == 4.0f && MEMF(port_storage) == 1.5f);
+        /* An old profile loaded over it changes only the value. */
+        MEMF(port_storage) = 0.75f; void_port_settings_pump();
+        assert(MEMF(port_ui_item_storage) == 1.0f && ui_applied == 0.75f);
+        /* A new profile with both: the item decides. */
+        MEMF(port_storage) = 1.0f; MEMF(port_ui_item_storage) = 6; void_port_settings_pump();
+        assert(MEMF(port_storage) == 2.0f && ui_applied == 2.0f);
+        /* Invalid indices fall back to the value's item; the value stays. */
+        MEMF(port_ui_item_storage) = NAN; void_port_settings_pump();
+        assert(MEMF(port_ui_item_storage) == 6.0f && MEMF(port_storage) == 2.0f);
+        MEMF(port_ui_item_storage) = 9; void_port_settings_pump();
+        assert(MEMF(port_ui_item_storage) == 6.0f && MEMF(port_storage) == 2.0f);
+        MEMF(port_ui_item_storage) = -1; MEMF(port_storage) = NAN; void_port_settings_pump();
+        assert(MEMF(port_ui_item_storage) == 3.0f);   /* the seeded 1.25 default */
+    }
+#endif
     assert(!port_lock);
     puts("PASS actual port settings: frame-rate strings from display rates, LAN VPN switch, Java seeds, first registration adds port_ui/render/camera as level-2 profile floats with %g defaults (caller registers kept), later ones pass through, pump applies/reports each change once with UI/render/camera clamps and every options value");
     return 0;
@@ -351,15 +422,27 @@ class PortSettingsTest(unittest.TestCase):
                            "port_combat_route"]])
         self.assertEqual([[o.findtext("ID") for o in page.findall("Options/Item")] for page in categories[3].findall("Pages/Item")],
                          [["port_render_scale", "port_fps_limit", "port_world_filter", "port_sharpness", "port_ui_filter"],
-                          ["port_lod_fix", "port_fog", "port_battle_blur"]])
+                          ["port_lod_fix", "port_fog", "port_battle_blur", "port_shadow_fix"]])
         self.assertEqual([page.findtext("ID") for page in categories[3].findall("Pages/Item")], ["port_video", "port_effects"])
-        for name, default in (("port_lod_fix", "0"), ("port_fog", "1"), ("port_battle_blur", "0")):
+        for name, default in (("port_lod_fix", "0"), ("port_fog", "1"), ("port_battle_blur", "0"), ("port_shadow_fix", "0")):
             item = categories[3].find(f".//Options/Item[ID='{name}']")
             self.assertEqual((item.findtext("Type"), item.findtext("GlobalVar1"), item.findtext("DefaultValue1")),
                              ("OPTION_CHECK_BOX", name, default))
         kinds = {o.findtext("ID"): o.findtext("Type") for c in categories[2:] for o in c.findall(".//Options/Item")}
         self.assertEqual((kinds["port_render_scale"], kinds["port_ui_scale"], kinds["port_fps_limit"]),
-                         ("OPTION_SCROLLER", "OPTION_SCROLLER", "OPTION_COMBO_BOX"))
+                         ("OPTION_SCROLLER", "OPTION_COMBO_BOX", "OPTION_COMBO_BOX"))
+        # The interface scale is a list bound to its item index, in every edition.
+        scale = categories[2].find(".//Options/Item[ID='port_ui_scale']")
+        self.assertEqual((scale.findtext("GlobalVar1"), scale.findtext("DefaultValue1")), ("port_ui_scale_item", "2"))
+        self.assertEqual([port_ui.texts()[f"UI/Consts/GameOptions/Port_port_ui_scale/Item{i:02d}.txt"].decode("utf16")
+                          for i in range(7)], ["50%", "75%", "100%", "125%", "150%", "175%", "200%"])
+        for edition in ("vanilla", "hof"):
+            legacy = ET.fromstring(port_ui.patch_uiconsts(original, edition)).find(".//Options/Item[ID='port_ui_scale']")
+            self.assertEqual((legacy.findtext("Type"), legacy.findtext("GlobalVar1"), legacy.findtext("DefaultValue1")),
+                             ("OPTION_COMBO_BOX", "port_ui_scale_item", "2"))
+        native = (ROOT / "android/host/port_settings.c").read_text(encoding="utf8")
+        items = next(o for o in port_ui.OPTIONS if o[0] == "port_ui_scale")[7]
+        self.assertIn("port_ui_items[] = { " + ", ".join(f"{v!r}f" for v in items) + " };", native)
         self.assertEqual((kinds["port_touch_cursor"], kinds["port_lan_vpn"]), ("OPTION_CHECK_BOX",) * 2)
         fit = categories[2].find(".//Options/Item[ID='port_combat_fit']")
         self.assertIsNone(fit)
@@ -392,6 +475,11 @@ class PortSettingsTest(unittest.TestCase):
                 fit = legacy.find(".//Options/Item[ID='port_combat_fit']")
                 self.assertIsNone(fit)
                 toe = ET.fromstring(ET.tostring(categories[index]))
+                # Only the interface scale differs: a list in ToE, the slider in 1.6/2.1 (checked above).
+                for category in (legacy, toe):
+                    for page in category.findall(".//Options"):
+                        for option in page.findall("Item[ID='port_ui_scale']"):
+                            page.remove(option)
                 ET.indent(legacy); ET.indent(toe)
                 self.assertEqual(ET.tostring(legacy), ET.tostring(toe))
             self.assertIn("UI/Consts/GameOptions/Port_port_split_hints/Name.txt", port_ui.texts(edition))
@@ -570,9 +658,9 @@ public class GameActivity {
         source = path.read_text(encoding="utf-8")
         for name in ("host.h", "touch.h"):
             source = source.replace(f'#include "{name}"\n', "")
-        options = {option[1]: option for option in port_ui.options(edition)}
+        options = {option[0]: option for option in port_ui.options(edition)}
         names = ("port_ui_scale", "port_render_scale", "port_camera_sensitivity", "port_fps_limit", "port_cursor_offset_x", "port_cursor_offset_y", "port_touch_cursor")
-        self.assertEqual(set(options), set(names) | {"port_lan_vpn", "port_console", "port_world_filter", "port_ui_filter", "port_sharpness", "port_split_hints", "port_split_zones", "port_combat_confirm", "port_attack_hints", "port_combat_route", "port_lod_fix", "port_fog", "port_battle_blur", "port_fast_ai", "port_army_actions"})
+        self.assertEqual(set(options), set(names) | {"port_lan_vpn", "port_console", "port_world_filter", "port_ui_filter", "port_sharpness", "port_split_hints", "port_split_zones", "port_combat_confirm", "port_attack_hints", "port_combat_route", "port_lod_fix", "port_fog", "port_battle_blur", "port_fast_ai", "port_army_actions", "port_shadow_fix"})
         rows, counts = [], []
         for name in names:
             values = options[name][7]
@@ -580,10 +668,10 @@ public class GameActivity {
             rows.append("{" + ",".join(f"{value!r}f" for value in values) + "}")
             counts.append(str(len(values)))
         harness = NATIVE_HARNESS.replace("/* OPTION_VALUES */", ",".join(rows)).replace("/* OPTION_COUNTS */", ",".join(counts))
-        harness = harness.replace("/* SPLIT_NAMES */", ', "port_split_hints", "port_split_zones", "port_combat_confirm", "port_attack_hints", "port_combat_route", "port_lod_fix", "port_fog", "port_battle_blur", "port_fast_ai", "port_army_actions"')
+        harness = harness.replace("/* SPLIT_NAMES */", ', "port_split_hints", "port_split_zones", "port_combat_confirm", "port_attack_hints", "port_combat_route", "port_lod_fix", "port_fog", "port_battle_blur", "port_fast_ai", "port_army_actions", "port_shadow_fix"')
         lod_default = 0
         harness = harness.replace("EXPECTED_LOD_DEFAULT", str(lod_default))
-        harness = harness.replace("/* SPLIT_DEFAULTS */", ', "1", "1", "0", "0", "1", "0", "1", "0", "1", "0"')
+        harness = harness.replace("/* SPLIT_DEFAULTS */", ', "1", "1", "0", "0", "1", "0", "1", "0", "1", "0", "0"')
         checks = ''
         for name in ("hints", "zones"):
             index = "PORT_SPLIT_" + name.upper()
@@ -612,10 +700,11 @@ public class GameActivity {
                 checks += f'MEMF(port_storage+4*{index})={value};assert({"" if enabled else "!"}void_port_{name}());\n'
             checks += f'MEMF(port_storage+4*{index})={default};\n'
         harness = harness.replace("/* SPLIT_CHECKS */", checks)
-        for toe in ("008791F0", "00499700", "00499630", "00C11400"):
+        for toe in ("008791F0", "00499700", "00499630", "00C11400", "00C11900", "008353E0"):
             if edition != "toe":
                 self.assertNotIn("0x" + toe + "u", source)
                 harness = harness.replace("0x" + toe + "u", "0x" + addresses[toe] + "u").replace("sub_" + toe, "sub_" + addresses[toe])
+        self.assertEqual(options["port_ui_scale"][1], "port_ui_scale_item")
         compile_probe("port_settings-" + edition, harness, {"port_settings_impl.h": source})
 
     def test_frame_limit_option_labels(self):

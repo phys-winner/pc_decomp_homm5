@@ -48,14 +48,14 @@ static void void_android_settings_changed(int which, float value) { (void)which;
 enum { PORT_UI, PORT_RENDER, PORT_CAMERA, PORT_FPS, PORT_CURSOR_X, PORT_CURSOR_Y, PORT_TOUCH_CURSOR, PORT_LAN_VPN,
        PORT_CONSOLE, PORT_WORLD_FILTER, PORT_UI_FILTER, PORT_SHARPNESS, PORT_COMBAT_FIT,
        PORT_SPLIT_HINTS, PORT_SPLIT_ZONES, PORT_COMBAT_CONFIRM, PORT_ATTACK_HINTS, PORT_COMBAT_ROUTE,
-       PORT_LOD_FIX, PORT_FOG, PORT_BATTLE_BLUR, PORT_FAST_AI, PORT_ARMY_ACTIONS,
+       PORT_LOD_FIX, PORT_FOG, PORT_BATTLE_BLUR, PORT_FAST_AI, PORT_ARMY_ACTIONS, PORT_SHADOW_FIX,
        PORT_COUNT };
 static const char *const port_names[PORT_COUNT] = {
     "port_ui_scale", "port_render_scale", "port_camera_sensitivity", "port_fps_limit",
     "port_cursor_offset_x", "port_cursor_offset_y", "port_touch_cursor", "port_lan_vpn",
     "port_console", "port_world_filter", "port_ui_filter", "port_sharpness", "port_combat_fit",
     "port_split_hints", "port_split_zones", "port_combat_confirm", "port_attack_hints", "port_combat_route",
-    "port_lod_fix", "port_fog", "port_battle_blur", "port_fast_ai", "port_army_actions",
+    "port_lod_fix", "port_fog", "port_battle_blur", "port_fast_ai", "port_army_actions", "port_shadow_fix",
 };
 static float port_defaults[PORT_COUNT] = { 1.0f, 1.0f, 1.0f, 60.0f, 0.0f, 0.0f, 0.0f, 0.0f,
                                          0.0f, 2.0f, 1.0f, 0.25f, 1.0f
@@ -71,6 +71,16 @@ static uint32_t port_text_storage;        /* PORT_TEXT_COUNT guest strings {begi
 static float port_applied[PORT_COUNT] = { -1.0f, -1.0f, -1.0f, -1.0f, [PORT_ARMY_ACTIONS] = -1.0f };
 static uint32_t port_storage;             /* PORT_COUNT guest floats */
 static int port_state;                    /* 0 not yet, 1 registering, 2 registered */
+/* The interface scale is a list (tools/port_ui.py: OPTION_COMBO_BOX). A native combobox stores
+ * its item's index, so the list has a variable of its own, port_ui_scale_item (level 2, -1 until
+ * known); port_ui_scale keeps the value everything else reads. Profiles from the former slider hold
+ * only the value: the list then shows the nearest item and the saved value stays as it is until
+ * the player picks an item. The items must match port_ui.py's port_ui_scale values. */
+static const float port_ui_items[] = { 0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f };
+enum { PORT_UI_ITEMS = (int)(sizeof port_ui_items / sizeof *port_ui_items) };
+static uint32_t port_ui_item_storage;     /* guest float: the list's item index */
+static float port_ui_item_seen, port_ui_value_seen;
+static int port_ui_list_synced;
 static pthread_mutex_t port_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* Java's saved values seed the defaults (they predate the profile variables). */
@@ -153,6 +163,12 @@ static void register_port_variables(void)
                  port_text_defaults[PORT_TEXT_FPS_CHOICE]);
         pthread_mutex_unlock(&port_lock);
     }
+    port_ui_item_storage = void_galloc(4);
+    if (port_ui_item_storage) {
+        MEMF(port_ui_item_storage) = -1.0f;
+        if (!register_variable(scratch, "port_ui_scale_item", port_ui_item_storage, 0x00499630u, -1.0f, "-1", 2))
+            port_ui_item_storage = 0;
+    }
     void_gfree(scratch);
     void_log("[port] settings registered: ui %g, render %g, camera %g", (double)MEMF(port_storage),
              (double)MEMF(port_storage + 4), (double)MEMF(port_storage + 8));
@@ -193,14 +209,23 @@ int void_port_attack_hints(void) { return port_value(PORT_ATTACK_HINTS, 0.0f, 1.
 int void_port_combat_route(void) { return port_value(PORT_COMBAT_ROUTE, 0.0f, 1.0f) >= 0.5f; }
 int void_port_army_actions(void) { return port_value(PORT_ARMY_ACTIONS, 0.0f, 1.0f) >= 0.5f; }
 
-/* Guest UI thread, after accepting the physical-mouse suggestion. The game saves the profile. */
+static void port_set_variable(const char *name, float value);
+/* Guest UI thread, after accepting the physical-mouse suggestion. */
 void void_port_enable_army_actions(void)
 {
-    if (port_state == 2 && port_storage) MEMF(port_storage + PORT_ARMY_ACTIONS * 4) = 1;
+    if (port_state != 2 || !port_storage) return;
+    /* The storage is only the copier's mirror: the options page and the profile writer read the
+     * engine's own value, so set it there and save as the options page does. 0x008353E0 writes
+     * the global p2pdir.cfg and, unless profile_name is still "default_profile", the current
+     * profile; it takes no arguments and leaves the stack as it was. */
+    port_set_variable(port_names[PORT_ARMY_ACTIONS], 1.0f);
+    void_call_guest(0x008353E0u, 0, NULL, 0);
+    void_log("[port] army actions enabled for the mouse");
 }
 int void_port_lod_fix(void) { return port_value(PORT_LOD_FIX, 0.0f, 1.0f) >= 0.5f; }
 int void_port_fog(void) { return port_value(PORT_FOG, 0.0f, 1.0f) >= 0.5f; }
 int void_port_battle_blur(void) { return port_value(PORT_BATTLE_BLUR, 0.0f, 1.0f) >= 0.5f; }
+int void_port_shadow_fix(void) { return port_value(PORT_SHADOW_FIX, 0.0f, 1.0f) >= 0.5f; }
 int void_port_fast_ai(void) { return port_value(PORT_FAST_AI, 0.0f, 1.0f) >= 0.5f; }
 int void_port_filter(int ui) { return (int)lroundf(port_value(ui ? PORT_UI_FILTER : PORT_WORLD_FILTER, 0.0f, ui ? 3.0f : 2.0f)); }
 float void_port_sharpness(void) { return port_value(PORT_SHARPNESS, 0.0f, 1.0f); }
@@ -261,10 +286,146 @@ float void_port_fps_limit(void)
     return value >= 10 && value <= 240 ? (float)value : 60.0f;
 }
 
+#include "perf_diag.h"
+/* The display's actual refresh rate (PerfMonitor.java: Display after each change, or the
+ * Choreographer's measured rate when the two disagree by more than 10 %): HyperOS's thermal
+ * limit, power saving or the system's own setting may drop it below the player's choice. The
+ * limiter then paces at the largest cadence refresh/n (n = 1..3) not above the choice: 120 on
+ * a 60 Hz panel -> 60, 40 on 60 Hz -> 30, 60 on 120 Hz -> 60. The choice itself, the profile
+ * and the setFrameRate vote stay the player's, so the cap returns when the panel does. The
+ * no-refresh-follow flag file keeps pacing by the choice alone. */
+static volatile uint32_t display_hz_bits;   /* Java writes, the game's and sampler threads read */
+
+void void_port_set_display_rate(float hz)
+{
+    if (!isfinite(hz) || hz < 20.0f || hz > 480.0f) hz = 0.0f;
+    uint32_t bits;
+    memcpy(&bits, &hz, sizeof bits);
+    display_hz_bits = bits;
+}
+
+float void_port_display_rate(void)
+{
+    uint32_t bits = display_hz_bits;
+    float hz;
+    memcpy(&hz, &bits, sizeof hz);
+    return hz;
+}
+
+/* Pure: the cadence for a choice on a panel (0 Hz: unknown, the choice applies). */
+static float effective_cap(float choice, float hz, int *divisor)
+{
+    *divisor = 0;
+    if (hz <= 0.0f || choice <= 0.0f) return choice;
+    for (int n = 1; n <= 3; ++n)
+        if (hz / (float)n <= choice + 0.5f) { *divisor = n; return hz / (float)n; }
+    return choice;
+}
+
+static int pace_divisor;
+
+float void_port_effective_fps(void)
+{
+    static float logged_choice = -1.0f, logged_hz = -1.0f, logged_cap = -1.0f;
+    if (logged_cap < 0.0f) void_perf_log_summary();
+    float choice = void_port_fps_limit(), hz = void_port_display_rate();
+    if (void_perf_options() & PERF_OPT_NO_REFRESH_FOLLOW) hz = 0.0f;
+    int divisor;
+    float cap = effective_cap(choice, hz, &divisor);
+    pace_divisor = divisor;
+    if (cap != logged_cap || hz != logged_hz || choice != logged_choice) {
+        if (logged_cap >= 0.0f && hz != logged_hz && hz > 0.0f && logged_hz > 0.0f)
+            void_log("[refresh] %.0f→%.0f Hz, effective cap %.0f (choice %.0f)", logged_hz, hz, cap, choice);
+        else if (logged_cap >= 0.0f && cap != logged_cap)
+            void_log("[refresh] %.0f Hz, effective cap %.0f (choice %.0f)", hz, cap, choice);
+        if (void_diag_on && logged_cap >= 0.0f)
+            void_log("[hyperos] event t=%.3f diag=1 kind=eff_cap from=%.1f to=%.1f choice=%.1f display_hz=%.1f",
+                     (double)void_perf_now_ns() / 1e6, logged_cap, cap, choice, hz);
+        logged_cap = cap; logged_hz = hz; logged_choice = choice;
+    }
+    return cap;
+}
+
+/* The cap equals the refresh (n = 1) and the timer may yield to eglSwapInterval(1);
+ * pace-timer keeps the timer, pace-vsync forces this whenever the cadence is 1. */
+int void_port_vsync_paced(void)
+{
+    unsigned options = void_perf_options();
+    if (options & PERF_OPT_PACE_TIMER) return 0;
+    return pace_divisor == 1;
+}
+
+void void_port_scales(float *ui, float *render);
+void void_port_scales(float *ui, float *render)
+{
+    *ui = port_value(PORT_UI, 0.5f, 2.0f);
+    *render = port_value(PORT_RENDER, 0.25f, 1.0f);
+}
+
+/* The engine keeps each variable's value itself (the options pages and the profile writer
+ * 0x00C11A20 read it); the registered storage is only the copier's mirror. 0x00C11900 is the
+ * original setter (fastcall: ECX name {begin,end,cap}, EDX value {float, UTF-16 text},
+ * stack: profile level, -1 keeps it; RET 4): it updates the value and runs the copiers. */
+void sub_00C11900(void);
+
+static void port_set_variable(const char *name, float value)
+{
+    uint32_t scratch = void_galloc(32);
+    if (!scratch) return;
+    char text[32];
+    snprintf(text, sizeof text, "%g", (double)value);
+    uint32_t name_chars = guest_string(name, scratch, 0);
+    MEMF(scratch + 12) = value;
+    uint32_t value_chars = guest_string(text, scratch + 16, 1);
+    if (name_chars && value_chars) {
+        void_regs saved;
+        void_regs_save(&saved);
+        g_ecx = scratch;
+        g_edx = scratch + 12;
+        uint32_t entry_esp = g_esp;
+        PUSH32(g_esp, 0xFFFFFFFFu);
+        PUSH32(g_esp, RECOMP_RETADDR);
+        sub_00C11900();
+        if (g_esp != entry_esp) void_fatal("port variable setter stack %08X != %08X", g_esp, entry_esp);
+        void_regs_load(&saved);
+    }
+    if (name_chars) void_gfree(name_chars);
+    if (value_chars) void_gfree(value_chars);
+    void_gfree(scratch);
+}
+
+/* Guest window thread: an item the player picked (or a profile's) sets the value; a value
+ * without an item (a slider profile, a Java seed, the console) selects its nearest item. */
+static void port_ui_list_pump(void)
+{
+    if (!port_ui_item_storage || !port_storage) return;
+    float item = MEMF(port_ui_item_storage), value = MEMF(port_storage + 4 * PORT_UI);
+    int index = isfinite(item) && item >= 0.0f && item < (float)PORT_UI_ITEMS ? (int)item : -1;
+    if (index >= 0 && (!port_ui_list_synced || item != port_ui_item_seen)) {
+        if (value != port_ui_items[index]) {
+            port_set_variable(port_names[PORT_UI], port_ui_items[index]);
+            void_log("[port] interface scale item %d: %g", index, (double)port_ui_items[index]);
+        }
+    } else if (index < 0 || !port_ui_list_synced || value != port_ui_value_seen) {
+        float scale = port_value(PORT_UI, 0.5f, 2.0f);
+        int nearest = 0;
+        for (int i = 1; i < PORT_UI_ITEMS; ++i)
+            if (fabsf(port_ui_items[i] - scale) < fabsf(port_ui_items[nearest] - scale)) nearest = i;
+        if (item != (float)nearest) {
+            port_set_variable("port_ui_scale_item", (float)nearest);
+            void_log("[port] interface scale %g shown as item %d", (double)scale, nearest);
+        }
+    }
+    port_ui_item_seen = MEMF(port_ui_item_storage);
+    port_ui_value_seen = MEMF(port_storage + 4 * PORT_UI);
+    port_ui_list_synced = 1;
+}
+
 /* Guest window thread, every frame: options and profiles change the storage. */
 void void_port_settings_pump(void)
 {
     if (port_state != 2) return;
+    port_ui_list_pump();
     float ui = port_value(PORT_UI, 0.5f, 2.0f), render = port_value(PORT_RENDER, 0.25f, 1.0f);
     if (ui != port_applied[PORT_UI]) {
         port_applied[PORT_UI] = ui;

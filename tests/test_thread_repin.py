@@ -50,11 +50,20 @@ static int sched_setaffinity(int pid,size_t bytes,const cpu_set_t *mask) {
     applied_mask=*mask;return 0;
 }
 static void pin_guest_thread(void);
+/* Tribes of the East: per-thread slots, holder bookkeeping and the checked pin (C1). */
+static int t_slot=-1,registered,checked_calls,checked_rc=99,wait_dones,owner_begins,owner_ends;
+static const char *big_cores_policy="big";
+static void slot_register(void) {t_slot=0;++registered;}
+static void pin_checked(int rc,int err) {(void)err;++checked_calls;checked_rc=rc;}
+static void lock_wait_done(uint64_t waited) {(void)waited;++wait_dones;}
+static void lock_owner_begin(void) {++owner_begins;}
+static void lock_owner_end(void) {assert(lock_depth==1);++owner_ends;}
 /* PRODUCTION */
 static void reset(void) {
     memset(capacities,0,sizeof capacities);memset(frequencies,0,sizeof frequencies);
     big_cores=applied_mask=0;big_cores_count=big_cores_once=0;
     environment=NULL;set_calls=saved=loaded=0;affinity_error=lock_depth=0;
+    t_slot=-1;registered=checked_calls=0;checked_rc=99;big_cores_policy="big";
     ticket_next=ticket_serving=t_lock_wait_ns=0;guest.depth=0;
 }
 static void pair(void) {void_machine_enter();void_machine_leave();}
@@ -71,8 +80,16 @@ int main(void) {
     void_blocking_end();assert(set_calls==3 && applied_mask==0x80 && guest.depth==1);
     void_machine_leave();assert(!guest.depth && !lock_depth && !void_machine_is_owned());
     applied_mask=0xFF;assert(set_calls==3); /* Host work alone does not repin. */
-    affinity_error=1;pair();assert(set_calls==4 && applied_mask==0xFF); /* Nonfatal OS denial. */
-    affinity_error=0;pair();assert(set_calls==5 && applied_mask==0x80); /* Retry next acquisition. */
+    affinity_error=1;pair();assert(set_calls==4 && applied_mask==0xFF && checked_rc==-1); /* Nonfatal OS denial, checked. */
+    affinity_error=0;pair();assert(set_calls==5 && applied_mask==0x80 && checked_rc==0); /* Retry next acquisition. */
+    assert(registered==1 && checked_calls==(int)set_calls && owner_begins==owner_ends);
+    /* cores-near (VOID_BIG_CORES=near): the 996 cores within 5 % join CPU7; cores-none: no mask. */
+    reset();memcpy(capacities,tablet,sizeof tablet);environment="near";pair();
+    assert(set_calls==1 && applied_mask==0xF0 && !strcmp(big_cores_policy,"near"));
+    reset();memcpy(capacities,tablet,sizeof tablet);environment="none";pair();assert(!set_calls && !strcmp(big_cores_policy,"none"));
+    reset();memcpy(capacities,tablet,sizeof tablet);environment="big";pair();assert(set_calls==1 && applied_mask==0x80);
+    reset();long g90t[]={435,435,435,435,435,435,1024,1024};
+    memcpy(capacities,g90t,sizeof g90t);environment="near";pair();assert(set_calls==1 && applied_mask==0xC0);
     reset();memcpy(capacities,tablet,sizeof tablet);environment="0";pair();pair();assert(!set_calls);
     reset();for(int i=0;i<8;++i)capacities[i]=1024;pair();assert(!set_calls);
     reset();pair();assert(!set_calls); /* Unknown topology. */
@@ -81,7 +98,7 @@ int main(void) {
     memcpy(frequencies,freq,sizeof freq);pair();assert(set_calls==1 && applied_mask==0x80);
     reset();long tied[]={221,221,1024,1024,0,0,0,0};
     memcpy(capacities,tied,sizeof tied);pair();assert(set_calls==1 && applied_mask==0x0C);
-    puts("PASS real guest acquire/reacquire pins only current thread after unlocking; exact-best capacity/frequency; nested/host/disabled/homogeneous/unknown paths; nonfatal failure retries");
+    puts("PASS real guest acquire/reacquire pins only current thread after unlocking; exact-best capacity/frequency; nested/host/disabled/homogeneous/unknown paths; nonfatal failure checked and retried; near/none/big core policies");
     return 0;
 }
 '''

@@ -108,7 +108,11 @@ public final class Assets {
 
     def test_migration_runs_before_choices_are_read_and_keeps_player_data(self):
         hooks = (APP / "LauncherHooks.java").read_text(encoding="utf-8")
-        code = re.sub(r"/\*.*?\*/|//[^\n]*", "", hooks, flags=re.S)
+        # The HyperOS tip shows the selected edition's log path (PortHooks.logFile): a name, no access.
+        log_file = function(hooks, "    @Override public String logFile(")
+        for access in ("delete", "renameTo", "mkdir", "Stream", "list", "exists"):
+            self.assertNotIn(access, log_file)
+        code = re.sub(r"/\*.*?\*/|//[^\n]*", "", hooks.replace(log_file, ""), flags=re.S)
         migrate = function(hooks, "    @Override public void migrate(Context context)")
         self.assertIn('getSharedPreferences(OLD_PREFERENCES, Context.MODE_PRIVATE)', migrate)
         self.assertIn("Launch.adopt(context, choices(values))", migrate)
@@ -134,6 +138,10 @@ public final class Assets {
         self.assertIn("if (initializing ||", function(activity, "    private boolean launchWhenReady()"))
         self.assertIn("!initializing", function(activity, "    private boolean idle()"))
         worker = function(activity, "    private <T> void background(Callable<T> work, Done<T> done, Done<Throwable> failed)")
+        if "result = work.call();" not in worker:
+            # The base's three-argument form delegates to the one that may discard a late result.
+            self.assertIn("background(work, done, failed, null);", worker)
+            worker = function(activity, "    private <T> Thread background(Callable<T> work, Done<T> done, Done<Throwable> failed, Done<T> discard)")
         self.assertLess(worker.index("result = work.call();"), worker.index("handler.post("))
         self.assertIn("if (problem == null) done.accept(value);", worker)
         launch = (base / "Launch.java").read_text(encoding="utf-8")

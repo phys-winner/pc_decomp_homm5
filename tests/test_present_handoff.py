@@ -54,6 +54,17 @@ static void glBindFramebuffer(int target,int buffer) {
     assert(target==GL_FRAMEBUFFER && buffer==fbo && egl_complete && !progress);
     gl_complete=1;
 }
+/* Tribes of the East's diagnostics around the swap (perf_diag.c): identity once, EGL frame
+ * timestamps, the swap total; none of them may release the machine or reorder the swap. */
+static uint64_t swap_total_ns;
+static unsigned identity_calls,stamps_before,stamps_after;
+#define memory_order_relaxed 0
+#define atomic_fetch_add_explicit(p,v,o) (*(p)+=(v))
+static int sw=1920,sh=1080;
+static struct {unsigned width,height;} bb_storage={1280,720},*bb=&bb_storage;
+static void diag_identity(int ww,int wh,int rw,int rh) {assert(ww==1920 && wh==1080 && rw==1280 && rh==720 && !egl_complete);++identity_calls;}
+static void timestamps_before_swap(uint32_t frame,uint64_t now) {(void)now;assert(frame==41 && !egl_complete);++stamps_before;}
+static void timestamps_after_swap(uint32_t frame) {assert(frame==41 && egl_complete && !gl_complete);++stamps_after;}
 '''
 
 PRESENT_MAIN=r'''

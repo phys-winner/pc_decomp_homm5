@@ -132,7 +132,15 @@ static void void_regs_save(void_regs *r){r->ecx=g_ecx;r->esp=g_esp;}
 static void void_regs_load(const void_regs *r){g_ecx=r->ecx;g_esp=r->esp;}
 static int lifted_layouts;
 static void sub_00A50560(void) {
-    native_layout(g_ecx,(const float *)GPTR(MEM32(g_esp+4)));g_esp+=8;++lifted_layouts;
+    const float *parent=(const float *)GPTR(MEM32(g_esp+4));
+    if (MEM32(g_ecx)==0x00E2FDB0u && !MEM8(MEM32(g_ecx+0x140)+0x70)) {
+        memcpy(GPTR(g_ecx+0xDC),parent,16);
+        MEM8(g_ecx+0xEC)=1;
+    } else {
+        native_layout(g_ecx,parent);
+        MEM8(g_ecx+0xEC)=0;
+    }
+    g_esp+=8;++lifted_layouts;
 }
 /* Its dispatch entry, as virtual calls resolve it. */
 static void_fn layout_entry;
@@ -541,6 +549,26 @@ int main(void) {
     for(unsigned i=0;i<5;++i)MEM8(MEM32(elements[i]+0x140)+0x70)=0;
     void_android_display_size=NULL;alternate_top=bad_cast=cycle_screens=flip_on_query=0;
     /* CINEMATIC_PROBE */
+    {
+    /* The hidden icon's stale rectangle stole both the split pickup (x451) and
+       the neighbouring empty-cell drop (x569). Native DnD checks this cached position. */
+    const uint32_t icon=0x69000,placement=0x69400;
+    MEM32(icon)=0x00E2FDB0u;MEM32(0x00E2FDB8u)=0x70000;
+    MEM32(icon+0x140)=placement;
+    memcpy(GPTR(0x7B000),"icon",4);MEM32(placement+0x58)=0x7B000;MEM32(placement+0x5C)=0x7B004;
+    MEMF(placement+0x88)=2;MEMF(placement+0xA4)=55;MEMF(placement+0xA8)=55;
+    MEM32(0x22000)=0x00E42A1Cu;pump();
+    const float upper[4]={541,200,596,300},lower[4]={660,310,715,365};
+    MEMF(icon+0x64)=435;MEMF(icon+0x68)=200;
+    layout_through_override(icon,upper);
+    assert(MEMF(icon+0x64)==543&&MEMF(icon+0x68)==200&&MEM8(icon+0xEC)&&!MEM8(placement+0x70));
+    MEMF(icon+0x64)=554;MEMF(icon+0x68)=286;
+    layout_through_override(icon,lower);
+    assert(MEMF(icon+0x64)==662&&MEMF(icon+0x68)==310&&MEMF(placement+0xA4)==55);
+    MEM32(0x22000)=0x00E230E4u;pump();
+    layout_through_override(icon,upper);
+    assert(MEMF(icon+0x64)==662&&MEMF(icon+0x68)==310&&MEM8(icon+0xEC));
+    }
     puts("PASS native UI scale: record-only setter, readiness, coherent inverse/ray, native relayout, abort-before-change, idempotence, resize recovery, top anchoring and fit, battle lens before labels at UI125/200");
     return 0;
 }

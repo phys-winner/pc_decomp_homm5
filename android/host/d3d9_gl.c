@@ -9,6 +9,8 @@
 #include <math.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include "perf_diag.h"
+#include <stdatomic.h>
 
 static EGLDisplay egl_display = EGL_NO_DISPLAY;
 static EGLContext egl_context = EGL_NO_CONTEXT;
@@ -132,6 +134,61 @@ __attribute__((weak)) void void_android_frame_presented(void) {}
 __attribute__((weak)) void *void_android_window_current(uint32_t *serial, int wait) { (void)wait; *serial = 0; return NULL; }
 __attribute__((weak)) void void_android_window_ack(uint32_t serial) { (void)serial; }
 
+/* Diagnostics (perf_diag.c): EGL_ANDROID_get_frame_timestamps on the window surface gives each
+ * frame's GPU completion and display time a few frames later (render thread only). */
+static int ts_supported, ts_enabled, diag_identity_sent;
+static PFNEGLGETFRAMETIMESTAMPSANDROIDPROC ts_get;
+typedef EGLBoolean (EGLAPIENTRYP next_frame_id_fn)(EGLDisplay, EGLSurface, EGLuint64KHR *);
+static next_frame_id_fn ts_next_id;
+static struct { EGLuint64KHR id; uint32_t frame; uint64_t swap_ns; int live; } ts_pending[8];
+static _Atomic uint64_t swap_total_ns;       /* every eglSwapBuffers' time, for the game's thread */
+
+static void timestamps_enable(EGLSurface surface)
+{
+    ts_enabled = 0;
+    memset(ts_pending, 0, sizeof ts_pending);
+    if (!void_diag_on || !ts_supported || surface == EGL_NO_SURFACE) return;
+    ts_enabled = eglSurfaceAttrib(egl_display, surface, EGL_TIMESTAMPS_ANDROID, EGL_TRUE) == EGL_TRUE;
+}
+
+static void timestamps_before_swap(uint32_t frame, uint64_t now)
+{
+    if (!ts_enabled) return;
+    EGLuint64KHR id = 0;
+    if (!ts_next_id(egl_display, egl_surface, &id)) return;
+    ts_pending[frame % 8u].id = id;
+    ts_pending[frame % 8u].frame = frame;
+    ts_pending[frame % 8u].swap_ns = now;
+    ts_pending[frame % 8u].live = 1;
+}
+
+static void timestamps_after_swap(uint32_t frame)
+{
+    if (!ts_enabled) return;
+    static const EGLint names[2] = { EGL_RENDERING_COMPLETE_TIME_ANDROID, EGL_DISPLAY_PRESENT_TIME_ANDROID };
+    for (int i = 0; i < 8; ++i) {
+        if (!ts_pending[i].live || frame - ts_pending[i].frame < 3u) continue;
+        EGLnsecsANDROID values[2] = { EGL_TIMESTAMP_INVALID_ANDROID, EGL_TIMESTAMP_INVALID_ANDROID };
+        if (!ts_get(egl_display, egl_surface, ts_pending[i].id, 2, names, values)) { ts_pending[i].live = 0; continue; }
+        if ((values[0] == EGL_TIMESTAMP_PENDING_ANDROID || values[1] == EGL_TIMESTAMP_PENDING_ANDROID) &&
+            frame - ts_pending[i].frame < 7u) continue;
+        int64_t gpu = values[0] > 0 && (uint64_t)values[0] > ts_pending[i].swap_ns ? values[0] - (int64_t)ts_pending[i].swap_ns : -1;
+        void_diag_gpu_frame(ts_pending[i].frame, gpu, values[1] > 0 ? values[1] : -1);
+        ts_pending[i].live = 0;
+    }
+}
+
+static void diag_identity(int ww, int wh, int rw, int rh)
+{
+    if (diag_identity_sent || !void_diag_on) return;
+    diag_identity_sent = 1;
+    const char *egl_names = eglQueryString(egl_display, EGL_EXTENSIONS);
+    void_diag_egl(eglQueryString(egl_display, EGL_VENDOR), eglQueryString(egl_display, EGL_VERSION),
+                  (const char *)glGetString(GL_RENDERER), (const char *)glGetString(GL_VERSION), ts_supported,
+                  egl_names && strstr(egl_names, "EGL_ANDROID_presentation_time") != NULL,
+                  egl_names && strstr(egl_names, "EGL_KHR_fence_sync") != NULL, egl_swap_interval, ww, wh, rw, rh);
+}
+
 /* The window surface follows the activity's (android_main.c): the context
  * stays current on a 1x1 pbuffer while there is none. */
 static EGLConfig egl_config;
@@ -169,6 +226,7 @@ static void follow_window(void)
     } else {
         eglSwapInterval(egl_display, 1);
         atomic_store(&surface_live, 1);
+        timestamps_enable(egl_surface);
         void_log("[gl] presenting into a new window surface");
     }
     void_android_window_ack(serial);
@@ -210,6 +268,13 @@ static int gl_init(void)
     }
     if (window_mode) eglSwapInterval(egl_display, 1);
     atomic_store(&surface_live, window_mode);
+    if (void_diag_on) {
+        const char *egl_extensions = eglQueryString(egl_display, EGL_EXTENSIONS);
+        ts_get = (PFNEGLGETFRAMETIMESTAMPSANDROIDPROC)eglGetProcAddress("eglGetFrameTimestampsANDROID");
+        ts_next_id = (next_frame_id_fn)eglGetProcAddress("eglGetNextFrameIdANDROID");
+        ts_supported = egl_extensions && strstr(egl_extensions, "EGL_ANDROID_get_frame_timestamps") && ts_get && ts_next_id;
+        if (window_mode) timestamps_enable(egl_surface);
+    }
     void_log("[gl] %s / %s / %s (%s)", glGetString(GL_VENDOR), glGetString(GL_RENDERER), glGetString(GL_VERSION),
         window_mode ? "window" : "pbuffer");
     GLint value = 0;
@@ -276,10 +341,13 @@ static void run_present_interval(void *args)
 
 }
 
+static int game_swap_interval = 1;   /* the game's thread: D3DPRESENT_INTERVAL_IMMEDIATE -> 0 */
+
 void d3d_gl_set_present_interval(uint32_t interval)
 {
     int swap = interval == 0x80000000u ? 0 : 1;
     frame_deadline_ns = 0;
+    game_swap_interval = swap;
     d3d_rt_call(run_present_interval, &swap, sizeof swap);
 }
 
@@ -3146,9 +3214,8 @@ void d3d_gl_device_destroy(void)
 
 /* Present commits its GL/frame state first; audio and other guest threads may
  * run during the deadline wait without changing the simulation clock. */
-void d3d_gl_frame_pace(void)
+static void frame_limit(float fps)
 {
-    float fps = void_port_fps_limit();
     if (atomic_exchange(&pace_restart, 0)) frame_deadline_ns = 0;
     if (!atomic_load(&surface_live) || fps <= 0.0f) {
         frame_deadline_ns = 0;
@@ -3176,6 +3243,70 @@ void d3d_gl_frame_pace(void)
     }
     /* A slow frame or background/resume never creates a catch-up burst. */
     frame_deadline_ns = now >= frame_deadline_ns + period ? now + period : frame_deadline_ns + period;
+}
+
+/* The game's thread: the limiter's sleep without the machine-lock wait after it (perf_diag.c). */
+static uint64_t pace_total_ns;
+static uint64_t vsync_window_start;
+static uint32_t vsync_window_frames;
+static int vsync_unreliable;
+
+/* One pacer (C6): when the effective cap equals the panel's refresh (port_settings.c), the swap
+ * with interval 1 already holds the game to it, and a timer on top of the vsync only adds a
+ * phase that misses vsyncs. The timer stays below the refresh (cadences), for an immediate
+ * present interval, and for the session once the frames run faster than the refresh (a driver
+ * that ignores the interval). Only with the render thread: the game then waits for the swap
+ * with the machine released (d3d_rt_frame_wait), while inline GL swaps holding it, and the
+ * timer's sleep is the other guest threads' (FMOD's) time. The pace-timer flag file keeps the
+ * timer always. */
+static int pace_by_vsync(float fps, uint64_t now)
+{
+    if (!window_mode || game_swap_interval != 1 || vsync_unreliable || !d3d_rt_threaded() || !void_port_vsync_paced()) {
+        vsync_window_start = 0;
+        return 0;
+    }
+    if (!vsync_window_start || now - vsync_window_start > 3000000000ull) { vsync_window_start = now; vsync_window_frames = 0; }
+    else if (++vsync_window_frames >= 120 && now - vsync_window_start >= 1000000000ull) {
+        double rate = vsync_window_frames * 1e9 / (double)(now - vsync_window_start);
+        if (rate > fps * 1.15) {
+            vsync_unreliable = 1;
+            void_log("[gl] %.1f fps under vsync at a %.1f Hz panel: the frame timer paces from now on", rate, fps);
+            return 0;
+        }
+        vsync_window_start = now;
+        vsync_window_frames = 0;
+    }
+    return 1;
+}
+
+void d3d_gl_frame_pace(void)
+{
+    uint64_t start = void_perf_now_ns(), lock_before = void_lock_wait_ns();
+    float fps = void_port_effective_fps();
+    uint64_t extra = void_diag_inject_pace();
+    if (extra) {
+        struct timespec nap = { 0, (long)extra };
+        void_blocking_begin();
+        while (nanosleep(&nap, &nap) && errno == EINTR) {}
+        void_blocking_end();
+    }
+    if (pace_by_vsync(fps, start)) {
+        atomic_exchange(&pace_restart, 0);
+        frame_deadline_ns = 0;
+    } else {
+        frame_limit(fps);
+    }
+    uint64_t spent = void_perf_now_ns() - start, locked = void_lock_wait_ns() - lock_before;
+    pace_total_ns += spent > locked ? spent - locked : 0;
+    if (!void_frame_monitor_on) return;
+    d3d_rt_stats_t rt;
+    d3d_rt_stats(&rt);
+    void_frame_in in = { .frame = g_d3d_device ? g_d3d_device->frame - 1u : 0, .threaded = d3d_rt_threaded(),
+        .surface_live = atomic_load(&surface_live), .pace_ns = pace_total_ns,
+        .swap_ns = atomic_load_explicit(&swap_total_ns, memory_order_relaxed),
+        .frame_wait_ns = rt.frame_wait_ns, .sync_ns = rt.sync_ns, .ring_wait_ns = rt.ring_wait_ns,
+        .render_busy_ns = rt.render_busy_ns, .cap = void_port_fps_limit(), .eff_cap = fps };
+    void_frame_monitor(&in);
 }
 
 /* -------------------------------------------------------------- gamma
@@ -3404,10 +3535,15 @@ static void gl_present(d3d_device *dev, const combat_route_snapshot *route)
         /* Present hands off after the swap and frame state are committed. */
         struct timespec swap_start, swap_end;
         clock_gettime(CLOCK_MONOTONIC, &swap_start);
+        diag_identity(sw, sh, (int)bb->width, (int)bb->height);
+        timestamps_before_swap(dev->frame, (uint64_t)swap_start.tv_sec * 1000000000ull + (uint64_t)swap_start.tv_nsec);
         eglSwapBuffers(egl_display, egl_surface);
         clock_gettime(CLOCK_MONOTONIC, &swap_end);
         swap_ns += (uint64_t)(swap_end.tv_sec - swap_start.tv_sec) * 1000000000ull + (uint64_t)swap_end.tv_nsec -
                    (uint64_t)swap_start.tv_nsec;
+        atomic_fetch_add_explicit(&swap_total_ns, (uint64_t)(swap_end.tv_sec - swap_start.tv_sec) * 1000000000ull +
+                                  (uint64_t)swap_end.tv_nsec - (uint64_t)swap_start.tv_nsec, memory_order_relaxed);
+        timestamps_after_swap(dev->frame);
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         dev->fbo_dirty = 1;
     } else {

@@ -34,6 +34,17 @@ public class RefreshRateCheck extends RefreshRateCheckBase {
     private Overlay combatOverlay;
     void showNextTouchHint() {}
     boolean dxvkSurface() { return false; }
+    /* Tribes of the East's PerfMonitor: the requested mode/vote and lifecycle reach it; the
+       no-preferred-mode flag file leaves the mode to the system and keeps the vote. */
+    static class PerfMonitor {
+        boolean noPreferred; int requests, lastMode = -1, surfaces, focuses, resumes; float lastVote;
+        boolean noPreferredMode() { return noPreferred; }
+        void requested(Display display, int mode, float vote) { requests++; lastMode = mode; lastVote = vote; }
+        void surface(String state) { surfaces++; }
+        void focus(boolean on) { focuses++; }
+        void resume() { resumes++; }
+    }
+    private PerfMonitor perf = new PerfMonitor();
     static class Build { static class VERSION { static int SDK_INT=30; } }
     static class WindowManager {
         static class LayoutParams { int preferredDisplayModeId; }
@@ -210,8 +221,30 @@ public class RefreshRateCheck extends RefreshRateCheckBase {
         retry.requestHighRefresh(); retry.requestHighRefresh();
         assert rejected.calls==2 : "rejected vote must retry once, successful vote must be cached";
     }
+    static void perfMonitor() {
+        RefreshRateCheck plain = new RefreshRateCheck();
+        Surface vote = new Surface();
+        plain.surface = new SurfaceView(new Display(m(1,60),m(1,60),m(3,120)), vote);
+        plain.frameRate = 120;
+        plain.requestHighRefresh();
+        assert plain.perf.requests == 1 && plain.perf.lastMode == 3 && plain.perf.lastVote == 120;
+        assert plain.window.attrs.preferredDisplayModeId == 3;
+        RefreshRateCheck noMode = new RefreshRateCheck();
+        noMode.perf.noPreferred = true;
+        Surface keep = new Surface();
+        noMode.surface = new SurfaceView(new Display(m(1,60),m(1,60),m(3,120)), keep);
+        noMode.frameRate = 120;
+        noMode.requestHighRefresh();
+        assert noMode.perf.lastMode == 0 && noMode.window.attrs.preferredDisplayModeId == 0 && noMode.window.writes == 0;
+        assert keep.calls == 1 : "the setFrameRate vote stays without a preferred mode";
+        RefreshRateCheck none = new RefreshRateCheck();
+        none.perf = null;
+        none.surface = new SurfaceView(new Display(m(1,60),m(1,60),m(3,120)), new Surface());
+        none.requestHighRefresh();
+        assert none.window.attrs.preferredDisplayModeId == 1 : "legacy editions have no PerfMonitor";
+    }
     public static void main(String[] args) {
-        selector(); new RefreshRateCheck().lifecycle(); readiness();
+        selector(); new RefreshRateCheck().lifecycle(); readiness(); perfMonitor();
         System.out.println("PASS actual refresh selector and lifecycle: FPS /2 /3 power-efficient cadence, same resolution, nominal tolerance, invalid modes/caps, API30/31 guards, cap change revote, new surface, retry, idempotence");
     }
 }

@@ -1666,6 +1666,8 @@ static void army_start(int mode,const troop_cell *source,const troop_cell *targe
 
 static int troop_drop(float x,float y)
 {
+    /* The resurrection screen's native drop calculates dark energy and creates the raise order. */
+    if (read32(gesture.screen)==0x00E42A1Cu) return 0;
     troop_cell source,target;uint32_t stack;
     if (gesture.army_portrait && gesture.held && gesture.panning &&
         troop_portrait_at(gesture.start_x,gesture.start_y,&source) && troop_portrait_at(x,y,&target) && source.row!=target.row) {
@@ -1691,17 +1693,44 @@ static int troop_drop(float x,float y)
     return 0;
 }
 
-static struct { troop_cell source; uint32_t helper,held,count,type; } troop_preview;
+static int resurrection_split(void)
+{
+#ifdef HOMM5_LEGACY_UI
+    return 0;
+#else
+    return read32(gesture.screen) == 0x00E42A1Cu;
+#endif
+}
+
+static struct { troop_cell source; uint32_t helper,held,count,type,remaining; uint64_t deadline; } troop_preview;
 
 static void troop_preview_pump(void)
 {
     if (!troop_preview.helper) return;
     uint32_t helper=troop_preview.helper,held=troop_preview.held,count,type;
-    if (!gesture.active || !dnd_identity(helper) || !dnd_held(helper) || read32(helper+0x1C)!=held ||
+    int resume=resurrection_split() && gesture.dnd_pressed, grabbed=dnd_held(helper);
+    if (!gesture.active || gesture.cancelled || gesture.dnd!=helper || !dnd_identity(helper) ||
+        (grabbed ? read32(helper+0x1C)!=held : !resume) ||
         !troop_current(&troop_preview.source) || !troop_count(&troop_preview.source,&count,&type) ||
         !count || type!=troop_preview.type) { troop_preview.helper=0;return; }
+    if (resume) {
+        /* The resurrection refresh cancels its drag before rebuilding the army rows. */
+        if (void_perf_now_ns()>=troop_preview.deadline || (count!=troop_preview.count && count!=troop_preview.remaining)) {
+            troop_preview.helper=0;return;
+        }
+        if (read32(read32(gesture.screen+ARMY_UPDATE)+0x3C)&0xFFu) return;
+    }
     if (count==troop_preview.count) return;
     troop_preview.helper=0;
+    if (!grabbed) {
+        troop_cell source;
+        float x=gesture.start_x,y=gesture.start_y;
+        if (!troop_cell_at(x,y,&source) || source.window!=troop_preview.source.window) return;
+        dnd_point(0x28,x,y);
+        if (dnd_identity(helper)) dnd_point(0x2C,x,y);
+        if (dnd_identity(helper) && dnd_held(helper)) dnd_point(0x24,gesture.x,gesture.y);
+        return;
+    }
     uint32_t map=read32(held+0x10),handler=read32(held+8),visual=read32(held+0x20);
     uint32_t query=object_method(map,0x28),paint=object_method(handler,0),window=object_query(visual,0x28);
     if (!query || !paint || !window) return;
@@ -1739,9 +1768,11 @@ static void troop_split(float second_x,float second_y,int dialog)
             uint32_t source_count,target_count,source_type,target_type;
             if (!troop_count(&source,&source_count,&source_type) || !source_count || !troop_count(&target,&target_count,&target_type) || !target_count ||
                 source_type!=target_type || (uint64_t)source_count+target_count>0x7FFFFFFFu) return;
-            dnd_cancel();gesture.cancelled=gesture.committed=1;gesture.second_troop=0;
-            if (!troop_order(&source,&target,(source_count+target_count)/2,0)) troop_inactive(source.window);
-            return;
+            if (!resurrection_split()) {
+                dnd_cancel();gesture.cancelled=gesture.committed=1;gesture.second_troop=0;
+                if (!troop_order(&source,&target,(source_count+target_count)/2,0)) troop_inactive(source.window);
+                return;
+            }
         }
     }
     uint32_t controller=troop_controller(&source,&target);
@@ -1769,6 +1800,8 @@ static void troop_split(float second_x,float second_y,int dialog)
                 same_screen() && dnd_identity(helper) && dnd_held(helper)) {
                 troop_preview.source=source;troop_preview.helper=helper;troop_preview.held=held;
                 troop_preview.count=count;troop_preview.type=type;
+                troop_preview.remaining=count-one;
+                troop_preview.deadline=resurrection_split()?void_perf_now_ns()+5000000000ull:0;
                 void_call_guest_this(commit,controller,1,&one);dnd_track(helper);
                 army_screen_dirty();
                 VLOG("[touch] troop-one screen=%08X from=%08X:%u to=%08X:%u",
@@ -3501,6 +3534,7 @@ static void split_zone_apply(uint32_t amount, int keep_dragging)
 
 static void split_zone_pump(void)
 {
+    if (troop_preview.helper && resurrection_split() && !dnd_held(troop_preview.helper)) return;
     uint32_t count = split_zone_count();
     if (count < 2) { split_zone_hide(); return; }
     split_hint_set(void_port_split_hints());
@@ -3924,6 +3958,7 @@ void void_touch_engine_event(const void_touch_event *event)
         combat_pending_clear();
         ctrl_latch(0);
         split_zone_hide();
+        troop_preview.helper = 0;
         pointer_text.pending = 0;
         memset(&army_batch,0,sizeof army_batch);
         dnd_owner_pump(0);

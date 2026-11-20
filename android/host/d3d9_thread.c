@@ -189,6 +189,25 @@ static long cpu_capacity(int cpu)
     return value;
 }
 
+/* perf_diag.c's cpu line: how the render thread left the game's cores. C5: VOID_RT_EARLY=1 (the
+ * flag file rt-cores-early) moves it before EGL setup, so the driver threads born there do not
+ * inherit the game's cores; by default it moves once the context exists (d3d_rt_settle). */
+static int rt_affinity_rc, rt_affinity_err, rt_affinity_early, rt_left;
+static const char *rt_affinity_policy = "-";
+
+void d3d_rt_affinity(int *rc, int *err, const char **policy, int *early, int *tid);
+void d3d_rt_affinity(int *rc, int *err, const char **policy, int *early, int *tid)
+{
+    *rc = rt_affinity_rc; *err = rt_affinity_err; *policy = rt_affinity_policy; *early = rt_affinity_early;
+    *tid = d3d_rt_render_tid();
+}
+
+static int rt_cores_early(void)
+{
+    const char *env = getenv("VOID_RT_EARLY");
+    return env && *env == '1';
+}
+
 static void leave_game_cores(void)
 {
     static const char *const policies[] = { "auto", "big", "next", "any" };
@@ -207,11 +226,16 @@ static void leave_game_cores(void)
     for (int i = 0; i < cpus; ++i) value[i] = cpu_capacity(i);
     cpu_set_t mine;
     long chosen = render_core_mask(value, cpus, policy, &mine);
+    if (rt_left) return;
+    rt_left = 1;
+    rt_affinity_policy = policies[policy];
     if (!chosen) {
         void_log("[rt] render thread on scheduler-selected cores (policy %s)", policies[policy]);
     } else if (sched_setaffinity(0, sizeof mine, &mine) == 0) {
         void_log("[rt] render thread on %d cores of capacity %ld (policy %s)", CPU_COUNT(&mine), chosen, policies[policy]);
     } else {
+        rt_affinity_rc = -1;
+        rt_affinity_err = errno;
         void_log("[rt] render thread on scheduler-selected cores (policy %s; affinity rejected: %s)",
                  policies[policy], strerror(errno));
     }
@@ -230,6 +254,11 @@ static void *render_main(void *unused)
     on_render = 1;
     atomic_store(&render_tid, (int)syscall(SYS_gettid));
     pthread_setname_np(pthread_self(), "d3d9-render");
+    if (rt_cores_early()) {
+        rt_affinity_early = 1;
+        void_log("[rt] leaving the game's cores before EGL setup (rt-cores-early)");
+        leave_game_cores();
+    }
     uint64_t at = 0;
     for (;;) {
         if (atomic_load_explicit(&head, memory_order_acquire) == at) {

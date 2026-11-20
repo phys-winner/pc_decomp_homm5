@@ -13,6 +13,10 @@
 #include <setjmp.h>
 #include <time.h>
 #include <unistd.h>
+#include "perf_diag.h"
+#include <stdatomic.h>
+#include <sys/prctl.h>
+#include <sys/syscall.h>
 
 #define TLS_SLOTS 1088
 #define STATIC_TLS_MODULES 64
@@ -174,6 +178,126 @@ static uint64_t now_ns(void)
 }
 
 static void pin_guest_thread(void);
+/* Who holds the machine and for how long (perf_diag.c: the holder of a long frame's wait,
+ * each thread's longest hold per window). Every guest thread has a slot, named after its
+ * module; the slot ends with the thread (a key destructor). Recorded only with diagnostics. */
+#define GUEST_SLOTS 48
+typedef struct {
+    _Atomic int tid;
+    char name[16];
+    _Atomic uint64_t hold_max_ns;
+    _Atomic int rc, err;
+} guest_slot;
+static guest_slot guest_slots[GUEST_SLOTS];
+static __thread int t_slot = -1, t_tid;
+static __thread uint64_t t_acquired_ns, t_wait_max_ns, t_last_wait_ns, t_last_wait_end_ns;
+static __thread int t_wait_holder;
+/* The last releases of the machine (under mlock): a long wait names the holder whose hold
+ * overlapped it most, not merely the thread that released last. */
+static struct { int tid; uint64_t end_ns, held_ns; } machine_releases[8];
+static unsigned machine_release_next;
+static pthread_key_t slot_key;
+static pthread_once_t slot_key_once = PTHREAD_ONCE_INIT;
+
+static void slot_release(void *slot)
+{
+    int index = (int)(intptr_t)slot - 1;
+    if (index >= 0 && index < GUEST_SLOTS) atomic_store(&guest_slots[index].tid, 0);
+}
+
+static void slot_key_init(void) { pthread_key_create(&slot_key, slot_release); }
+
+static void slot_register(void)
+{
+    t_tid = (int)syscall(SYS_gettid);
+    pthread_once(&slot_key_once, slot_key_init);
+    for (int i = 0; i < GUEST_SLOTS; ++i) {
+        int expected = 0;
+        if (!atomic_compare_exchange_strong(&guest_slots[i].tid, &expected, -1)) continue;
+        char name[16] = "";
+        prctl(PR_GET_NAME, name, 0, 0, 0);
+        memcpy(guest_slots[i].name, name, sizeof name);
+        atomic_store(&guest_slots[i].hold_max_ns, 0);
+        atomic_store(&guest_slots[i].tid, t_tid);
+        t_slot = i;
+        pthread_setspecific(slot_key, (void *)(intptr_t)(i + 1));
+        return;
+    }
+    t_slot = GUEST_SLOTS;                  /* full: not tracked */
+}
+
+/* A wait for the machine ended (under mlock): the frame's longest wait and who held the machine
+ * longest during it. */
+static void lock_wait_done(uint64_t waited)
+{
+    uint64_t end = now_ns(), start = end - waited;
+    t_last_wait_ns = waited;
+    t_last_wait_end_ns = end;
+    if (waited <= t_wait_max_ns) return;
+    t_wait_max_ns = waited;
+    t_wait_holder = 0;
+    if (!void_diag_on || waited <= 2000000ull) return;
+    uint64_t best = 0;
+    for (int i = 0; i < 8; ++i) {
+        uint64_t held_end = machine_releases[i].end_ns, held_start = held_end - machine_releases[i].held_ns;
+        if (!machine_releases[i].tid || held_end <= start || held_start >= end) continue;
+        uint64_t overlap = (held_end < end ? held_end : end) - (held_start > start ? held_start : start);
+        if (overlap > best) { best = overlap; t_wait_holder = machine_releases[i].tid; }
+    }
+}
+
+static void lock_owner_begin(void)
+{
+    if (void_diag_on) t_acquired_ns = now_ns();
+}
+
+/* Under mlock, before the next owner is served. */
+static void lock_owner_end(void)
+{
+    if (!void_diag_on) return;
+    if (t_slot < 0) slot_register();
+    if (!t_acquired_ns) return;
+    uint64_t now = now_ns(), held = now - t_acquired_ns;
+    unsigned at = machine_release_next++ % 8u;
+    machine_releases[at].tid = t_tid;
+    machine_releases[at].end_ns = now;
+    machine_releases[at].held_ns = held;
+    if (t_slot >= GUEST_SLOTS) return;
+    if (held > atomic_load_explicit(&guest_slots[t_slot].hold_max_ns, memory_order_relaxed))
+        atomic_store_explicit(&guest_slots[t_slot].hold_max_ns, held, memory_order_relaxed);
+}
+
+void void_lock_take_frame(uint64_t *wait_max_ns, int *holder_tid)
+{
+    *wait_max_ns = t_wait_max_ns;
+    *holder_tid = t_wait_holder;
+    t_wait_max_ns = 0;
+    t_wait_holder = 0;
+}
+
+uint64_t void_lock_last_wait(uint64_t *end_ns)
+{
+    *end_ns = t_last_wait_end_ns;
+    return t_last_wait_ns;
+}
+
+int void_guest_threads(void_guest_info *out, int max, int reset_hold)
+{
+    int n = 0;
+    for (int i = 0; i < GUEST_SLOTS && n < max; ++i) {
+        int tid = atomic_load(&guest_slots[i].tid);
+        if (tid <= 0) continue;
+        out[n].tid = tid;
+        memcpy(out[n].name, guest_slots[i].name, sizeof out[n].name);
+        out[n].name[15] = 0;
+        out[n].hold_max_ns = reset_hold ? atomic_exchange(&guest_slots[i].hold_max_ns, 0)
+                                        : atomic_load(&guest_slots[i].hold_max_ns);
+        out[n].rc = atomic_load(&guest_slots[i].rc);
+        out[n].err = atomic_load(&guest_slots[i].err);
+        ++n;
+    }
+    return n;
+}
 
 static void machine_acquire(void)
 {
@@ -182,10 +306,13 @@ static void machine_acquire(void)
     if (ticket != ticket_serving) {
         uint64_t start = now_ns();
         while (ticket != ticket_serving) pthread_cond_wait(&mcond, &mlock);
-        t_lock_wait_ns += now_ns() - start;
+        uint64_t waited = now_ns() - start;
+        t_lock_wait_ns += waited;
+        lock_wait_done(waited);
     }
     pthread_mutex_unlock(&mlock);
     t_machine_owned = 1;
+    lock_owner_begin();
     /* Android may reset affinity when the app changes lifecycle state. */
     pin_guest_thread();
 }
@@ -194,6 +321,7 @@ static void machine_release(void)
 {
     t_machine_owned = 0;
     pthread_mutex_lock(&mlock);
+    lock_owner_end();
     ++ticket_serving;
     pthread_cond_broadcast(&mcond);
     pthread_mutex_unlock(&mlock);
@@ -331,11 +459,15 @@ static void yield_hook(void)
      * the next owner mistake a preempted yielding thread for no contender. */
     uint64_t ticket = ticket_next++;
     uint64_t start = now_ns();
+    lock_owner_end();
     ++ticket_serving;
     pthread_cond_broadcast(&mcond);
     while (ticket != ticket_serving) pthread_cond_wait(&mcond, &mlock);
-    t_lock_wait_ns += now_ns() - start;
+    uint64_t waited = now_ns() - start;
+    t_lock_wait_ns += waited;
+    lock_wait_done(waited);
     pthread_mutex_unlock(&mlock);
+    lock_owner_begin();
     pin_guest_thread();
     void_regs_load(&t->regs);
 }
@@ -910,6 +1042,10 @@ static void thread_native_exit(void *arg)
 static cpu_set_t big_cores;
 static int big_cores_count;
 static pthread_once_t big_cores_once = PTHREAD_ONCE_INIT;
+/* VOID_BIG_CORES also takes near (cores within 5 % of the best, the flag
+ * file cores-near), none (cores-none) and big (cores-big, the default). */
+static const char *big_cores_policy = "big";
+static _Atomic int affinity_failures;
 
 static long cpu_value(int cpu, const char *name)
 {
@@ -927,6 +1063,9 @@ static void big_cores_init(void)
 {
     const char *env = getenv("VOID_BIG_CORES");
     if (env && *env == '0') return;
+    int near = env && !strcmp(env, "near");
+    if (env && (!strcmp(env, "none") || !strcmp(env, "all"))) { big_cores_policy = "none"; return; }
+    if (near) big_cores_policy = "near";
     long value[CPU_SETSIZE];
     int cpus = 0, use_capacity = cpu_value(0, "cpu_capacity") > 0;
     for (; cpus < CPU_SETSIZE; ++cpus) {
@@ -940,7 +1079,9 @@ static void big_cores_init(void)
     }
     if (cpus < 2 || best == worst) return;       /* homogeneous or unknown: leave the scheduler alone */
     CPU_ZERO(&big_cores);
-    for (int i = 0; i < cpus; ++i) if (value[i] == best) { CPU_SET(i, &big_cores); ++big_cores_count; }
+    /* cores-near: also the cores within 5 % of the best (CPU4-6 996 beside CPU7 1024). */
+    long floor = near ? best - best / 20 : best;
+    for (int i = 0; i < cpus; ++i) if (value[i] >= floor) { CPU_SET(i, &big_cores); ++big_cores_count; }
     char list[64] = "";
     for (int i = 0, n = 0; i < cpus && n < 56; ++i)
         if (CPU_ISSET(i, &big_cores)) n += snprintf(list + n, sizeof list - (size_t)n, "%s%d", n ? "," : "", i);
@@ -948,16 +1089,73 @@ static void big_cores_init(void)
         use_capacity ? "capacity" : "max frequency", best, worst);
 }
 
+uint64_t void_big_cores_mask(const char **policy)
+{
+    pthread_once(&big_cores_once, big_cores_init);
+    uint64_t mask = 0;
+    for (int i = 0; i < 64 && i < CPU_SETSIZE; ++i) if (CPU_ISSET(i, &big_cores)) mask |= 1ull << i;
+    if (policy) *policy = big_cores_count ? big_cores_policy : "none";
+    return big_cores_count ? mask : 0;
+}
+
+/* C1: the result of each pin; a failure is logged once per thread (at most 32 threads), the mask
+ * actually applied after the thread's first pin. */
+static __thread int t_affinity_reported;
+
+static void pin_checked(int rc, int err)
+{
+    if (t_slot < GUEST_SLOTS && (atomic_load_explicit(&guest_slots[t_slot].rc, memory_order_relaxed) != rc ||
+                                 atomic_load_explicit(&guest_slots[t_slot].err, memory_order_relaxed) != err)) {
+        atomic_store(&guest_slots[t_slot].rc, rc);
+        atomic_store(&guest_slots[t_slot].err, err);
+    }
+    if (t_affinity_reported || (rc && atomic_fetch_add(&affinity_failures, 1) > 32)) return;
+    t_affinity_reported = 1;
+    cpu_set_t now;
+    CPU_ZERO(&now);
+    unsigned long long applied = 0, wanted = 0;
+    if (!sched_getaffinity(0, sizeof now, &now))
+        for (int i = 0; i < 64 && i < CPU_SETSIZE; ++i) if (CPU_ISSET(i, &now)) applied |= 1ull << i;
+    for (int i = 0; i < 64 && i < CPU_SETSIZE; ++i) if (CPU_ISSET(i, &big_cores)) wanted |= 1ull << i;
+    char name[16] = "";
+    prctl(PR_GET_NAME, name, 0, 0, 0);
+    if (rc) void_log("[void] affinity of %d (%s): %llx rejected: %s; now %llx", t_tid, name, wanted, strerror(err), applied);
+    else void_log("[void] affinity of %d (%s): %llx, now %llx", t_tid, name, wanted, applied);
+}
+
 static void pin_guest_thread(void)
 {
     pthread_once(&big_cores_once, big_cores_init);
-    if (big_cores_count) sched_setaffinity(0, sizeof big_cores, &big_cores);
+    if (t_slot < 0) slot_register();
+    if (!big_cores_count) return;
+    int rc = sched_setaffinity(0, sizeof big_cores, &big_cores);
+    pin_checked(rc, rc ? errno : 0);
+}
+
+/* Names for traces and vendor heuristics: h5-<module>-<id>, by the module of the entry point. */
+static void name_guest_thread(const void_thread *t)
+{
+    static const struct { const char *module, *tag; } modules[] = {
+        {"fmod.dll", "fmod"}, {"granny2.dll", "granny"}, {"um.dll", "um"}, {"msvcr71.dll", "crt"},
+        {"libcurl.dll", "curl"} };
+    const char *tag = "game";
+    for (size_t i = 0; i < sizeof modules / sizeof *modules; ++i) {
+        uint32_t base = void_module_handle(modules[i].module);
+        if (!base || !void_vm_readable(base + 0x3C, 4)) continue;
+        uint32_t header = base + MEM32(base + 0x3C);
+        if (!void_vm_readable(header + 0x50, 4)) continue;
+        if (t->start >= base && t->start - base < MEM32(header + 0x50)) { tag = modules[i].tag; break; }
+    }
+    char name[16];
+    snprintf(name, sizeof name, "h5-%s-%u", tag, (unsigned)(t->id & 0xFFFFu));
+    pthread_setname_np(pthread_self(), name);
 }
 
 static void *thread_main(void *arg)
 {
     void_thread *t = (void_thread *)arg;
     thread_bind(t);
+    name_guest_thread(t);
     pin_guest_thread();
     if (t->suspended) {
         pthread_mutex_lock(&wait_lock);

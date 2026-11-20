@@ -98,6 +98,22 @@ public class InstalledImagesCheck {
             assert java.util.Arrays.equals(Files.readAllBytes(dllFile.toPath()),granny);
             assert new File(assets,images+"/originals.txt").delete(); reject(c,game,id,"originals.txt");
         }
+        File game=new File(root,"hof/game"), overlay=new File(root,"hof/private/overlay-hof");
+        String menu="zzzz_h5_static_main_menu", markers="zzzz_h5_static_hero_markers";
+        write(game,"Maps/normal.h5m","normal map");
+        write(game,"USERmods/"+menu+".H5U","menu v1");
+        write(game,"USERmods/"+markers+".h5u","hero runes");
+        Path mountedMenu=new File(overlay,"Maps/"+menu+".h5m").toPath();
+        Path mountedMarkers=new File(overlay,"Maps/"+markers+".h5m").toPath();
+        Assets.mountHofUserMods(overlay,game);
+        assert new String(Files.readAllBytes(mountedMenu),StandardCharsets.UTF_8).equals("menu v1");
+        assert new String(Files.readAllBytes(mountedMarkers),StandardCharsets.UTF_8).equals("hero runes");
+        write(game,"USERmods/"+menu+".H5U","menu v2");
+        assert new File(game,"USERmods/"+markers+".h5u").delete();
+        Assets.mountHofUserMods(overlay,game);
+        assert new String(Files.readAllBytes(mountedMenu),StandardCharsets.UTF_8).equals("menu v2");
+        assert !Files.exists(mountedMarkers) && new File(game,"Maps/normal.h5m").isFile();
+        assert !new File(game,"Maps/"+menu+".h5m").exists();
         System.out.println("PASS three editions: original hashes, case-insensitive bin/bina1, rejected bad inputs and old-cache migration");
     }
 }
